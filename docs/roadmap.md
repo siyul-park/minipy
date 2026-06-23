@@ -10,8 +10,9 @@ Cross-references: grammar tags in [`spec/03-grammar.md`](spec/03-grammar.md),
 type rules in [`spec/02-types.md`](spec/02-types.md), lowering in
 [`spec/05-codegen.md`](spec/05-codegen.md).
 
-Priority: **M0 → M8 are the static core, in order.** **M9 (dynamic typing) is
-low priority** and depends on none of the others shipping first.
+Priority: **M0 → M8 are the static core, in order.** **M9 (inference, unions &
+specialization) is low priority** and depends on none of the others shipping
+first.
 
 | Milestone | Theme | Priority |
 |---|---|---|
@@ -24,7 +25,7 @@ low priority** and depends on none of the others shipping first.
 | M6 | Generators & iterators | core |
 | M7 | Exceptions & context managers | core |
 | M8 | Modules & stdlib | core |
-| M9 | **Dynamic typing (`Any`)** | **low** |
+| M9 | **Inference, unions & specialization** | **low** |
 
 ---
 
@@ -184,32 +185,83 @@ scalars.
 
 ---
 
-## M9 — Dynamic typing (`Any`) — LOW PRIORITY
+## M9 — Whole-program inference, unions & specialization — LOW PRIORITY
 
-An **opt-in** gradual/dynamic layer on top of the static core, built on minivm's
-`ref` ("any") type. It does **not** change the static default and is not a
-dependency of M0–M8; it is scheduled last and may be deferred indefinitely.
+An **opt-in** gradual layer on top of the static core. It adds three things the
+core deliberately omits — **union types**, **whole-program type inference** (so
+unannotated code still compiles to concrete types), and **specialization**
+(monomorphizing polymorphic functions like generics). It does **not** change the
+static default, is not a dependency of M0–M8, and is scheduled last; it may be
+deferred indefinitely. minivm's `ref` ("any") type backs only the *residual*
+dynamic slots that inference cannot pin down.
 
-- **Goal:** allow `Any`-typed values and (optionally) unannotated code to compile
-  by treating unknown types as `ref`, recovering concrete types at runtime.
-- **Grammar/types:** `Any` annotation accepted everywhere; an optional
-  "dynamic module" mode where missing annotations infer `Any` instead of erroring
-  (the static `MissingAnnotation` rule is relaxed only in this mode).
-- **Lowering:** `Any` slots are minivm `ref`; operations on `Any` insert runtime
-  type checks/dispatch via `REF_TEST`/`REF_CAST`; `Any → T` is a checked cast
-  (runtime `TypeError`), `T → Any` is free. Boxing/unboxing follows minivm's
+### Goals
+
+- **Unions, not just `Any`.** Accept `A | B` / `Union[A, B]` of arbitrary types as
+  a first-class **closed disjunction**, lowered to a tagged `ref`. `Optional[T]`
+  becomes the special case `T | None`. `Any` is the **open top** of the lattice —
+  the fallback used only when no bounded union fits.
+- **Compile unannotated code by inference.** In *inference mode* the
+  `MissingAnnotation` rule is relaxed: instead of erroring, the compiler solves for
+  the types of unannotated bindings across the **whole program**, from call sites
+  and bodies. Annotated boundaries stay fixed and seed the solver.
+- **Minimize types.** Each binding gets the **narrowest** type consistent with all
+  its uses (`concrete < closed-union < Any`). Because most slots resolve to a
+  concrete type, runtime tag-checks/casts are emitted **only** where a slot is
+  still a union or `Any` — unnecessary type checks are never generated.
+- **Specialize like generics.** A function used at several concrete types is
+  **monomorphized** — one `*Function` per instantiation, each call site linked to
+  its specialization. Where instantiations would explode, fall back to a single
+  union-typed body with internal tag dispatch.
+
+### Mechanics
+
+- **Type lattice:** `⊥ < concrete types < closed unions < Any (⊤)`. Inference picks
+  the join/meet that keeps each binding minimal.
+- **Narrowing:** `isinstance(x, T)` and `x is None` remove a member from a union
+  inside the guarded branch (generalizing the core `Optional` rule); the dispatch
+  is paid once and reused, not re-checked.
+- **Representation:** concrete slots stay unboxed/native (the static fast path);
+  union/`Any` slots are minivm `ref`, boxed with a runtime tag. `T → A|B` widens for
+  free; `A|B → T` is a checked `REF_CAST` (runtime `TypeError`) unless flow already
+  proved it. `isinstance` is `REF_TEST`. Boxing/unboxing follows minivm's
   dynamic-value rules ([value-representation](https://github.com/siyul-park/minivm/blob/main/docs/value-representation.md#dynamic-any-values)).
-- **Cost:** dynamic operations are slower (boxed, guarded, can miss the JIT). The
-  static core stays the fast path; `Any` is the escape hatch.
-- **Open questions:** how much operator/attribute dynamism to support; whether to
-  allow fully untyped functions; interaction with containers (`list[Any]`).
-- **Sample (dynamic mode):**
-  ```python
-  def describe(x: Any) -> str:
-      if isinstance(x, int):
-          return "int:" + str(x)
-      return "other"
-  ```
+- **Linking:** monomorphic call sites emit a direct `CALL`/`RETURN_CALL` to the
+  concrete specialization; only genuine union calls go through a tag switch. Full
+  lowering: [`spec/05-codegen.md`](spec/05-codegen.md#unions-any--specialization-m9).
+
+### Cost
+
+Concrete (specialized) code is exactly as fast as the static core. Only the
+residual union/`Any` slots are boxed, tag-guarded, and may miss the JIT — and the
+minimization pass keeps those to the few places real dynamism survives.
+
+### Open questions
+
+- Specialization blow-up: cap instantiations per function, fall back to a
+  union/`Any` body past the cap.
+- Whole-program vs separate compilation: inference needs all call sites, so either
+  compile modules together or require annotations at module edges as inference
+  anchors.
+- Polymorphic recursion, operator/attribute dispatch on bare unions, and whether
+  inference mode is ever the default or stays strictly opt-in.
+
+### Samples
+
+```python
+# Union + narrowing
+def describe(x: int | str) -> str:
+    if isinstance(x, int):
+        return "int:" + str(x)   # x narrowed to int
+    return "str:" + x            # x narrowed to str
+
+# Whole-program inference — no annotations, still compiles in inference mode
+def identity(x):
+    return x
+
+a = identity(3)        # identity specialized at int -> a: int
+b = identity("hi")     # identity specialized at str -> b: str
+```
 
 ---
 

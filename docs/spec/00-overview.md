@@ -24,9 +24,11 @@ of CPython 3.13 syntax.
 ## Non-goals
 
 - **No arbitrary-precision `int`.** `int` is **int64** (see below).
-- **No full dynamic typing** in the core. A low-priority `Any`/dynamic mode is on
-  the roadmap (M9), built on minivm's `ref` type — but it is explicitly not the
-  default and not a milestone the core depends on.
+- **No full dynamic typing** in the core. A low-priority opt-in layer (M9) adds
+  union types, whole-program type inference for unannotated code, and
+  generic-style specialization — with minivm's `ref` type backing only the
+  residual dynamic (`Any`) slots inference cannot pin down. It is explicitly not
+  the default and not a milestone the core depends on.
 - No C extension API, `eval`/`exec`/`compile`, metaclasses, monkey-patching,
   `__getattr__` interception, `__slots__` games, descriptors beyond methods,
   multiple inheritance/MRO, or `complex` numbers.

@@ -86,22 +86,40 @@ multiple inheritance, no metaclasses.
 | minipy annotation | meaning | minivm |
 |---|---|---|
 | `Optional[T]` (= `T \| None`) | `T` or `None` | `ref` (dynamic slot) + null check |
-| `Any` | dynamic, any value | `ref` — **M9, low priority** |
+| `A \| B` / `Union[A, B]` | closed disjunction (tagged) | `ref` + runtime tag — **M9, low priority** |
+| `Any` | open top / fully dynamic | `ref` — **M9, low priority** |
 | `Iterator[T]` / generator | lazy producer of `T` | coroutine / `Iterator` heap value (M6) |
 
 `Optional[T]` uses a `ref` slot so it can hold either a `T` value or
-`REF_NULL`; reads narrow with a null test (`REF_IS_NULL`) before use. `T | None`
-union syntax (PEP 604) is the only union form accepted; general `Union[A, B]` of
-two non-None types is **deferred** (would require tagged runtime dispatch).
+`REF_NULL`; reads narrow with a null test (`REF_IS_NULL`) before use. In the
+static core, `T | None` (PEP 604) is the **only** union form accepted; a general
+`Union[A, B]` of non-`None` types — with the tagged runtime dispatch it needs — is
+the **M9** layer (below).
 
-### `Any` and the dynamic boundary (M9, low priority)
+### Unions, `Any`, and the dynamic boundary (M9, low priority)
 
-`Any` maps to minivm's `ref` ("the VM's dynamic any type"). A value typed `Any`
-is stored verbatim as a self-describing `Boxed`; recovering a concrete type uses
-`REF_TEST`/`REF_CAST`. Crossing `Any → T` inserts a checked cast (runtime
-`TypeError` on failure); `T → Any` is always allowed. This is the seam for a
-future gradual/dynamic mode and is **not** part of the static core — see
-[`../roadmap.md`](../roadmap.md) M9.
+The M9 layer generalizes the single `Optional` slot into first-class **unions**,
+and adds whole-program inference so unannotated code still resolves to concrete
+types. Three pieces:
+
+- **`Union[A, B]` / `A | B`** — a **closed** disjunction. Lowers to a minivm `ref`
+  boxed with a runtime tag. Assignable from any member (`S <: A|B` iff `S <: A` or
+  `S <: B`); a union is assignable to `T` only if **every** member is
+  (`A|B <: T` iff `A <: T` and `B <: T`). Using a union requires narrowing
+  (`isinstance` / `is None`) to a member, or an operation valid for all members.
+- **`Any`** — the **open top** of the type lattice (`concrete < union < Any`),
+  used only where no bounded union fits. A value typed `Any` is stored verbatim as
+  a self-describing `Boxed`; crossing `Any → T` inserts a checked cast (`REF_CAST`,
+  runtime `TypeError` on failure), `T → Any` is always free.
+- **Whole-program inference & specialization** — in M9 *inference mode* the checker
+  assigns each unannotated binding its **narrowest** consistent type from all uses,
+  and **monomorphizes** polymorphic functions per concrete instantiation
+  (generic-style), reserving union/`Any` slots for genuinely dynamic values. See
+  [`../roadmap.md`](../roadmap.md) M9 and
+  [`05-codegen.md`](05-codegen.md#unions-any--specialization-m9).
+
+This is the seam for a future gradual/dynamic mode and is **not** part of the
+static core.
 
 ## Type grammar (annotations)
 
@@ -111,12 +129,13 @@ Annotations are ordinary expressions in Python; minipy accepts only this subset:
 type:
     | NAME                         # int, float, bool, str, None, <class name>
     | NAME '[' type (',' type)* ']'  # list[int], dict[str,int], tuple[int,str], Callable[...], Optional[int]
-    | type '|' 'None'              # Optional sugar (T | None)
+    | type ('|' type)+             # union: T | None (Optional, core); A | B (M9)
 ```
 
-Anything else in annotation position (arbitrary expressions, string forward refs
-beyond names, `Literal`, `Annotated`, `TypeVar`, generics with bounds) is
-`UnsupportedType`. Generic *user* classes are deferred.
+In the static core only `T | None` (Optional) is accepted; a union of non-`None`
+members is the **M9** layer. Anything else in annotation position (arbitrary
+expressions, string forward refs beyond names, `Literal`, `Annotated`, `TypeVar`,
+generics with bounds) is `UnsupportedType`. Generic *user* classes are deferred.
 
 ## Assignability
 
@@ -128,7 +147,10 @@ beyond names, `Literal`, `Annotated`, `TypeVar`, generics with bounds) is
 4. both are `list[E]`/`dict[K,V]`/`tuple[…]` with **invariant** element types
    (`list[int]` is **not** assignable to `list[Any]`); or
 5. both are callables, params contravariant / return covariant — **v1 uses
-   invariance** for simplicity (exact signature match).
+   invariance** for simplicity (exact signature match); or
+6. **(M9)** `T = A | B | …` (union) and `S` is assignable to **some** member; a
+   union source `S = A | B | …` is assignable to `T` only when **every** member is
+   assignable to `T`. `Optional[U]` is the special case `U | None`.
 
 No implicit numeric widening (rule above). `bool`↮`int` is not assignability.
 Failures are `TypeMismatch`. The full algorithm is in

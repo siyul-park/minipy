@@ -19,8 +19,11 @@ Static compilation happens **only where boundaries are annotated**:
 | `lambda` params | optional (inferred from call site, M4) | inferred |
 
 A module containing a function with any unannotated parameter or missing return
-type **does not compile**. There is no implicit `Any` fallback in the static core
-(that is the opt-in M9 dynamic mode).
+type **does not compile**. There is no implicit `Any` fallback in the static core.
+The opt-in **M9 inference mode** instead relaxes this rule by solving for
+unannotated boundary types across the **whole program** (from call sites and
+bodies) and minimizing each to its narrowest type, rather than defaulting them to
+`Any` — see [`../roadmap.md`](../roadmap.md) M9.
 
 ## Local type inference
 
@@ -45,7 +48,8 @@ def f(n: int) -> int:
 ```
 
 There is **no flow-sensitive narrowing** in v1 except the single special case of
-`Optional[T]` (below). `if isinstance(...)` narrowing is deferred.
+`Optional[T]` (below). `if isinstance(...)` narrowing is the **M9** generalization
+of that rule to any union member (see [whole-program inference](#whole-program-inference--specialization-m9)).
 
 ### Optional narrowing (the one flow rule)
 
@@ -63,6 +67,24 @@ def length(s: Optional[str]) -> int:
 
 (`is`/`is not` against `None` is enabled at M7; until then `Optional` use is
 limited. See [`03-grammar.md`](03-grammar.md).)
+
+### Whole-program inference & specialization (M9)
+
+The opt-in M9 layer adds two checker capabilities, both **off** in the static
+core (full design in [`../roadmap.md`](../roadmap.md) M9):
+
+1. **Whole-program inference.** With `MissingAnnotation` relaxed, the checker
+   collects type constraints from every call site and body across the program and
+   solves for the **narrowest** type of each unannotated binding in the lattice
+   `concrete < closed-union < Any`. Annotated boundaries are fixed seeds. A binding
+   used at incompatible types gets the smallest covering **union**; only a value
+   with no bounded union (e.g. fed by external/dynamic input) falls back to `Any`.
+2. **Narrowing & specialization.** `isinstance(x, T)` and `x is None` narrow a
+   union to a member inside the guarded branch, generalizing the `Optional` rule;
+   a use proven concrete needs no runtime check. A function inferred polymorphic is
+   **monomorphized** — one specialization per concrete instantiation, like a
+   generic — and each call site bound to its specialization. The lowering is in
+   [`05-codegen.md`](05-codegen.md#unions-any--specialization-m9).
 
 ## Expression typing (rules summary)
 

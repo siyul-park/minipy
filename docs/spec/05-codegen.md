@@ -230,6 +230,50 @@ minivm has no native exception unwinding, so minipy models it explicitly:
 This is the one area where a thin CFG/IR may be introduced if the label-chain
 approach proves unwieldy (noted in [`../roadmap.md`](../roadmap.md)).
 
+## Unions, `Any` & specialization (M9)
+
+The M9 layer lowers only the **residual** dynamic slots; anything the inference
+pass resolved to a concrete type emits exactly as the static core does. This is
+where "minimize types" pays off — runtime tag-checks appear only on slots that
+stayed a union or `Any`.
+
+- **Representation.** A concrete slot stays unboxed/native. An `A | B` / `Any`
+  slot is a minivm `ref` holding a value boxed with its runtime tag (self-describing
+  `Boxed` values; see
+  [value-representation](https://github.com/siyul-park/minivm/blob/main/docs/value-representation.md#dynamic-any-values)).
+- **Widen `T → A|B` / `T → Any`.** Box the value (if not already a `ref`); the tag
+  is carried for free. No check emitted.
+- **Narrow `A|B → T` / `Any → T`.** Emit `REF_CAST <T>` — a checked cast that traps
+  `TypeError` at runtime — **unless** flow analysis already proved the type, in
+  which case nothing is emitted. A slot inference resolved to concrete never reaches
+  this path.
+- **`isinstance(x, T)`** → `REF_TEST <T>` → i32. In the true branch the checker
+  narrows `x` to `T`, so later uses need no further `REF_CAST`.
+- **Union dispatch.** An operation on an un-narrowed union lowers to a tag switch: a
+  `REF_TEST` chain (or jump table) selecting the per-member lowering, each arm
+  operating on the unboxed member. `Optional[T]` is the two-arm case
+  (`REF_IS_NULL` → null arm / `T` arm).
+- **Specialization (monomorphization).** A polymorphic function is emitted once per
+  concrete instantiation as a separate `*Function` constant (`f$int`, `f$str`, …).
+  Each monomorphic call site links directly to its specialization with a normal
+  `CALL`/`RETURN_CALL` — no dispatch. Only a call whose argument is itself a union
+  goes through a tag switch that picks the matching specialization, or invokes a
+  single union-typed body when instantiations were capped.
+
+```text
+# describe(x: int | str): isinstance dispatch
+LOCAL_GET <x>
+REF_TEST <int>                   # i32
+I32_EQZ ; BR_IF L_str
+LOCAL_GET <x> ; REF_CAST <int>   # narrowed (elided if flow already proved int)
+<... int arm ...>
+BR L_end
+L_str:
+LOCAL_GET <x> ; REF_CAST <str>
+<... str arm ...>
+L_end:
+```
+
 ## Worked example (M0)
 
 minipy:
