@@ -1,8 +1,9 @@
-// Package parser builds an ast.Module from minipy source. It implements the M0
-// subset of the Python grammar (docs/spec/03-grammar.md): module-level simple
-// statements over the full operator-precedence expression chain. Constructs
-// outside the subset are reported as UnsupportedFeature with the milestone that
-// introduces them.
+// Package parser builds an ast.Module from minipy source. It implements the
+// M0–M1 subset of the Python grammar (docs/spec/03-grammar.md): simple
+// statements over the full operator-precedence expression chain, plus M1
+// control flow (if/elif/else, while, for-in-range, break/continue/pass and the
+// conditional expression). Constructs outside the subset are reported as
+// UnsupportedFeature with the milestone that introduces them.
 package parser
 
 import (
@@ -39,11 +40,6 @@ var augAssign = map[token.Type]token.Type{
 }
 
 var compoundStmt = map[token.Type]string{
-	token.IF:      "'if' (M1 control flow)",
-	token.ELIF:    "'elif' (M1 control flow)",
-	token.ELSE:    "'else' (M1 control flow)",
-	token.WHILE:   "'while' (M1 control flow)",
-	token.FOR:     "'for' (M1 control flow)",
 	token.DEF:     "'def' (M2 functions)",
 	token.CLASS:   "'class' (M5 classes)",
 	token.TRY:     "'try' (M7 exceptions)",
@@ -54,9 +50,6 @@ var compoundStmt = map[token.Type]string{
 }
 
 var simpleKeywordStmt = map[token.Type]string{
-	token.PASS:     "'pass' (M1 control flow)",
-	token.BREAK:    "'break' (M1 control flow)",
-	token.CONTINUE: "'continue' (M1 control flow)",
 	token.RETURN:   "'return' (M2 functions)",
 	token.GLOBAL:   "'global' (M4 closures)",
 	token.NONLOCAL: "'nonlocal' (M4 closures)",
@@ -102,16 +95,131 @@ func (p *Parser) parseModule() *ast.Module {
 			p.errs.Add(p.cur().Pos, token.SyntaxError, "unexpected indent")
 			p.skipBlock()
 		default:
-			if msg, ok := compoundStmt[p.cur().Type]; ok {
-				p.errs.Add(p.cur().Pos, token.UnsupportedFeature, "%s is not supported yet", msg)
-				p.skipLine()
-				p.skipBlock()
-				continue
-			}
-			mod.Body = append(mod.Body, p.parseSimpleLine()...)
+			mod.Body = append(mod.Body, p.parseStatement()...)
 		}
 	}
 	return mod
+}
+
+// parseStatement parses one statement: a compound statement (if/while/for) as a
+// single node, or a line of `;`-separated simple statements. Compound forms from
+// later milestones and orphan elif/else are reported and skipped.
+func (p *Parser) parseStatement() []ast.Stmt {
+	switch p.cur().Type {
+	case token.IF:
+		return []ast.Stmt{p.parseIf()}
+	case token.WHILE:
+		return []ast.Stmt{p.parseWhile()}
+	case token.FOR:
+		return []ast.Stmt{p.parseFor()}
+	case token.ELIF, token.ELSE:
+		p.errs.Add(p.cur().Pos, token.SyntaxError, "'%s' without a matching 'if'", p.cur().Type)
+		p.skipLine()
+		p.skipBlock()
+		return nil
+	}
+	if msg, ok := compoundStmt[p.cur().Type]; ok {
+		p.errs.Add(p.cur().Pos, token.UnsupportedFeature, "%s is not supported yet", msg)
+		p.skipLine()
+		p.skipBlock()
+		return nil
+	}
+	return p.parseSimpleLine()
+}
+
+// parseBlock parses the suite after a compound header's ':' — either an inline
+// simple-statement line or a NEWLINE-INDENT block of statements.
+func (p *Parser) parseBlock() []ast.Stmt {
+	p.expect(token.COLON)
+	if !p.at(token.NEWLINE) {
+		return p.parseSimpleLine()
+	}
+	p.advance() // NEWLINE
+	if !p.at(token.INDENT) {
+		p.errs.Add(p.cur().Pos, token.SyntaxError, "expected an indented block")
+		return nil
+	}
+	p.advance() // INDENT
+	var body []ast.Stmt
+	for !p.at(token.DEDENT) && !p.at(token.EOF) {
+		if p.at(token.NEWLINE) {
+			p.advance()
+			continue
+		}
+		body = append(body, p.parseStatement()...)
+	}
+	p.expect(token.DEDENT)
+	return body
+}
+
+// parseIf parses `('if'|'elif') expression ':' block` with an optional `elif`
+// chain or trailing `else`. elif/else are folded into the If's Orelse, so an
+// `elif` is a nested If (the CPython AST shape).
+func (p *Parser) parseIf() ast.Stmt {
+	pos := p.cur().Pos
+	p.advance() // 'if' or 'elif'
+	cond := p.parseExpression()
+	body := p.parseBlock()
+	var orelse []ast.Stmt
+	switch p.cur().Type {
+	case token.ELIF:
+		orelse = []ast.Stmt{p.parseIf()}
+	case token.ELSE:
+		p.advance()
+		orelse = p.parseBlock()
+	}
+	return &ast.If{Base: ast.Base{Position: pos}, Cond: cond, Body: body, Orelse: orelse}
+}
+
+// parseWhile parses `'while' expression ':' block ['else' ':' block]`.
+func (p *Parser) parseWhile() ast.Stmt {
+	pos := p.cur().Pos
+	p.advance()
+	cond := p.parseExpression()
+	body := p.parseBlock()
+	var orelse []ast.Stmt
+	if p.at(token.ELSE) {
+		p.advance()
+		orelse = p.parseBlock()
+	}
+	return &ast.While{Base: ast.Base{Position: pos}, Cond: cond, Body: body, Orelse: orelse}
+}
+
+// parseFor parses `'for' NAME 'in' expression ':' block ['else' ':' block]`.
+func (p *Parser) parseFor() ast.Stmt {
+	pos := p.cur().Pos
+	p.advance() // 'for'
+	target := p.parseForTarget()
+	p.expect(token.IN)
+	iter := p.parseExpression()
+	body := p.parseBlock()
+	var orelse []ast.Stmt
+	if p.at(token.ELSE) {
+		p.advance()
+		orelse = p.parseBlock()
+	}
+	return &ast.For{Base: ast.Base{Position: pos}, Target: target, Iter: iter, Body: body, Orelse: orelse}
+}
+
+// parseForTarget parses the single NAME loop variable. Tuple-unpacking targets
+// (`for k, v in ...`) are an M3 extension.
+func (p *Parser) parseForTarget() *ast.Name {
+	t := p.cur()
+	if t.Type != token.NAME {
+		p.errs.Add(t.Pos, token.SyntaxError, "expected a loop variable name, got %s", t.Type)
+		return &ast.Name{Base: ast.Base{Position: t.Pos}, Name: ""}
+	}
+	p.advance()
+	if p.at(token.COMMA) {
+		p.errs.Add(p.cur().Pos, token.UnsupportedFeature, "tuple-unpacking 'for' targets are M3")
+		for p.at(token.COMMA) {
+			p.advance()
+			if p.at(token.NAME) {
+				p.advance()
+			}
+		}
+	}
+	return &ast.Name{Base: ast.Base{Position: t.Pos}, Name: t.Literal}
 }
 
 // parseSimpleLine parses `;`-separated simple statements terminated by NEWLINE.
@@ -137,6 +245,21 @@ func (p *Parser) parseSimpleLine() []ast.Stmt {
 // parseSimpleStmt parses a single assignment, annotated declaration, or
 // expression statement.
 func (p *Parser) parseSimpleStmt() ast.Stmt {
+	switch p.cur().Type {
+	case token.PASS:
+		t := p.cur()
+		p.advance()
+		return &ast.Pass{Base: ast.Base{Position: t.Pos}}
+	case token.BREAK:
+		t := p.cur()
+		p.advance()
+		return &ast.Break{Base: ast.Base{Position: t.Pos}}
+	case token.CONTINUE:
+		t := p.cur()
+		p.advance()
+		return &ast.Continue{Base: ast.Base{Position: t.Pos}}
+	}
+
 	if msg, ok := simpleKeywordStmt[p.cur().Type]; ok {
 		p.errs.Add(p.cur().Pos, token.UnsupportedFeature, "%s is not supported yet", msg)
 		p.skipToStmtEnd()
@@ -204,10 +327,18 @@ func (p *Parser) parseType() ast.Expr {
 	return &ast.Name{Base: ast.Base{Position: t.Pos}, Name: ""}
 }
 
-// parseExpression is the M0 expression entry: a disjunction (no conditional
-// expression or lambda, which arrive in M1/M4).
+// parseExpression is the expression entry: a disjunction, optionally followed by
+// a conditional `if cond else orelse` (M1). lambda arrives in M4.
 func (p *Parser) parseExpression() ast.Expr {
-	return p.parseDisjunction()
+	x := p.parseDisjunction()
+	if p.at(token.IF) {
+		p.advance()
+		cond := p.parseDisjunction()
+		p.expect(token.ELSE)
+		orelse := p.parseExpression()
+		return &ast.IfExp{Base: ast.Base{Position: x.Pos()}, Body: x, Cond: cond, Orelse: orelse}
+	}
+	return x
 }
 
 func (p *Parser) parseDisjunction() ast.Expr {

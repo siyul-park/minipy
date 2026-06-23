@@ -1,4 +1,4 @@
-// Command minipy is the M0 command-line interface: it runs a minipy source file
+// Command minipy is the command-line interface: it runs a minipy source file
 // or, with no argument, starts an interactive REPL.
 package main
 
@@ -21,7 +21,7 @@ func main() {
 func newRootCmd() *cobra.Command {
 	root := &cobra.Command{
 		Use:           "minipy [file]",
-		Short:         "minipy — a statically-typed Python subset on minivm (M0)",
+		Short:         "minipy — a statically-typed Python subset on minivm",
 		Args:          cobra.MaximumNArgs(1),
 		SilenceUsage:  true,
 		SilenceErrors: true,

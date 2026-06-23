@@ -130,20 +130,94 @@ func TestParse(t *testing.T) {
 		require.NoError(t, err)
 		require.Len(t, mod.Body, 2)
 	})
+
+	t.Run("if elif else folds into nested If", func(t *testing.T) {
+		mod, err := parse(`if a == 1:
+    x = 1
+elif a == 2:
+    x = 2
+else:
+    x = 3
+`)
+		require.NoError(t, err)
+
+		top := mod.Body[0].(*ast.If)
+		require.IsType(t, &ast.Compare{}, top.Cond)
+		require.Len(t, top.Body, 1)
+
+		elif := top.Orelse[0].(*ast.If)
+		require.Len(t, elif.Body, 1)
+		require.IsType(t, &ast.Assign{}, elif.Orelse[0])
+	})
+
+	t.Run("inline block", func(t *testing.T) {
+		mod, err := parse("if a: b = 1\n")
+		require.NoError(t, err)
+		ifs := mod.Body[0].(*ast.If)
+		require.Len(t, ifs.Body, 1)
+		require.IsType(t, &ast.Assign{}, ifs.Body[0])
+	})
+
+	t.Run("while with else", func(t *testing.T) {
+		mod, err := parse(`while a < 3:
+    a = a + 1
+else:
+    pass
+`)
+		require.NoError(t, err)
+		w := mod.Body[0].(*ast.While)
+		require.Len(t, w.Body, 1)
+		require.IsType(t, &ast.Pass{}, w.Orelse[0])
+	})
+
+	t.Run("for over range", func(t *testing.T) {
+		mod, err := parse(`for i in range(5):
+    pass
+`)
+		require.NoError(t, err)
+		f := mod.Body[0].(*ast.For)
+		require.Equal(t, "i", f.Target.Name)
+		call := f.Iter.(*ast.CallExpr)
+		require.Equal(t, "range", call.Fn.(*ast.Name).Name)
+		require.IsType(t, &ast.Pass{}, f.Body[0])
+	})
+
+	t.Run("nested loop with break and continue", func(t *testing.T) {
+		mod, err := parse(`for i in range(3):
+    if i == 0:
+        continue
+    break
+`)
+		require.NoError(t, err)
+		f := mod.Body[0].(*ast.For)
+		require.Len(t, f.Body, 2)
+		inner := f.Body[0].(*ast.If)
+		require.IsType(t, &ast.Continue{}, inner.Body[0])
+		require.IsType(t, &ast.Break{}, f.Body[1])
+	})
+
+	t.Run("conditional expression", func(t *testing.T) {
+		mod, err := parse("x = 1 if c else 2\n")
+		require.NoError(t, err)
+		ifExp := mod.Body[0].(*ast.Assign).Value.(*ast.IfExp)
+		require.Equal(t, int64(1), ifExp.Body.(*ast.IntLit).Value)
+		require.Equal(t, "c", ifExp.Cond.(*ast.Name).Name)
+		require.Equal(t, int64(2), ifExp.Orelse.(*ast.IntLit).Value)
+	})
 }
 
 func TestParseErrors(t *testing.T) {
 	cases := map[string]token.Code{
-		"if x:\n    pass\n": token.UnsupportedFeature,
-		"def f():\n    x\n": token.UnsupportedFeature,
-		"pass\n":            token.UnsupportedFeature,
-		"return 1\n":        token.UnsupportedFeature,
-		"x = lambda: 1\n":   token.UnsupportedFeature,
-		"xs = [1, 2]\n":     token.UnsupportedFeature,
-		"d = {}\n":          token.UnsupportedFeature,
-		"t = (1, 2)\n":      token.UnsupportedFeature,
-		"v: list[int]\n":    token.UnsupportedType,
-		"1 = 2\n":           token.SyntaxError,
+		"def f():\n    x\n":    token.UnsupportedFeature,
+		"return 1\n":           token.UnsupportedFeature,
+		"x = lambda: 1\n":      token.UnsupportedFeature,
+		"xs = [1, 2]\n":        token.UnsupportedFeature,
+		"d = {}\n":             token.UnsupportedFeature,
+		"t = (1, 2)\n":         token.UnsupportedFeature,
+		"v: list[int]\n":       token.UnsupportedType,
+		"1 = 2\n":              token.SyntaxError,
+		"else:\n    pass\n":    token.SyntaxError,
+		"for i, j in x:\n p\n": token.UnsupportedFeature,
 	}
 	for src, code := range cases {
 		_, err := parse(src)

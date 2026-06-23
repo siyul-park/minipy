@@ -128,6 +128,139 @@ func TestCompile(t *testing.T) {
 		require.Equal(t, "None\n", run(t, "print(None)\n"))
 		require.Equal(t, "None\n", run(t, "x: None = None\nprint(str(x))\n"))
 	})
+
+	t.Run("roadmap M1 sample sums even numbers", func(t *testing.T) {
+		src := `total: int = 0
+for i in range(1, 101):
+    if i % 2 == 0:
+        total = total + i
+print(str(total))
+`
+		require.Equal(t, "2550\n", run(t, src))
+	})
+
+	t.Run("if elif else selects a branch", func(t *testing.T) {
+		src := `x: int = 2
+if x == 1:
+    print("one")
+elif x == 2:
+    print("two")
+else:
+    print("other")
+`
+		require.Equal(t, "two\n", run(t, src))
+	})
+
+	t.Run("inline block", func(t *testing.T) {
+		src := `x: int = 1
+if x == 1: print("yes")
+`
+		require.Equal(t, "yes\n", run(t, src))
+	})
+
+	t.Run("while with break", func(t *testing.T) {
+		src := `i: int = 0
+while i < 10:
+    if i == 3:
+        break
+    i = i + 1
+print(str(i))
+`
+		require.Equal(t, "3\n", run(t, src))
+	})
+
+	t.Run("while with continue sums even numbers", func(t *testing.T) {
+		src := `i: int = 0
+total: int = 0
+while i < 10:
+    i = i + 1
+    if i % 2 == 1:
+        continue
+    total = total + i
+print(str(total))
+`
+		require.Equal(t, "30\n", run(t, src))
+	})
+
+	t.Run("for with descending step", func(t *testing.T) {
+		src := `total: int = 0
+for i in range(10, 0, -1):
+    total = total + i
+print(str(total))
+`
+		require.Equal(t, "55\n", run(t, src))
+	})
+
+	t.Run("for else runs without break", func(t *testing.T) {
+		src := `for i in range(3):
+    print(str(i))
+else:
+    print("done")
+`
+		require.Equal(t, "0\n1\n2\ndone\n", run(t, src))
+	})
+
+	t.Run("for else skipped after break", func(t *testing.T) {
+		src := `for i in range(5):
+    if i == 2:
+        break
+else:
+    print("done")
+print("after")
+`
+		require.Equal(t, "after\n", run(t, src))
+	})
+
+	t.Run("while else runs without break", func(t *testing.T) {
+		src := `i: int = 0
+while i < 2:
+    i = i + 1
+else:
+    print("loopdone")
+`
+		require.Equal(t, "loopdone\n", run(t, src))
+	})
+
+	t.Run("nested loop break leaves outer running", func(t *testing.T) {
+		src := `total: int = 0
+for i in range(3):
+    for j in range(3):
+        if j == 1:
+            break
+        total = total + 1
+print(str(total))
+`
+		require.Equal(t, "3\n", run(t, src))
+	})
+
+	t.Run("conditional expression", func(t *testing.T) {
+		big := `x: int = 5
+print("big" if x > 3 else "small")
+`
+		small := `x: int = 1
+print("big" if x > 3 else "small")
+`
+		require.Equal(t, "big\n", run(t, big))
+		require.Equal(t, "small\n", run(t, small))
+	})
+
+	t.Run("pass is a no-op", func(t *testing.T) {
+		src := `x: int = 1
+if x == 1:
+    pass
+print(str(x))
+`
+		require.Equal(t, "1\n", run(t, src))
+	})
+
+	t.Run("range single argument", func(t *testing.T) {
+		src := `total: int = 0
+for i in range(5):
+    total = total + i
+print(str(total))
+`
+		require.Equal(t, "10\n", run(t, src))
+	})
 }
 
 func TestCompileErrors(t *testing.T) {
@@ -137,7 +270,6 @@ func TestCompileErrors(t *testing.T) {
 		"print(str(1 + 1.5))\n":               token.TypeMismatch,
 		"x: int = 99999999999999999999999\n":  token.IntOverflow,
 		"print(str(y))\n":                     token.UndefinedName,
-		"if x:\n    pass\n":                   token.UnsupportedFeature,
 		"print()\n":                           token.ArityMismatch,
 		"print(1, 2)\n":                       token.ArityMismatch,
 		"x: int = True\n":                     token.TypeMismatch,
@@ -150,6 +282,16 @@ func TestCompileErrors(t *testing.T) {
 		"print(str(True and 1))\n":            token.TypeMismatch,
 		"print(str(1 < \"a\"))\n":             token.NotComparable,
 		"z += 1\n":                            token.UndefinedName,
+		// M1 control flow
+		"x: int = 1\nif x:\n    pass\n":              token.TypeMismatch,
+		"for i in 5:\n    pass\n":                    token.UnsupportedFeature,
+		"break\n":                                    token.SyntaxError,
+		"continue\n":                                 token.SyntaxError,
+		"for i in range(1.5):\n    pass\n":           token.TypeMismatch,
+		"for i in range():\n    pass\n":              token.ArityMismatch,
+		"a: int = 1\nfor i in range(0, 9, a):\n p\n": token.UnsupportedFeature,
+		"for i in range(0, 9, 0):\n    pass\n":       token.SyntaxError,
+		"x: int = 1 if True else \"a\"\n":            token.TypeMismatch,
 	}
 	for src, code := range cases {
 		_, err := Compile(strings.NewReader(src), WithOutput(&bytes.Buffer{}))

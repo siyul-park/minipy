@@ -27,7 +27,8 @@ ast      syntax tree nodes (plain data; every node carries a token.Pos)
 lexer    io.Reader -> []token.Token
 parser   io.Reader -> *ast.Module
 types    minipy source types (int/float/bool/str/None) + mapping to minivm types
-compiler type checker + emitter; Compile(io.Reader) -> *program.Program
+compiler type checker (`checker`, check.go) + lowering (`compiler`, compiler.go);
+         Compile(io.Reader) -> *program.Program
 cmd      the CLI and REPL
 ```
 
@@ -88,8 +89,13 @@ that is what `Error()` renders. A phase collects a `token.ErrorList` and reports
 
 ## Lowering to minivm
 
-- The emitter assumes a validated AST: it relies on the type table and never
-  re-reports errors.
+- The `compiler` (the lowering half, compiler.go) assumes a validated AST: it
+  relies on the type table and never re-reports errors.
+- The entry function has no module-level locals (`bp == sp`) and no entry-frame
+  `RETURN` — it halts by running off the end of its code. Branch targets must
+  stay within the code (the block analysis rejects a jump to `len(code)`), so
+  `module` emits a trailing `NOP` as a landing pad for any merge label bound at
+  the very end.
 - Prefer inline opcode sequences over host functions. Use a host function only
   when an operation cannot be lowered inline today (e.g. `**` and float `%`,
   which need a loop/temporaries the module-entry frame has no locals for). Such
@@ -99,7 +105,10 @@ that is what `Error()` renders. A phase collects a `token.ErrorList` and reports
 
 - Use `go test` with `testify/require` (never `assert`).
 - **One test function per public symbol**; sub-cases are `t.Run` subtests.
-  Name them `Test<Func>` or `Test<Type>_<Method>`.
+  Name them `Test<Func>` or `Test<Type>_<Method>`. Diagnostic/error-path cases
+  for an entry symbol live in a single companion `Test<Func>Errors` table test
+  (e.g. `TestCompile` + `TestCompileErrors`); do not add further per-feature test
+  functions — fold new behavior in as subtests of the existing pair.
 - Tests are **self-contained**: inline setup, execution, and assertions. The
   only shared helpers are thin adapters (e.g. wrapping a string in an
   `io.Reader`, or asserting a diagnostic `Code` is present).

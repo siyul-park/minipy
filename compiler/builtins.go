@@ -20,7 +20,7 @@ import (
 // pow and float modulo stay host functions for now: lowering them inline needs
 // a loop with temporaries, but the module-entry frame has no local slots
 // (bp == sp). They are candidates for a JIT-able extension op later
-// (docs/spec/05-codegen.md); see emit.go.
+// (docs/spec/05-codegen.md); see compiler.go.
 type hostFuncs struct {
 	print      *interp.HostFunction
 	str        *interp.HostFunction

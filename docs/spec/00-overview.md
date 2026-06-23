@@ -83,7 +83,7 @@ just a representation detail (see
 ## Compilation pipeline
 
 No intermediate representation: the typed AST lowers **directly** to a minivm
-program via an emitter with symbolic labels (jumps backpatched). Desugaring
+program with symbolic labels (jumps backpatched). Desugaring
 (`for`→iterator loop, comprehensions→loops, `with`→`try/finally`) is an AST→AST
 pass. minivm's own optimizer runs after emit.
 

@@ -1,7 +1,7 @@
-// Package ast defines the minipy abstract syntax tree for the M0 subset:
-// a module of top-level statements over scalar expressions
-// (docs/spec/03-grammar.md). Every node carries the source position of its
-// first token.
+// Package ast defines the minipy abstract syntax tree: a module of statements
+// over scalar expressions, including M1 control flow (if/while/for, break,
+// continue, pass, and the conditional expression) (docs/spec/03-grammar.md).
+// Every node carries the source position of its first token.
 package ast
 
 import "github.com/siyul-park/minipy/token"
@@ -66,6 +66,51 @@ type AugAssign struct {
 type ExprStmt struct {
 	Base
 	X Expr
+}
+
+// If is `if Cond: Body [else: Orelse]`. An `elif` chain is represented as a
+// nested If in Orelse, matching the CPython AST shape.
+type If struct {
+	Base
+	Cond   Expr
+	Body   []Stmt
+	Orelse []Stmt
+}
+
+// While is `while Cond: Body [else: Orelse]`. Orelse runs only when the loop
+// exits without a break.
+type While struct {
+	Base
+	Cond   Expr
+	Body   []Stmt
+	Orelse []Stmt
+}
+
+// For is `for Target in Iter: Body [else: Orelse]`. In M1 Iter must be a
+// range(...) call; Orelse runs only when the loop exits without a break.
+type For struct {
+	Base
+	Target *Name
+	Iter   Expr
+	Body   []Stmt
+	Orelse []Stmt
+}
+
+// Break is the `break` statement.
+type Break struct{ Base }
+
+// Continue is the `continue` statement.
+type Continue struct{ Base }
+
+// Pass is the `pass` no-op statement.
+type Pass struct{ Base }
+
+// IfExp is the conditional expression `Body if Cond else Orelse`.
+type IfExp struct {
+	Base
+	Body   Expr
+	Cond   Expr
+	Orelse Expr
 }
 
 // Name is an identifier reference.
@@ -143,6 +188,12 @@ func (*AnnAssign) stmtNode() {}
 func (*Assign) stmtNode()    {}
 func (*AugAssign) stmtNode() {}
 func (*ExprStmt) stmtNode()  {}
+func (*If) stmtNode()        {}
+func (*While) stmtNode()     {}
+func (*For) stmtNode()       {}
+func (*Break) stmtNode()     {}
+func (*Continue) stmtNode()  {}
+func (*Pass) stmtNode()      {}
 
 func (*Name) exprNode()       {}
 func (*IntLit) exprNode()     {}
@@ -155,3 +206,4 @@ func (*BinaryExpr) exprNode() {}
 func (*BoolOp) exprNode()     {}
 func (*Compare) exprNode()    {}
 func (*CallExpr) exprNode()   {}
+func (*IfExp) exprNode()      {}

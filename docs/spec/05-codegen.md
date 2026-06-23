@@ -1,6 +1,6 @@
 # minipy — Code Generation (lowering to minivm)
 
-The emitter walks the typed AST and produces a minivm `program.Program`. It emits
+The compiler walks the typed AST and produces a minivm `program.Program`. It emits
 `instr.Instruction` sequences with **symbolic labels**; a final pass resolves
 labels to the signed-16-bit relative offsets minivm branches expect
 (`target = instruction_start + width + operand`). minivm's optimizer
@@ -171,7 +171,7 @@ LOCAL_SET <r>
 | `tuple` `(a,b)` | `STRUCT_NEW <type>` over fields; `t[const]` → `STRUCT_GET index` |
 | `s1 + s2` | `STRING_CONCAT` ; `len(s)` → `STRING_LEN` |
 
-Index/key types are statically known, so the emitter selects the right specialized
+Index/key types are statically known, so the compiler selects the right specialized
 map/array type up front.
 
 ## Closures (M4)

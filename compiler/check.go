@@ -15,12 +15,13 @@ type global struct {
 }
 
 // checker resolves names and types for a module, producing a per-expression
-// type table and a global symbol table consumed by the emitter.
+// type table and a global symbol table consumed by the compiler.
 type checker struct {
 	errs     token.ErrorList
 	exprType map[ast.Expr]types.Type
 	globals  map[string]*global
 	order    []string
+	loops    int // enclosing-loop depth, for break/continue validation
 }
 
 func newChecker() *checker {
@@ -32,7 +33,12 @@ func newChecker() *checker {
 
 // check walks every top-level statement, accumulating diagnostics.
 func (c *checker) check(mod *ast.Module) {
-	for _, s := range mod.Body {
+	c.checkBlock(mod.Body)
+}
+
+// checkBlock checks a statement sequence (a module body or a compound block).
+func (c *checker) checkBlock(body []ast.Stmt) {
+	for _, s := range body {
 		c.stmt(s)
 	}
 }
@@ -47,6 +53,94 @@ func (c *checker) stmt(s ast.Stmt) {
 		c.augAssign(n)
 	case *ast.ExprStmt:
 		c.expr(n.X)
+	case *ast.If:
+		c.ifStmt(n)
+	case *ast.While:
+		c.whileStmt(n)
+	case *ast.For:
+		c.forStmt(n)
+	case *ast.Break:
+		if c.loops == 0 {
+			c.errs.Add(n.Pos(), token.SyntaxError, "'break' outside loop")
+		}
+	case *ast.Continue:
+		if c.loops == 0 {
+			c.errs.Add(n.Pos(), token.SyntaxError, "'continue' outside loop")
+		}
+	case *ast.Pass:
+		// no-op
+	}
+}
+
+func (c *checker) ifStmt(n *ast.If) {
+	c.condition(n.Cond)
+	c.checkBlock(n.Body)
+	c.checkBlock(n.Orelse)
+}
+
+func (c *checker) whileStmt(n *ast.While) {
+	c.condition(n.Cond)
+	c.loops++
+	c.checkBlock(n.Body)
+	c.loops--
+	c.checkBlock(n.Orelse)
+}
+
+// forStmt checks `for NAME in range(...)`. The target is auto-declared int (the
+// range element type); its body runs inside a loop for break/continue.
+func (c *checker) forStmt(n *ast.For) {
+	c.forRange(n)
+	g := c.declare(n.Target.Name, types.Int, n.Target.Pos())
+	g.init = true
+	c.exprType[n.Target] = g.typ
+	c.loops++
+	c.checkBlock(n.Body)
+	c.loops--
+	c.checkBlock(n.Orelse)
+}
+
+// forRange validates that a for-loop iterable is a range(...) call with 1–3 int
+// arguments and, when present, a constant int literal step. Other iterables are
+// deferred to M3/M6.
+func (c *checker) forRange(n *ast.For) {
+	call, ok := n.Iter.(*ast.CallExpr)
+	if !ok {
+		c.errs.Add(n.Iter.Pos(), token.UnsupportedFeature, "'for' iterates only over range(...) in M1 (other iterables arrive in M3/M6)")
+		return
+	}
+	name, ok := call.Fn.(*ast.Name)
+	if !ok || name.Name != "range" {
+		c.errs.Add(n.Iter.Pos(), token.UnsupportedFeature, "'for' iterates only over range(...) in M1 (other iterables arrive in M3/M6)")
+		for _, a := range call.Args {
+			c.expr(a)
+		}
+		return
+	}
+	if len(call.Args) < 1 || len(call.Args) > 3 {
+		c.errs.Add(call.Pos(), token.ArityMismatch, "range() takes 1 to 3 arguments (%d given)", len(call.Args))
+	}
+	for i, a := range call.Args {
+		at := c.expr(a)
+		if at != types.Int && at != types.Invalid {
+			c.errs.Add(a.Pos(), token.TypeMismatch, "range() argument must be int, got %s", at)
+		}
+		if i == 2 {
+			switch {
+			case !isConstIntLiteral(a):
+				c.errs.Add(a.Pos(), token.UnsupportedFeature, "range() step must be a constant int literal in M1")
+			case constIntValue(a) == 0:
+				c.errs.Add(a.Pos(), token.SyntaxError, "range() step must not be zero")
+			}
+		}
+	}
+}
+
+// condition checks that a control-flow test types as bool (no truthiness
+// coercion, docs/spec/02-types.md).
+func (c *checker) condition(e ast.Expr) {
+	t := c.expr(e)
+	if t != types.Bool && t != types.Invalid {
+		c.errs.Add(e.Pos(), token.TypeMismatch, "condition must be bool, got %s", t)
 	}
 }
 
@@ -159,9 +253,27 @@ func (c *checker) exprTypeOf(e ast.Expr) types.Type {
 		return c.compareType(n)
 	case *ast.CallExpr:
 		return c.callType(n)
+	case *ast.IfExp:
+		return c.ifExpType(n)
 	default:
 		return types.Invalid
 	}
+}
+
+// ifExpType types the conditional expression `body if cond else orelse`: cond
+// must be bool and the two arms must share a type (docs/spec/04-static-semantics.md).
+func (c *checker) ifExpType(n *ast.IfExp) types.Type {
+	c.condition(n.Cond)
+	bt := c.expr(n.Body)
+	et := c.expr(n.Orelse)
+	if bt == types.Invalid || et == types.Invalid {
+		return types.Invalid
+	}
+	if bt != et {
+		c.errs.Add(n.Pos(), token.TypeMismatch, "conditional expression arms have different types: %s and %s", bt, et)
+		return types.Invalid
+	}
+	return bt
 }
 
 func (c *checker) nameType(n *ast.Name) types.Type {
@@ -309,6 +421,10 @@ func (c *checker) callType(n *ast.CallExpr) types.Type {
 		argTypes[i] = c.expr(a)
 	}
 
+	if name.Name == "range" {
+		c.errs.Add(name.Pos(), token.UnsupportedFeature, "range as a value is M6; in M1 range(...) appears only in a 'for' loop")
+		return types.Invalid
+	}
 	if !isBuiltin(name.Name) {
 		c.errs.Add(name.Pos(), token.UndefinedName, "name %q is not defined (user functions arrive in M2)", name.Name)
 		return types.Invalid
@@ -326,4 +442,34 @@ func (c *checker) callType(n *ast.CallExpr) types.Type {
 		return types.Invalid
 	}
 	return rt
+}
+
+// isConstIntLiteral reports whether e is an int literal, optionally with a unary
+// +/- sign — the only form M1 accepts as a range step.
+func isConstIntLiteral(e ast.Expr) bool {
+	switch x := e.(type) {
+	case *ast.IntLit:
+		return true
+	case *ast.UnaryExpr:
+		if x.Op == token.MINUS || x.Op == token.PLUS {
+			_, ok := x.X.(*ast.IntLit)
+			return ok
+		}
+	}
+	return false
+}
+
+// constIntValue evaluates a constant int literal (the form isConstIntLiteral
+// accepts) to its int64 value; used by the compiler to fix the range step.
+func constIntValue(e ast.Expr) int64 {
+	switch x := e.(type) {
+	case *ast.IntLit:
+		return x.Value
+	case *ast.UnaryExpr:
+		if x.Op == token.MINUS {
+			return -constIntValue(x.X)
+		}
+		return constIntValue(x.X)
+	}
+	return 0
 }
