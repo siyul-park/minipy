@@ -10,7 +10,7 @@ Cross-references: grammar tags in [`spec/03-grammar.md`](spec/03-grammar.md),
 type rules in [`spec/02-types.md`](spec/02-types.md), lowering in
 [`spec/05-codegen.md`](spec/05-codegen.md).
 
-Priority: **M0 → M8 are the static core, in order.** **M9 (inference, unions &
+Priority: **M0 → M9 are the static core, in order.** **M10 (inference, unions &
 specialization) is low priority** and depends on none of the others shipping
 first.
 
@@ -25,7 +25,8 @@ first.
 | M6 | Generators & iterators | core |
 | M7 | Exceptions & context managers | core |
 | M8 | Modules & stdlib | core |
-| M9 | **Inference, unions & specialization** | **low** |
+| M9 | Statement completeness & pattern matching | core |
+| M10 | **Inference, unions & specialization** | **low** |
 
 ---
 
@@ -158,9 +159,10 @@ scalars.
 - **Grammar:** `try/except/finally`, `raise`, `with … as …`, `is`/`is not`
   (None identity), built-in exception classes.
 - **Types:** exception type hierarchy (subset of classes); `with` target typing.
-- **Lowering:** compiler-managed handler-label stack + `finally` on every exit
-  edge; `with` → `try/finally` desugar. (A thin CFG/IR may be introduced here if
-  the label-chain approach gets unwieldy — see
+- **Lowering:** minivm handler tables via `program.Builder.Try`, `THROW`, and
+  `ERROR_NEW`; `finally` on every exit edge; `with` -> `try/finally` desugar. (A
+  thin CFG/IR may be introduced here to compute protected regions and stack
+  depths, while still using minivm's built-in exception handling; see
   [`spec/05-codegen.md`](spec/05-codegen.md#exceptions--with-m7).)
 - **Sample:**
   ```python
@@ -183,15 +185,49 @@ scalars.
   print(str(sqrt(2.0)))
   ```
 
+## M9 — Statement completeness & pattern matching
+
+The final static-core milestone absorbs forms previously listed as rejected but
+still required for Python-subset completeness. It must ship **before** M10 so the
+low-priority inference layer remains last.
+
+- **Grammar:** `del`, `assert`, and `match`/`case` structural pattern matching.
+  Supported patterns: wildcard `_`, capture, literal/value patterns over existing
+  scalar/container/class values, sequence patterns, mapping patterns, class
+  patterns, `|` alternatives, `as` patterns, and optional `if` guards. Starred
+  sequence/mapping rest patterns are included here even though other unpacking
+  forms stay milestone-specific.
+- **Types:** `del NAME` makes the binding definitely-unassigned until assigned
+  again; later reads use existing `UseBeforeDefinition` diagnostics. Pattern
+  capture variables are declared/initialized on the matching case arm and must
+  have a consistent type across alternatives in the same pattern. Guards must be
+  `bool`. `assert` messages may be any printable scalar.
+- **Lowering:** `assert test[, msg]` evaluates `test`; false path builds an
+  `AssertionError` payload with minivm `ERROR_NEW` and raises it with `THROW`.
+  `match` lowers to a decision tree with `BR_IF`/`BR_TABLE` where profitable and
+  reuses existing comparison/container/class opcodes. `del NAME` emits
+  `GLOBAL_DELETE` or `LOCAL_DELETE` according to resolved storage. Container key
+  deletion uses `MAP_DELETE`; attribute/index deletion uses the relevant
+  container/class delete/store semantics available by then.
+- **Sample:**
+  ```python
+  status: int = 200
+  match status:
+      case 200:
+          print("ok")
+      case _:
+          assert False, "unexpected status"
+  ```
+
 ---
 
-## M9 — Whole-program inference, unions & specialization — LOW PRIORITY
+## M10 — Whole-program inference, unions & specialization — LOW PRIORITY
 
 An **opt-in** gradual layer on top of the static core. It adds three things the
 core deliberately omits — **union types**, **whole-program type inference** (so
 unannotated code still compiles to concrete types), and **specialization**
 (monomorphizing polymorphic functions like generics). It does **not** change the
-static default, is not a dependency of M0–M8, and is scheduled last; it may be
+static default, is not a dependency of M0–M9, and is scheduled last; it may be
 deferred indefinitely. minivm's `ref` ("any") type backs only the *residual*
 dynamic slots that inference cannot pin down.
 
@@ -228,7 +264,7 @@ dynamic slots that inference cannot pin down.
   dynamic-value rules ([value-representation](https://github.com/siyul-park/minivm/blob/main/docs/value-representation.md#dynamic-any-values)).
 - **Linking:** monomorphic call sites emit a direct `CALL`/`RETURN_CALL` to the
   concrete specialization; only genuine union calls go through a tag switch. Full
-  lowering: [`spec/05-codegen.md`](spec/05-codegen.md#unions-any--specialization-m9).
+  lowering: [`spec/05-codegen.md`](spec/05-codegen.md#unions-any--specialization-m10).
 
 ### Cost
 

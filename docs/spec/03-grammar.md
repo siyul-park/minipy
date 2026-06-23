@@ -5,8 +5,10 @@ This is minipy's grammar: a reduction of the full Python 3.13 PEG
 an upstream rule — minipy adds **no** new syntax.
 
 Each construct is tagged with the milestone that introduces it
-(see [`../roadmap.md`](../roadmap.md)): `[M0]`…`[M9]`. Anything not listed is
-**out of scope** and rejected with `UnsupportedFeature`.
+(see [`../roadmap.md`](../roadmap.md)): `[M0]`…`[M10]`. Forms not yet assigned to
+the active milestone are rejected with `UnsupportedFeature` until their planned
+milestone lands; this document treats rejected forms as implementation targets
+unless a separate non-goal says otherwise.
 
 ## Notation
 
@@ -36,6 +38,8 @@ simple_stmt:                                    # [M0] unless noted
     | nonlocal_stmt      # [M4]
     | raise_stmt         # [M7]
     | import_stmt        # [M8]
+    | del_stmt           # [M9]
+    | assert_stmt        # [M9]
 
 assignment:                                     # [M0]
     | NAME ':' type ['=' expression]            # annotated (declaration)
@@ -54,6 +58,10 @@ continue_stmt: 'continue'
 global_stmt:   'global' ','.NAME+
 nonlocal_stmt: 'nonlocal' ','.NAME+
 raise_stmt:    'raise' [expression]              # [M7] (no 'from')
+del_stmt:      'del' del_targets                 # [M9]
+assert_stmt:   'assert' expression [',' expression] # [M9]
+del_targets:   del_target (',' del_target)* [',']
+del_target:    NAME | primary '.' NAME | primary '[' expression ']'
 ```
 
 **Dropped from upstream `assignment`:** chained `a = b = c`, tuple/list
@@ -71,6 +79,7 @@ compound_stmt:
     | class_def      # [M5]
     | try_stmt       # [M7]
     | with_stmt      # [M7]
+    | match_stmt     # [M9]
 
 if_stmt:    'if' expression ':' block ('elif' expression ':' block)* ['else' ':' block]
 while_stmt: 'while' expression ':' block ['else' ':' block]
@@ -95,6 +104,10 @@ except_block: 'except' [type ['as' NAME]] ':' block
 
 with_stmt: 'with' with_item (',' with_item)* ':' block
 with_item: expression ['as' NAME]
+
+match_stmt: 'match' expression ':' NEWLINE INDENT case_block+ DEDENT
+case_block: 'case' patterns [guard] ':' block
+guard:      'if' expression
 ```
 
 **Note:** `for_stmt` takes a **single** `NAME` target in v1; tuple-unpacking
@@ -162,14 +175,45 @@ for_if_clause: 'for' NAME 'in' disjunction ('if' disjunction)*
 lambdef:   'lambda' [NAME (',' NAME)*] ':' expression    # untyped params inferred from call site
 ```
 
-## Explicitly out of scope (rejected)
+## Pattern matching [M9]
 
-`match`/`case`, `async`/`await`, `yield from`, `del`, `assert`, `*`/`**` unpacking
-in calls and displays, starred assignment targets, slicing with step
-(`a[i:j:k]`), generator expressions as bare args, `Union[A,B]` (non-None),
+`match`/`case` uses Python's soft keywords and remains an upstream-compatible
+subset of structural pattern matching. The first matching `case` runs; no fallthrough.
+
+```text
+patterns:       pattern ('|' pattern)* ['as' NAME]
+pattern:
+    | '_'                                  # wildcard
+    | NAME                                 # capture
+    | literal_pattern
+    | value_pattern
+    | sequence_pattern
+    | mapping_pattern
+    | class_pattern
+    | '(' pattern ')'
+
+literal_pattern: 'None' | 'True' | 'False' | NUMBER | STRING
+value_pattern:   NAME ('.' NAME)+
+sequence_pattern:'[' [pattern (',' pattern)* [',']] ']'
+               | '(' [pattern (',' pattern)* [',']] ')'
+mapping_pattern: '{' [kv_pattern (',' kv_pattern)* [',']] '}'
+kv_pattern:      (literal_pattern | value_pattern) ':' pattern
+class_pattern:   NAME '(' [pattern (',' pattern)* [',']] ')'
+```
+
+Capture names bind only inside the selected `case` block. Alternatives in a
+single `|` pattern must bind the same names with compatible types. Guards must
+type-check as `bool`.
+
+## Deferred forms (rejected until milestone)
+
+`async`/`await`, `yield from`, `*`/`**` unpacking in calls and displays outside
+M9 pattern rest positions, starred assignment targets, slicing with step
+(`a[i:j:k]`), generator expressions as bare args, `Union[A,B]` (non-None, M10),
 keyword-only / positional-only markers, multiple inheritance, decorators with
 arguments, nested-tuple `for` targets (beyond M3 flat unpack), set/frozenset
 literals before M4, `complex`/`bytes` literals (per [`01-lexical.md`](01-lexical.md)).
 
 Each rejected form reports `UnsupportedFeature` with the construct name and a
-pointer to the milestone (if planned) or "out of scope" (if never).
+pointer to the planned milestone. A form with no milestone yet remains queued for
+roadmap triage rather than permanently excluded.

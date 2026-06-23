@@ -35,6 +35,7 @@ Stack effect notation: `a b → c` means pops `a` then `b`, pushes `c`.
 | read | `LOCAL_GET i` | `GLOBAL_GET i` | `UPVAL_GET i` |
 | write | `LOCAL_SET i` | `GLOBAL_SET i` | `UPVAL_SET i` |
 | write-and-keep | `LOCAL_TEE i` | `GLOBAL_TEE i` | — |
+| delete (M9) | `LOCAL_DELETE i` | `GLOBAL_DELETE i` | — |
 
 A mutable captured variable is boxed: `REF_NEW` at definition, `REF_GET`/`REF_SET`
 through the upvalue cell (see [closures](#closures-m4)).
@@ -218,21 +219,65 @@ send-value, `CORO_DONE`/`CORO_VALUE` test/extract.)
 
 ## Exceptions & with (M7)
 
-minivm has no native exception unwinding, so minipy models it explicitly:
+minipy uses minivm's built-in exception machinery: per-function handler tables
+declared with `program.Builder.Try(start, end, catch, depth)`, `THROW` for guest
+raises, and `ERROR_NEW` for error payload construction. Runtime traps and
+host-function Go errors are catchable through the same handler path.
 
-- `raise E(...)` constructs an exception struct and unwinds via a compiler-managed
-  handler-label stack; emitted as a sentinel return value + `BR` chain to the
-  nearest `except`/`finally` label, or a host trap for uncaught exceptions.
-- `try/except/finally` lowers to handler labels around the protected block;
-  `finally` blocks are emitted on every exit edge (normal, exception, return).
+- `raise E(...)` constructs an exception value, wraps message payloads with
+  `ERROR_NEW` when needed, then emits `THROW`.
+- `try/except/finally` lowers to minivm handler-table entries around protected
+  regions. Catch blocks receive the thrown value on the operand stack at the
+  handler target. `finally` blocks are emitted on every exit edge (normal,
+  exception, return) and rethrow with `THROW` when required.
 - `with x as y:` desugars to `y = x.__enter__(); try: <body> finally: x.__exit__()`.
 
-This is the one area where a thin CFG/IR may be introduced if the label-chain
-approach proves unwieldy (noted in [`../roadmap.md`](../roadmap.md)).
+The compiler may still introduce a thin CFG/IR here, but only to compute protected
+regions, stack depths, and `finally` edges; it must not replace minivm's native
+handler-table and `THROW` path with a parallel sentinel-return unwinder.
 
-## Unions, `Any` & specialization (M9)
+## Statement completeness & pattern matching (M9)
 
-The M9 layer lowers only the **residual** dynamic slots; anything the inference
+### `del`
+
+`del NAME` resolves the name to its storage class and emits the planned minivm
+opcode `LOCAL_DELETE` or `GLOBAL_DELETE`. A later read follows normal
+definite-assignment rules and becomes `UseBeforeDefinition` statically when
+provable, or a runtime name error when a dynamic path deletes a still-declared
+slot. `del obj.attr` and `del obj[key]` use the relevant class/container support
+available by M9; maps use `MAP_DELETE`.
+
+### `assert`
+
+```text
+<test>
+BR_IF L_ok
+<message or default "AssertionError">
+ERROR_NEW
+THROW
+L_ok:
+```
+
+`assert test, msg` evaluates `msg` only on failure. The false path uses minivm's
+exception path (`ERROR_NEW`; `THROW`) so it benefits from the same interpreter/JIT
+handling as M7 exceptions.
+
+### `match` / `case`
+
+Pattern matching lowers to a decision tree:
+
+- literal/value patterns use existing equality/comparison opcodes;
+- sequence/mapping/class patterns emit shape tests followed by element/field tests;
+- alternatives (`p1 | p2`) branch to shared success/failure labels;
+- captures bind with `LOCAL_SET`/`GLOBAL_SET` in the selected case arm only;
+- guards run after a pattern succeeds and must leave an i32 bool for `BR_IF`.
+
+Dense scalar literal cases may use `BR_TABLE`; sparse or structured patterns use
+ordered `BR_IF` chains matching Python case order.
+
+## Unions, `Any` & specialization (M10)
+
+The M10 layer lowers only the **residual** dynamic slots; anything the inference
 pass resolved to a concrete type emits exactly as the static core does. This is
 where "minimize types" pays off — runtime tag-checks appear only on slots that
 stayed a union or `Any`.

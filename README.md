@@ -47,7 +47,7 @@ documented; the compiler is not yet built. Start at the overview:
 | [docs/spec/04-static-semantics.md](docs/spec/04-static-semantics.md) | typing rules, inference, scoping, errors |
 | [docs/spec/05-codegen.md](docs/spec/05-codegen.md) | lowering each construct to minivm opcodes |
 | [docs/spec/06-builtins.md](docs/spec/06-builtins.md) | builtins + host-function ABI |
-| [docs/roadmap.md](docs/roadmap.md) | milestones M0–M9 |
+| [docs/roadmap.md](docs/roadmap.md) | milestones M0–M10 |
 | [docs/reference/](docs/reference/) | upstream CPython 3.13 grammar/lexical/datamodel |
 
 ## License

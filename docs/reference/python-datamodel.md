@@ -47,7 +47,8 @@ minipy's static model maps a fixed, known set of these to minivm opcodes or host
 functions per supported type; **arbitrary operator overloading on user classes is
 deferred** (see roadmap M5+). General descriptor protocol, metaclasses,
 `__slots__` introspection, and `__getattr__`/`__setattr__` interception are
-**out of scope**.
+not in the current minipy milestones; treat them as deferred/rejected forms until
+roadmap triage assigns support.
 
 ## Execution & name resolution
 

@@ -20,10 +20,10 @@ Static compilation happens **only where boundaries are annotated**:
 
 A module containing a function with any unannotated parameter or missing return
 type **does not compile**. There is no implicit `Any` fallback in the static core.
-The opt-in **M9 inference mode** instead relaxes this rule by solving for
+The opt-in **M10 inference mode** instead relaxes this rule by solving for
 unannotated boundary types across the **whole program** (from call sites and
 bodies) and minimizing each to its narrowest type, rather than defaulting them to
-`Any` — see [`../roadmap.md`](../roadmap.md) M9.
+`Any` - see [`../roadmap.md`](../roadmap.md) M10.
 
 ## Local type inference
 
@@ -48,8 +48,8 @@ def f(n: int) -> int:
 ```
 
 There is **no flow-sensitive narrowing** in v1 except the single special case of
-`Optional[T]` (below). `if isinstance(...)` narrowing is the **M9** generalization
-of that rule to any union member (see [whole-program inference](#whole-program-inference--specialization-m9)).
+`Optional[T]` (below). `if isinstance(...)` narrowing is the **M10** generalization
+of that rule to any union member (see [whole-program inference](#whole-program-inference--specialization-m10)).
 
 ### Optional narrowing (the one flow rule)
 
@@ -68,10 +68,10 @@ def length(s: Optional[str]) -> int:
 (`is`/`is not` against `None` is enabled at M7; until then `Optional` use is
 limited. See [`03-grammar.md`](03-grammar.md).)
 
-### Whole-program inference & specialization (M9)
+### Whole-program inference & specialization (M10)
 
-The opt-in M9 layer adds two checker capabilities, both **off** in the static
-core (full design in [`../roadmap.md`](../roadmap.md) M9):
+The opt-in M10 layer adds two checker capabilities, both **off** in the static
+core (full design in [`../roadmap.md`](../roadmap.md) M10):
 
 1. **Whole-program inference.** With `MissingAnnotation` relaxed, the checker
    collects type constraints from every call site and body across the program and
@@ -83,8 +83,8 @@ core (full design in [`../roadmap.md`](../roadmap.md) M9):
    union to a member inside the guarded branch, generalizing the `Optional` rule;
    a use proven concrete needs no runtime check. A function inferred polymorphic is
    **monomorphized** — one specialization per concrete instantiation, like a
-   generic — and each call site bound to its specialization. The lowering is in
-   [`05-codegen.md`](05-codegen.md#unions-any--specialization-m9).
+   generic, and each call site bound to its specialization. The lowering is in
+   [`05-codegen.md`](05-codegen.md#unions-any--specialization-m10).
 
 ## Expression typing (rules summary)
 
@@ -160,7 +160,7 @@ Rules:
 | `UndefinedName` | name not resolvable in any scope |
 | `UseBeforeDefinition` | local read before assignment on some path |
 | `PossiblyNone` | use of `Optional[T]` without a `None` guard |
-| `UnsupportedFeature` | syntactically valid Python outside the subset |
+| `UnsupportedFeature` | syntactically valid Python not yet in the active milestone |
 | `UnsupportedType` | annotation outside the type grammar |
 | `IntOverflow` | integer literal exceeds int64 |
 | `ArityMismatch` | wrong number of call arguments |
@@ -168,6 +168,7 @@ Rules:
 | `UninitializedField` | `__init__` leaves a field unset |
 | `NotComparable` / `NotIterable` / `NotIndexable` | operator applied to unsupported type |
 
-Diagnostics carry source span (line/col), the offending construct, and — for
-`UnsupportedFeature` — the milestone where support is planned (or "out of scope").
+Diagnostics carry source span (line/col), the offending construct, and - for
+`UnsupportedFeature` - the milestone where support is planned, or a note that the
+form is still queued for roadmap triage.
 Compilation reports **all** errors it can before aborting (no fail-on-first).

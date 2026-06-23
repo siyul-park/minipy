@@ -44,7 +44,7 @@ inference; explicit is simple and predictable. (May be relaxed later.)
 | `bytes` | `[]i8` array | (deferred) binary blob |
 
 Containers are **homogeneous** where Python allows heterogeneous: `list[int]`
-holds only `int`. A heterogeneous `list` requires `list[Any]` (dynamic, M9).
+holds only `int`. A heterogeneous `list` requires `list[Any]` (dynamic, M10).
 `tuple` is the heterogeneous fixed-shape container and lowers to a struct.
 
 ### dict key types
@@ -86,19 +86,19 @@ multiple inheritance, no metaclasses.
 | minipy annotation | meaning | minivm |
 |---|---|---|
 | `Optional[T]` (= `T \| None`) | `T` or `None` | `ref` (dynamic slot) + null check |
-| `A \| B` / `Union[A, B]` | closed disjunction (tagged) | `ref` + runtime tag — **M9, low priority** |
-| `Any` | open top / fully dynamic | `ref` — **M9, low priority** |
+| `A \| B` / `Union[A, B]` | closed disjunction (tagged) | `ref` + runtime tag - **M10, low priority** |
+| `Any` | open top / fully dynamic | `ref` - **M10, low priority** |
 | `Iterator[T]` / generator | lazy producer of `T` | coroutine / `Iterator` heap value (M6) |
 
 `Optional[T]` uses a `ref` slot so it can hold either a `T` value or
 `REF_NULL`; reads narrow with a null test (`REF_IS_NULL`) before use. In the
 static core, `T | None` (PEP 604) is the **only** union form accepted; a general
-`Union[A, B]` of non-`None` types — with the tagged runtime dispatch it needs — is
-the **M9** layer (below).
+`Union[A, B]` of non-`None` types, with the tagged runtime dispatch it needs, is
+the **M10** layer (below).
 
-### Unions, `Any`, and the dynamic boundary (M9, low priority)
+### Unions, `Any`, and the dynamic boundary (M10, low priority)
 
-The M9 layer generalizes the single `Optional` slot into first-class **unions**,
+The M10 layer generalizes the single `Optional` slot into first-class **unions**,
 and adds whole-program inference so unannotated code still resolves to concrete
 types. Three pieces:
 
@@ -111,12 +111,12 @@ types. Three pieces:
   used only where no bounded union fits. A value typed `Any` is stored verbatim as
   a self-describing `Boxed`; crossing `Any → T` inserts a checked cast (`REF_CAST`,
   runtime `TypeError` on failure), `T → Any` is always free.
-- **Whole-program inference & specialization** — in M9 *inference mode* the checker
+- **Whole-program inference & specialization** - in M10 *inference mode* the checker
   assigns each unannotated binding its **narrowest** consistent type from all uses,
   and **monomorphizes** polymorphic functions per concrete instantiation
   (generic-style), reserving union/`Any` slots for genuinely dynamic values. See
-  [`../roadmap.md`](../roadmap.md) M9 and
-  [`05-codegen.md`](05-codegen.md#unions-any--specialization-m9).
+  [`../roadmap.md`](../roadmap.md) M10 and
+  [`05-codegen.md`](05-codegen.md#unions-any--specialization-m10).
 
 This is the seam for a future gradual/dynamic mode and is **not** part of the
 static core.
@@ -129,11 +129,11 @@ Annotations are ordinary expressions in Python; minipy accepts only this subset:
 type:
     | NAME                         # int, float, bool, str, None, <class name>
     | NAME '[' type (',' type)* ']'  # list[int], dict[str,int], tuple[int,str], Callable[...], Optional[int]
-    | type ('|' type)+             # union: T | None (Optional, core); A | B (M9)
+    | type ('|' type)+             # union: T | None (Optional, core); A | B (M10)
 ```
 
 In the static core only `T | None` (Optional) is accepted; a union of non-`None`
-members is the **M9** layer. Anything else in annotation position (arbitrary
+members is the **M10** layer. Anything else in annotation position (arbitrary
 expressions, string forward refs beyond names, `Literal`, `Annotated`, `TypeVar`,
 generics with bounds) is `UnsupportedType`. Generic *user* classes are deferred.
 
@@ -142,13 +142,13 @@ generics with bounds) is `UnsupportedType`. Generic *user* classes are deferred.
 `S` is assignable to `T` (`S <: T`) iff:
 
 1. `S` and `T` are the same primitive; or
-2. `T` is `Any`; or `S` is `Any` (with inserted cast, M9); or
+2. `T` is `Any`; or `S` is `Any` (with inserted cast, M10); or
 3. `T = Optional[U]` and `S <: U` or `S = None`; or
 4. both are `list[E]`/`dict[K,V]`/`tuple[…]` with **invariant** element types
    (`list[int]` is **not** assignable to `list[Any]`); or
 5. both are callables, params contravariant / return covariant — **v1 uses
    invariance** for simplicity (exact signature match); or
-6. **(M9)** `T = A | B | …` (union) and `S` is assignable to **some** member; a
+6. **(M10)** `T = A | B | …` (union) and `S` is assignable to **some** member; a
    union source `S = A | B | …` is assignable to `T` only when **every** member is
    assignable to `T`. `Optional[U]` is the special case `U | None`.
 

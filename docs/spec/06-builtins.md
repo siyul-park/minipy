@@ -56,7 +56,7 @@ A first-class lazy `range` object is deferred to M6 (it is naturally a generator
 | M6 | `iter`, `next`, lazy `range` object |
 | M7 | exception classes `Exception`, `ValueError`, `KeyError`, `IndexError`, … |
 | M8 | a curated typed stdlib subset (`math`, `random`, …) exposed as host modules |
-| M9 | `isinstance` extended to narrow arbitrary union members; reflective/dynamic builtins (opt-in) |
+| M10 | `isinstance` extended to narrow arbitrary union members; reflective/dynamic builtins (opt-in) |
 
 ## Host-function ABI (for embedders)
 
@@ -82,5 +82,5 @@ automatically.
 `eval`, `exec`, `compile`, `globals`, `locals`, `vars`, `dir`, `getattr`,
 `setattr`, `hasattr`, `__import__`, `open` (until M8 stdlib policy), `input`
 (host-policy dependent), and any builtin returning an untyped/dynamic value in the
-static core. Reflective/dynamic builtins, if ever added, belong to the opt-in M9
+static core. Reflective/dynamic builtins, if ever added, belong to the opt-in M10
 inference/union layer.

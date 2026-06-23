@@ -84,7 +84,8 @@ imagnumber ::= (floatnumber | digitpart) ("j"|"J")
 - Underscores group digits (3.6+). No leading zeros in nonzero decimals.
 - Integers are unbounded in CPython (arbitrary precision). **minipy restricts
   `int` to int64** — see `../spec/02-types.md`.
-- `imagnumber` (complex) is **out of scope** for minipy.
+- `imagnumber` (complex) is not in the current minipy milestones; treat it as a
+  deferred/rejected form until roadmap triage assigns support.
 
 ## String / bytes literals
 

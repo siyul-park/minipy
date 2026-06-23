@@ -24,7 +24,7 @@ of CPython 3.13 syntax.
 ## Non-goals
 
 - **No arbitrary-precision `int`.** `int` is **int64** (see below).
-- **No full dynamic typing** in the core. A low-priority opt-in layer (M9) adds
+- **No full dynamic typing** in the core. A low-priority opt-in layer (M10) adds
   union types, whole-program type inference for unannotated code, and
   generic-style specialization — with minivm's `ref` type backing only the
   residual dynamic (`Any`) slots inference cannot pin down. It is explicitly not
@@ -113,5 +113,5 @@ functions: [`06-builtins.md`](06-builtins.md).
 | [`04-static-semantics.md`](04-static-semantics.md) | typing rules, inference, scoping, errors |
 | [`05-codegen.md`](05-codegen.md) | lowering each construct to minivm opcodes |
 | [`06-builtins.md`](06-builtins.md) | builtins + host-function ABI |
-| [`../roadmap.md`](../roadmap.md) | milestones M0–M9 |
+| [`../roadmap.md`](../roadmap.md) | milestones M0–M10 |
 | [`../reference/`](../reference/) | upstream CPython 3.13 grammar/lexical/datamodel |

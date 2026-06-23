@@ -46,11 +46,12 @@ the grammar** and produce `UnsupportedFeature` until their milestone:
 
 | Status | Keywords |
 |---|---|
-| Supported (by milestone) | `False True None and or not if elif else while for in break continue pass def return` (M0–M2); `class` (M5); `lambda nonlocal global` (M4); `yield` (M6); `try except finally raise with as` (M7); `import from` (M8) |
-| Reserved, **rejected** | `async await` (no async core); `del assert` (deferred); `is` (identity — deferred, see note) |
+| Supported (by milestone) | `False True None and or not if elif else while for in break continue pass def return` (M0–M2); `class` (M5); `lambda nonlocal global` (M4); `yield` (M6); `try except finally raise with as is` (M7); `import from` (M8); `del assert` (M9) |
+| Reserved, **rejected until planned support** | `async await` (post-M10) |
 
-Soft keywords `match`/`case`/`type` are **not** part of minipy (no structural
-pattern matching, no `type` aliases via statement; use annotations).
+Soft keywords `match`/`case` are accepted by the parser in M9 for structural
+pattern matching. Soft keyword `type` remains rejected until a type-alias milestone
+is scheduled; use annotations.
 
 > `is` / `is not`: identity comparison is deferred. Use `x is None` only once M7
 > defines `None`-identity; until then `== None` is rejected in favor of a future
