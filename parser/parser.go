@@ -1,9 +1,9 @@
 // Package parser builds an ast.Module from minipy source. It implements the
-// M0–M1 subset of the Python grammar (docs/spec/03-grammar.md): simple
-// statements over the full operator-precedence expression chain, plus M1
-// control flow (if/elif/else, while, for-in-range, break/continue/pass and the
-// conditional expression). Constructs outside the subset are reported as
-// UnsupportedFeature with the milestone that introduces them.
+// M0–M2 subset of the Python grammar (docs/spec/03-grammar.md): simple
+// statements over the full operator-precedence expression chain, M1 control
+// flow, and M2 function definitions/calls/returns. Constructs outside the
+// subset are reported as UnsupportedFeature with the milestone that introduces
+// them.
 package parser
 
 import (
@@ -40,17 +40,14 @@ var augAssign = map[token.Type]token.Type{
 }
 
 var compoundStmt = map[token.Type]string{
-	token.DEF:     "'def' (M2 functions)",
 	token.CLASS:   "'class' (M5 classes)",
 	token.TRY:     "'try' (M7 exceptions)",
 	token.EXCEPT:  "'except' (M7 exceptions)",
 	token.FINALLY: "'finally' (M7 exceptions)",
 	token.WITH:    "'with' (M7 context managers)",
-	token.AT:      "decorators (M2)",
 }
 
 var simpleKeywordStmt = map[token.Type]string{
-	token.RETURN:   "'return' (M2 functions)",
 	token.GLOBAL:   "'global' (M4 closures)",
 	token.NONLOCAL: "'nonlocal' (M4 closures)",
 	token.YIELD:    "'yield' (M6 generators)",
@@ -112,6 +109,10 @@ func (p *Parser) parseStatement() []ast.Stmt {
 		return []ast.Stmt{p.parseWhile()}
 	case token.FOR:
 		return []ast.Stmt{p.parseFor()}
+	case token.DEF:
+		return []ast.Stmt{p.parseFunction(nil)}
+	case token.AT:
+		return []ast.Stmt{p.parseDecorated()}
 	case token.ELIF, token.ELSE:
 		p.errs.Add(p.cur().Pos, token.SyntaxError, "'%s' without a matching 'if'", p.cur().Type)
 		p.skipLine()
@@ -201,6 +202,90 @@ func (p *Parser) parseFor() ast.Stmt {
 	return &ast.For{Base: ast.Base{Position: pos}, Target: target, Iter: iter, Body: body, Orelse: orelse}
 }
 
+// parseDecorated parses one or more bare-name decorators followed by a
+// function definition. Decorator expressions beyond bare names are deferred.
+func (p *Parser) parseDecorated() ast.Stmt {
+	var decorators []*ast.Name
+	for p.at(token.AT) {
+		pos := p.cur().Pos
+		p.advance()
+		if !p.at(token.NAME) {
+			p.errs.Add(p.cur().Pos, token.UnsupportedFeature, "decorators must be bare names in M2")
+			p.skipLine()
+			continue
+		}
+		name := &ast.Name{Base: ast.Base{Position: p.cur().Pos}, Name: p.cur().Literal}
+		decorators = append(decorators, name)
+		p.advance()
+		if p.at(token.LPAREN) || p.at(token.DOT) {
+			p.errs.Add(pos, token.UnsupportedFeature, "call-form and dotted decorators arrive later")
+			p.skipLine()
+			continue
+		}
+		p.expectLineEnd()
+	}
+	if !p.at(token.DEF) {
+		p.errs.Add(p.cur().Pos, token.SyntaxError, "expected def after decorator")
+		p.skipLine()
+		p.skipBlock()
+		return nil
+	}
+	return p.parseFunction(decorators)
+}
+
+// parseFunction parses `def NAME(params) -> type: block`.
+func (p *Parser) parseFunction(decorators []*ast.Name) ast.Stmt {
+	pos := p.cur().Pos
+	p.advance() // def
+	nameTok := p.expect(token.NAME)
+	name := &ast.Name{Base: ast.Base{Position: nameTok.Pos}, Name: nameTok.Literal}
+	p.expect(token.LPAREN)
+	params := p.parseParams()
+	p.expect(token.RPAREN)
+	p.expect(token.ARROW)
+	returns := p.parseType()
+	body := p.parseBlock()
+	return &ast.Function{
+		Base:       ast.Base{Position: pos},
+		Name:       name,
+		Params:     params,
+		Returns:    returns,
+		Decorators: decorators,
+		Body:       body,
+	}
+}
+
+func (p *Parser) parseParams() []*ast.Param {
+	var params []*ast.Param
+	if p.at(token.RPAREN) || p.at(token.EOF) {
+		return params
+	}
+	for {
+		nameTok := p.expect(token.NAME)
+		name := &ast.Name{Base: ast.Base{Position: nameTok.Pos}, Name: nameTok.Literal}
+		if !p.at(token.COLON) {
+			p.errs.Add(p.cur().Pos, token.MissingAnnotation, "parameter %q needs a type annotation", name.Name)
+		} else {
+			p.advance()
+		}
+		ann := p.parseType()
+		if p.at(token.ASSIGN) {
+			p.errs.Add(p.cur().Pos, token.UnsupportedFeature, "default parameter values are M2.1")
+			p.advance()
+			p.parseExpression()
+		}
+		params = append(params, &ast.Param{Base: ast.Base{Position: nameTok.Pos}, Name: name, Ann: ann})
+		if !p.at(token.COMMA) {
+			break
+		}
+		p.advance()
+		if p.at(token.RPAREN) {
+			break
+		}
+	}
+	return params
+}
+
 // parseForTarget parses the single NAME loop variable. Tuple-unpacking targets
 // (`for k, v in ...`) are an M3 extension.
 func (p *Parser) parseForTarget() *ast.Name {
@@ -258,6 +343,14 @@ func (p *Parser) parseSimpleStmt() ast.Stmt {
 		t := p.cur()
 		p.advance()
 		return &ast.Continue{Base: ast.Base{Position: t.Pos}}
+	case token.RETURN:
+		t := p.cur()
+		p.advance()
+		var value ast.Expr
+		if !p.at(token.SEMICOLON) && !p.at(token.NEWLINE) && !p.at(token.EOF) {
+			value = p.parseExpression()
+		}
+		return &ast.Return{Base: ast.Base{Position: t.Pos}, Value: value}
 	}
 
 	if msg, ok := simpleKeywordStmt[p.cur().Type]; ok {

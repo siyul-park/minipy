@@ -22,6 +22,7 @@ func TestNodePos(t *testing.T) {
 		&BoolOp{Base: Base{Position: pos}},
 		&Compare{Base: Base{Position: pos}},
 		&CallExpr{Base: Base{Position: pos}},
+		&IfExp{Base: Base{Position: pos}},
 	}
 	for _, e := range exprs {
 		require.Equal(t, pos, e.Pos())
@@ -32,6 +33,14 @@ func TestNodePos(t *testing.T) {
 		&Assign{Base: Base{Position: pos}},
 		&AugAssign{Base: Base{Position: pos}},
 		&ExprStmt{Base: Base{Position: pos}},
+		&If{Base: Base{Position: pos}},
+		&While{Base: Base{Position: pos}},
+		&For{Base: Base{Position: pos}},
+		&Function{Base: Base{Position: pos}},
+		&Return{Base: Base{Position: pos}},
+		&Break{Base: Base{Position: pos}},
+		&Continue{Base: Base{Position: pos}},
+		&Pass{Base: Base{Position: pos}},
 	}
 	for _, s := range stmts {
 		require.Equal(t, pos, s.Pos())

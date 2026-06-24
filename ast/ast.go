@@ -1,7 +1,7 @@
 // Package ast defines the minipy abstract syntax tree: a module of statements
-// over scalar expressions, including M1 control flow (if/while/for, break,
-// continue, pass, and the conditional expression) (docs/spec/03-grammar.md).
-// Every node carries the source position of its first token.
+// over scalar expressions, M1 control flow, and M2 functions
+// (docs/spec/03-grammar.md). Every node carries the source position of its
+// first token.
 package ast
 
 import "github.com/siyul-park/minipy/token"
@@ -94,6 +94,29 @@ type For struct {
 	Iter   Expr
 	Body   []Stmt
 	Orelse []Stmt
+}
+
+// Param is a function parameter with a required type annotation.
+type Param struct {
+	Base
+	Name *Name
+	Ann  Expr
+}
+
+// Function is `def Name(Params) -> Returns: Body`.
+type Function struct {
+	Base
+	Name       *Name
+	Params     []*Param
+	Returns    Expr
+	Decorators []*Name
+	Body       []Stmt
+}
+
+// Return is a `return` statement. Value is nil for bare `return`.
+type Return struct {
+	Base
+	Value Expr
 }
 
 // Break is the `break` statement.
@@ -191,6 +214,8 @@ func (*ExprStmt) stmtNode()  {}
 func (*If) stmtNode()        {}
 func (*While) stmtNode()     {}
 func (*For) stmtNode()       {}
+func (*Function) stmtNode()  {}
+func (*Return) stmtNode()    {}
 func (*Break) stmtNode()     {}
 func (*Continue) stmtNode()  {}
 func (*Pass) stmtNode()      {}

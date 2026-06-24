@@ -1,8 +1,7 @@
 // Package compiler turns minipy source into a runnable minivm program for the
-// M0–M1 subset (docs/spec): it parses, type-checks, and lowers a module of
-// scalar statements and M1 control flow (if/while/for, break/continue/pass and
-// the conditional expression). Compile returns a *program.Program; run it with
-// minivm's interp.New(prog).Run(ctx).
+// M0–M2 subset (docs/spec): it parses, type-checks, and lowers a module of
+// scalar statements, M1 control flow, and M2 functions. Compile returns a
+// *program.Program; run it with minivm's interp.New(prog).Run(ctx).
 package compiler
 
 import (
@@ -39,25 +38,58 @@ type loopLabels struct {
 	brk  instr.Label
 }
 
+type target struct {
+	emit  func(instr.Opcode, ...uint64)
+	label func() instr.Label
+	bind  func(instr.Label)
+	br    func(instr.Label)
+	brIf  func(instr.Label)
+}
+
 // compiler lowers a typed module to a minivm program. It assumes the checker has
 // already validated the module, so it never re-reports errors; it only relies on
 // the type table and global symbol table.
 type compiler struct {
-	b        *program.Builder
+	prog     *program.Builder
+	code     target
 	exprType map[ast.Expr]types.Type
 	globals  map[string]*global
+	funcs    map[string]*fn
+	locals   map[string]*local
 	host     *hostFuncs
 	constIdx map[*interp.HostFunction]int
 	loops    []loopLabels // enclosing-loop branch targets, innermost last
 }
 
-func newCompiler(b *program.Builder, exprType map[ast.Expr]types.Type, globals map[string]*global, host *hostFuncs) *compiler {
+func newCompiler(b *program.Builder, exprType map[ast.Expr]types.Type, globals map[string]*global, funcs map[string]*fn, host *hostFuncs) *compiler {
 	return &compiler{
-		b:        b,
+		prog:     b,
+		code:     mainTarget(b),
 		exprType: exprType,
 		globals:  globals,
+		funcs:    funcs,
 		host:     host,
 		constIdx: map[*interp.HostFunction]int{},
+	}
+}
+
+func mainTarget(b *program.Builder) target {
+	return target{
+		emit:  func(op instr.Opcode, operands ...uint64) { b.Emit(op, operands...) },
+		label: b.Label,
+		bind:  func(l instr.Label) { b.Bind(l) },
+		br:    func(l instr.Label) { b.Br(l) },
+		brIf:  func(l instr.Label) { b.BrIf(l) },
+	}
+}
+
+func fnTarget(b *vmtypes.FunctionBuilder) target {
+	return target{
+		emit:  func(op instr.Opcode, operands ...uint64) { b.Emit(instr.New(op, operands...)) },
+		label: b.Label,
+		bind:  func(l instr.Label) { b.Bind(l) },
+		br:    func(l instr.Label) { b.Br(l) },
+		brIf:  func(l instr.Label) { b.BrIf(l) },
 	}
 }
 
@@ -65,6 +97,30 @@ func newCompiler(b *program.Builder, exprType map[ast.Expr]types.Type, globals m
 // defaults to os.Stdout; tests and the REPL pass their own writer.
 func WithOutput(w io.Writer) Option {
 	return func(c *config) { c.out = w }
+}
+
+func (c *compiler) emit(op instr.Opcode, operands ...uint64) {
+	c.code.emit(op, operands...)
+}
+
+func (c *compiler) label() instr.Label {
+	return c.code.label()
+}
+
+func (c *compiler) bind(l instr.Label) {
+	c.code.bind(l)
+}
+
+func (c *compiler) br(l instr.Label) {
+	c.code.br(l)
+}
+
+func (c *compiler) brIf(l instr.Label) {
+	c.code.brIf(l)
+}
+
+func (c *compiler) constGet(v vmtypes.Value) {
+	c.emit(instr.CONST_GET, uint64(c.prog.Const(v)))
 }
 
 // Compile reads minipy source from r, type-checks it, and lowers it into a
@@ -92,7 +148,7 @@ func Compile(r io.Reader, opts ...Option) (*program.Program, error) {
 
 	host := newHostFuncs(cfg.out)
 	b := program.NewBuilder()
-	newCompiler(b, chk.exprType, chk.globals, host).module(mod)
+	newCompiler(b, chk.exprType, chk.globals, chk.funcs, host).module(mod)
 
 	prog, err := b.Build()
 	if err != nil {
@@ -113,7 +169,7 @@ func Compile(r io.Reader, opts ...Option) (*program.Program, error) {
 // rejects a jump to len(code)).
 func (c *compiler) module(mod *ast.Module) {
 	c.block(mod.Body)
-	c.b.Emit(instr.NOP)
+	c.emit(instr.NOP)
 }
 
 // block lowers a statement sequence (a module body or a compound block).
@@ -128,76 +184,109 @@ func (c *compiler) stmt(s ast.Stmt) {
 	case *ast.AnnAssign:
 		if n.Value != nil {
 			c.expr(n.Value)
-			c.b.Emit(instr.GLOBAL_SET, uint64(c.globals[n.Target.Name].index))
+			c.set(n.Target.Name)
 		}
 	case *ast.Assign:
 		name := n.Target.(*ast.Name)
 		c.expr(n.Value)
-		c.b.Emit(instr.GLOBAL_SET, uint64(c.globals[name.Name].index))
+		c.set(name.Name)
 	case *ast.AugAssign:
 		name := n.Target.(*ast.Name)
-		g := c.globals[name.Name]
-		c.emitBinary(n.Op, g.typ, c.exprType[n.Value],
-			func() { c.b.Emit(instr.GLOBAL_GET, uint64(g.index)) },
+		t := c.typ(name.Name)
+		c.emitBinary(n.Op, t, c.exprType[n.Value],
+			func() { c.get(name.Name) },
 			func() { c.expr(n.Value) })
-		c.b.Emit(instr.GLOBAL_SET, uint64(g.index))
+		c.set(name.Name)
 	case *ast.ExprStmt:
 		c.expr(n.X)
-		c.b.Emit(instr.DROP)
+		c.emit(instr.DROP)
 	case *ast.If:
 		c.emitIf(n)
 	case *ast.While:
 		c.emitWhile(n)
 	case *ast.For:
 		c.emitFor(n)
+	case *ast.Function:
+		c.function(n)
+	case *ast.Return:
+		c.ret(n)
 	case *ast.Break:
-		c.b.Br(c.loops[len(c.loops)-1].brk)
+		c.br(c.loops[len(c.loops)-1].brk)
 	case *ast.Continue:
-		c.b.Br(c.loops[len(c.loops)-1].cont)
+		c.br(c.loops[len(c.loops)-1].cont)
 	case *ast.Pass:
 		// no-op
 	}
+}
+
+func (c *compiler) get(name string) {
+	if c.locals != nil {
+		if l, ok := c.locals[name]; ok {
+			c.emit(instr.LOCAL_GET, uint64(l.index))
+			return
+		}
+	}
+	c.emit(instr.GLOBAL_GET, uint64(c.globals[name].index))
+}
+
+func (c *compiler) set(name string) {
+	if c.locals != nil {
+		if l, ok := c.locals[name]; ok {
+			c.emit(instr.LOCAL_SET, uint64(l.index))
+			return
+		}
+	}
+	c.emit(instr.GLOBAL_SET, uint64(c.globals[name].index))
+}
+
+func (c *compiler) typ(name string) types.Type {
+	if c.locals != nil {
+		if l, ok := c.locals[name]; ok {
+			return l.typ
+		}
+	}
+	return c.globals[name].typ
 }
 
 // emitIf lowers `if`/`elif`/`else`: invert the condition and branch over the
 // then-block to the else-block (docs/spec/05-codegen.md).
 func (c *compiler) emitIf(n *ast.If) {
 	c.expr(n.Cond)
-	c.b.Emit(instr.I32_EQZ)
-	elseL := c.b.Label()
-	end := c.b.Label()
-	c.b.BrIf(elseL)
+	c.emit(instr.I32_EQZ)
+	elseL := c.label()
+	end := c.label()
+	c.brIf(elseL)
 	c.block(n.Body)
-	c.b.Br(end)
-	c.b.Bind(elseL)
+	c.br(end)
+	c.bind(elseL)
 	c.block(n.Orelse)
-	c.b.Bind(end)
+	c.bind(end)
 }
 
 // emitWhile lowers `while`: re-test at the top, run the else block on natural
 // exit (not after a break). continue → top, break → past the else block.
 func (c *compiler) emitWhile(n *ast.While) {
-	top := c.b.Label()
-	elseL := c.b.Label()
-	end := c.b.Label()
+	top := c.label()
+	elseL := c.label()
+	end := c.label()
 
-	c.b.Bind(top)
+	c.bind(top)
 	c.expr(n.Cond)
-	c.b.Emit(instr.I32_EQZ)
-	c.b.BrIf(elseL)
+	c.emit(instr.I32_EQZ)
+	c.brIf(elseL)
 
 	c.loops = append(c.loops, loopLabels{cont: top, brk: end})
 	c.block(n.Body)
 	c.loops = c.loops[:len(c.loops)-1]
 
-	c.b.Br(top)
-	c.b.Bind(elseL)
+	c.br(top)
+	c.bind(elseL)
 	c.block(n.Orelse)
-	c.b.Bind(end)
+	c.bind(end)
 }
 
 // emitFor lowers `for NAME in range(...)` to an integer counter loop driven by
-// the target global: start initializes the counter once, then the stop bound is
+// the target binding: start initializes the counter once, then the stop bound is
 // re-tested each iteration and the constant step's sign fixes the test direction
 // (docs/spec/05-codegen.md). continue → the increment, break → past the else
 // block.
@@ -214,66 +303,120 @@ func (c *compiler) emitFor(n *ast.For) {
 		startExpr, stopExpr, step = args[0], args[1], constIntValue(args[2])
 	}
 
-	ti := c.globals[n.Target.Name].index
-
 	if startExpr != nil {
 		c.expr(startExpr)
 	} else {
-		c.b.Emit(instr.I64_CONST, 0)
+		c.emit(instr.I64_CONST, 0)
 	}
-	c.b.Emit(instr.GLOBAL_SET, uint64(ti))
+	c.set(n.Target.Name)
 
-	top := c.b.Label()
-	cont := c.b.Label()
-	elseL := c.b.Label()
-	end := c.b.Label()
+	top := c.label()
+	cont := c.label()
+	elseL := c.label()
+	end := c.label()
 
-	c.b.Bind(top)
-	c.b.Emit(instr.GLOBAL_GET, uint64(ti))
+	c.bind(top)
+	c.get(n.Target.Name)
 	c.expr(stopExpr)
 	if step < 0 {
-		c.b.Emit(instr.I64_GT_S)
+		c.emit(instr.I64_GT_S)
 	} else {
-		c.b.Emit(instr.I64_LT_S)
+		c.emit(instr.I64_LT_S)
 	}
-	c.b.Emit(instr.I32_EQZ)
-	c.b.BrIf(elseL)
+	c.emit(instr.I32_EQZ)
+	c.brIf(elseL)
 
 	c.loops = append(c.loops, loopLabels{cont: cont, brk: end})
 	c.block(n.Body)
 	c.loops = c.loops[:len(c.loops)-1]
 
-	c.b.Bind(cont)
-	c.b.Emit(instr.GLOBAL_GET, uint64(ti))
-	c.b.Emit(instr.I64_CONST, uint64(step))
-	c.b.Emit(instr.I64_ADD)
-	c.b.Emit(instr.GLOBAL_SET, uint64(ti))
-	c.b.Br(top)
+	c.bind(cont)
+	c.get(n.Target.Name)
+	c.emit(instr.I64_CONST, uint64(step))
+	c.emit(instr.I64_ADD)
+	c.set(n.Target.Name)
+	c.br(top)
 
-	c.b.Bind(elseL)
+	c.bind(elseL)
 	c.block(n.Orelse)
-	c.b.Bind(end)
+	c.bind(end)
+}
+
+func (c *compiler) function(n *ast.Function) {
+	info := c.funcs[n.Name.Name]
+	if info == nil {
+		return
+	}
+	fb := vmtypes.NewFunctionBuilder(&vmtypes.FunctionType{
+		Params:  vmParamTypes(info),
+		Returns: []vmtypes.Type{info.ret.VM()},
+	})
+	fb.WithLocals(vmLocalTypes(info)...)
+
+	child := *c
+	child.code = fnTarget(fb)
+	child.locals = info.locals
+	child.loops = nil
+	child.block(n.Body)
+	child.emitNoneReturn()
+
+	fn, err := fb.Build()
+	if err != nil {
+		panic(err)
+	}
+	c.constGet(fn)
+	c.emit(instr.GLOBAL_SET, uint64(info.slot.index))
+}
+
+func (c *compiler) ret(n *ast.Return) {
+	if n.Value != nil {
+		c.expr(n.Value)
+	} else {
+		c.emit(instr.REF_NULL)
+	}
+	c.emit(instr.RETURN)
+}
+
+func (c *compiler) emitNoneReturn() {
+	c.emit(instr.REF_NULL)
+	c.emit(instr.RETURN)
+}
+
+func vmParamTypes(info *fn) []vmtypes.Type {
+	out := make([]vmtypes.Type, 0, len(info.params))
+	for _, p := range info.params {
+		out = append(out, p.typ.VM())
+	}
+	return out
+}
+
+func vmLocalTypes(info *fn) []vmtypes.Type {
+	out := make([]vmtypes.Type, 0, len(info.order))
+	for _, name := range info.order {
+		out = append(out, info.locals[name].typ.VM())
+	}
+	return out
 }
 
 // expr lowers an expression, leaving exactly one value on the stack.
 func (c *compiler) expr(n ast.Expr) {
 	switch x := n.(type) {
 	case *ast.IntLit:
-		c.b.Emit(instr.I64_CONST, uint64(x.Value))
+		c.emit(instr.I64_CONST, uint64(x.Value))
 	case *ast.FloatLit:
-		c.b.Emit(instr.F64_CONST, math.Float64bits(x.Value))
+		c.emit(instr.F64_CONST, math.Float64bits(x.Value))
 	case *ast.BoolLit:
 		if x.Value {
-			c.b.Emit(instr.I32_CONST, 1)
+			c.emit(instr.I32_CONST, 1)
 		} else {
-			c.b.Emit(instr.I32_CONST, 0)
+			c.emit(instr.I32_CONST, 0)
 		}
 	case *ast.NoneLit:
-		c.b.Emit(instr.REF_NULL)
+		c.emit(instr.REF_NULL)
 	case *ast.StrLit:
-		c.b.ConstGet(vmtypes.String(x.Value))
+		c.constGet(vmtypes.String(x.Value))
 	case *ast.Name:
-		c.b.Emit(instr.GLOBAL_GET, uint64(c.globals[x.Name].index))
+		c.get(x.Name)
 	case *ast.UnaryExpr:
 		c.unary(x)
 	case *ast.BinaryExpr:
@@ -296,36 +439,36 @@ func (c *compiler) expr(n ast.Expr) {
 // else fall through to the false arm.
 func (c *compiler) ifExp(x *ast.IfExp) {
 	c.expr(x.Cond)
-	trueL := c.b.Label()
-	end := c.b.Label()
-	c.b.BrIf(trueL)
+	trueL := c.label()
+	end := c.label()
+	c.brIf(trueL)
 	c.expr(x.Orelse)
-	c.b.Br(end)
-	c.b.Bind(trueL)
+	c.br(end)
+	c.bind(trueL)
 	c.expr(x.Body)
-	c.b.Bind(end)
+	c.bind(end)
 }
 
 func (c *compiler) unary(x *ast.UnaryExpr) {
 	switch x.Op {
 	case token.NOT:
 		c.expr(x.X)
-		c.b.Emit(instr.I32_EQZ)
+		c.emit(instr.I32_EQZ)
 	case token.PLUS:
 		c.expr(x.X)
 	case token.MINUS:
 		if c.exprType[x.X] == types.Float {
 			c.expr(x.X)
-			c.b.Emit(instr.F64_NEG)
+			c.emit(instr.F64_NEG)
 		} else {
-			c.b.Emit(instr.I64_CONST, 0)
+			c.emit(instr.I64_CONST, 0)
 			c.expr(x.X)
-			c.b.Emit(instr.I64_SUB)
+			c.emit(instr.I64_SUB)
 		}
 	case token.TILDE:
 		c.expr(x.X)
-		c.b.Emit(instr.I64_CONST, ^uint64(0))
-		c.b.Emit(instr.I64_XOR)
+		c.emit(instr.I64_CONST, ^uint64(0))
+		c.emit(instr.I64_XOR)
 	}
 }
 
@@ -338,27 +481,27 @@ func (c *compiler) emitBinary(op token.Type, lt, rt types.Type, emitL, emitR fun
 	case token.SLASH: // true division always yields float
 		emitL()
 		if lt == types.Int {
-			c.b.Emit(instr.I64_TO_F64_S)
+			c.emit(instr.I64_TO_F64_S)
 		}
 		emitR()
 		if lt == types.Int {
-			c.b.Emit(instr.I64_TO_F64_S)
+			c.emit(instr.I64_TO_F64_S)
 		}
-		c.b.Emit(instr.F64_DIV)
+		c.emit(instr.F64_DIV)
 	case token.DOUBLESLASH:
 		emitL()
 		emitR()
 		if lt == types.Int {
-			c.b.Emit(instr.I64_DIV_S)
+			c.emit(instr.I64_DIV_S)
 		} else {
-			c.b.Emit(instr.F64_DIV)
-			c.b.Emit(instr.F64_FLOOR)
+			c.emit(instr.F64_DIV)
+			c.emit(instr.F64_FLOOR)
 		}
 	case token.PERCENT:
 		emitL()
 		emitR()
 		if lt == types.Int {
-			c.b.Emit(instr.I64_REM_S)
+			c.emit(instr.I64_REM_S)
 		} else {
 			c.callHost(c.host.floatMod)
 		}
@@ -374,37 +517,37 @@ func (c *compiler) emitBinary(op token.Type, lt, rt types.Type, emitL, emitR fun
 		emitL()
 		emitR()
 		if lt == types.Str {
-			c.b.Emit(instr.STRING_CONCAT)
+			c.emit(instr.STRING_CONCAT)
 		} else {
-			c.b.Emit(simpleBinOp(op, lt))
+			c.emit(simpleBinOp(op, lt))
 		}
 	default:
 		emitL()
 		emitR()
-		c.b.Emit(simpleBinOp(op, lt))
+		c.emit(simpleBinOp(op, lt))
 	}
 }
 
 // boolOp lowers short-circuiting `and`/`or` (docs/spec/05-codegen.md).
 func (c *compiler) boolOp(x *ast.BoolOp) {
 	c.expr(x.X)
-	c.b.Emit(instr.DUP)
+	c.emit(instr.DUP)
 	if x.Op == token.AND {
-		eval := c.b.Label()
-		end := c.b.Label()
-		c.b.BrIf(eval)
-		c.b.Br(end)
-		c.b.Bind(eval)
-		c.b.Emit(instr.DROP)
+		eval := c.label()
+		end := c.label()
+		c.brIf(eval)
+		c.br(end)
+		c.bind(eval)
+		c.emit(instr.DROP)
 		c.expr(x.Y)
-		c.b.Bind(end)
+		c.bind(end)
 		return
 	}
-	end := c.b.Label()
-	c.b.BrIf(end)
-	c.b.Emit(instr.DROP)
+	end := c.label()
+	c.brIf(end)
+	c.emit(instr.DROP)
 	c.expr(x.Y)
-	c.b.Bind(end)
+	c.bind(end)
 }
 
 // compare lowers a (possibly chained) comparison to an i32 result. Operands are
@@ -415,7 +558,7 @@ func (c *compiler) compare(x *ast.Compare) {
 	prev := x.Comparators[0]
 	for i := 1; i < len(x.Ops); i++ {
 		c.emitCmp(prev, x.Ops[i], x.Comparators[i])
-		c.b.Emit(instr.I32_AND)
+		c.emit(instr.I32_AND)
 		prev = x.Comparators[i]
 	}
 }
@@ -424,13 +567,22 @@ func (c *compiler) emitCmp(l ast.Expr, op token.Type, r ast.Expr) {
 	t := c.exprType[l]
 	c.expr(l)
 	c.expr(r)
-	c.b.Emit(cmpOpcode(op, t))
+	c.emit(cmpOpcode(op, t))
 }
 
-// call lowers a builtin call. Inline builtins emit opcodes directly; print/str
-// and the parse helpers go through host functions.
+// call lowers a direct builtin or user-function call. Inline builtins emit
+// opcodes directly; print/str and the parse helpers go through host functions.
 func (c *compiler) call(x *ast.CallExpr) {
 	name := x.Fn.(*ast.Name).Name
+	if fn, ok := c.funcs[name]; ok {
+		for _, arg := range x.Args {
+			c.expr(arg)
+		}
+		c.emit(instr.GLOBAL_GET, uint64(fn.slot.index))
+		c.emit(instr.CALL)
+		return
+	}
+
 	arg := x.Args[0]
 	at := c.exprType[arg]
 
@@ -447,9 +599,9 @@ func (c *compiler) call(x *ast.CallExpr) {
 		c.expr(arg)
 		switch at {
 		case types.Float:
-			c.b.Emit(instr.F64_TO_I64_S)
+			c.emit(instr.F64_TO_I64_S)
 		case types.Bool:
-			c.b.Emit(instr.I32_TO_I64_S)
+			c.emit(instr.I32_TO_I64_S)
 		case types.Str:
 			c.callHost(c.host.intParse)
 		}
@@ -457,9 +609,9 @@ func (c *compiler) call(x *ast.CallExpr) {
 		c.expr(arg)
 		switch at {
 		case types.Int:
-			c.b.Emit(instr.I64_TO_F64_S)
+			c.emit(instr.I64_TO_F64_S)
 		case types.Bool:
-			c.b.Emit(instr.I32_TO_F64_S)
+			c.emit(instr.I32_TO_F64_S)
 		case types.Str:
 			c.callHost(c.host.floatParse)
 		}
@@ -467,22 +619,22 @@ func (c *compiler) call(x *ast.CallExpr) {
 		c.expr(arg)
 		switch at {
 		case types.Int:
-			c.b.Emit(instr.I64_CONST, 0)
-			c.b.Emit(instr.I64_NE)
+			c.emit(instr.I64_CONST, 0)
+			c.emit(instr.I64_NE)
 		case types.Float:
-			c.b.Emit(instr.F64_CONST, math.Float64bits(0))
-			c.b.Emit(instr.F64_NE)
+			c.emit(instr.F64_CONST, math.Float64bits(0))
+			c.emit(instr.F64_NE)
 		case types.Str:
-			c.b.Emit(instr.STRING_LEN)
-			c.b.Emit(instr.I64_CONST, 0)
-			c.b.Emit(instr.I64_NE)
+			c.emit(instr.STRING_LEN)
+			c.emit(instr.I64_CONST, 0)
+			c.emit(instr.I64_NE)
 		}
 	case "abs":
 		if at == types.Int {
 			c.absInt(arg)
 		} else {
 			c.expr(arg)
-			c.b.Emit(instr.F64_ABS)
+			c.emit(instr.F64_ABS)
 		}
 	}
 }
@@ -491,32 +643,32 @@ func (c *compiler) call(x *ast.CallExpr) {
 // negative (the entry frame has no locals for a branchless trick).
 func (c *compiler) absInt(arg ast.Expr) {
 	c.expr(arg)
-	c.b.Emit(instr.DUP)
-	c.b.Emit(instr.I64_CONST, 0)
-	c.b.Emit(instr.I64_LT_S)
-	neg := c.b.Label()
-	end := c.b.Label()
-	c.b.BrIf(neg)
-	c.b.Br(end)
-	c.b.Bind(neg)
-	c.b.Emit(instr.I64_CONST, 0)
-	c.b.Emit(instr.SWAP)
-	c.b.Emit(instr.I64_SUB)
-	c.b.Bind(end)
+	c.emit(instr.DUP)
+	c.emit(instr.I64_CONST, 0)
+	c.emit(instr.I64_LT_S)
+	neg := c.label()
+	end := c.label()
+	c.brIf(neg)
+	c.br(end)
+	c.bind(neg)
+	c.emit(instr.I64_CONST, 0)
+	c.emit(instr.SWAP)
+	c.emit(instr.I64_SUB)
+	c.bind(end)
 }
 
 // callHost emits a call to a value-returning host function.
 func (c *compiler) callHost(fn *interp.HostFunction) {
-	c.b.Emit(instr.CONST_GET, uint64(c.constOf(fn)))
-	c.b.Emit(instr.CALL)
+	c.emit(instr.CONST_GET, uint64(c.constOf(fn)))
+	c.emit(instr.CALL)
 }
 
 // callHostVoid emits a call to a void host function, padding a REF_NULL so the
 // expression still leaves exactly one value on the stack.
 func (c *compiler) callHostVoid(fn *interp.HostFunction) {
-	c.b.Emit(instr.CONST_GET, uint64(c.constOf(fn)))
-	c.b.Emit(instr.CALL)
-	c.b.Emit(instr.REF_NULL)
+	c.emit(instr.CONST_GET, uint64(c.constOf(fn)))
+	c.emit(instr.CALL)
+	c.emit(instr.REF_NULL)
 }
 
 // constOf interns a host function once and returns its constant-pool index,
@@ -526,7 +678,7 @@ func (c *compiler) constOf(fn *interp.HostFunction) int {
 	if idx, ok := c.constIdx[fn]; ok {
 		return idx
 	}
-	idx := c.b.Const(fn)
+	idx := c.prog.Const(fn)
 	c.constIdx[fn] = idx
 	return idx
 }

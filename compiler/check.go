@@ -14,25 +14,49 @@ type global struct {
 	init  bool
 }
 
+type local struct {
+	typ   types.Type
+	index int
+	init  bool
+}
+
+type param struct {
+	name string
+	typ  types.Type
+}
+
+type fn struct {
+	name   string
+	params []param
+	ret    types.Type
+	slot   *global
+	locals map[string]*local
+	order  []string
+}
+
 // checker resolves names and types for a module, producing a per-expression
 // type table and a global symbol table consumed by the compiler.
 type checker struct {
 	errs     token.ErrorList
 	exprType map[ast.Expr]types.Type
 	globals  map[string]*global
+	funcs    map[string]*fn
 	order    []string
 	loops    int // enclosing-loop depth, for break/continue validation
+	fn       *fn
 }
 
 func newChecker() *checker {
 	return &checker{
 		exprType: map[ast.Expr]types.Type{},
 		globals:  map[string]*global{},
+		funcs:    map[string]*fn{},
 	}
 }
 
 // check walks every top-level statement, accumulating diagnostics.
 func (c *checker) check(mod *ast.Module) {
+	c.declareFuncs(mod.Body)
 	c.checkBlock(mod.Body)
 }
 
@@ -59,6 +83,10 @@ func (c *checker) stmt(s ast.Stmt) {
 		c.whileStmt(n)
 	case *ast.For:
 		c.forStmt(n)
+	case *ast.Function:
+		c.function(n)
+	case *ast.Return:
+		c.ret(n)
 	case *ast.Break:
 		if c.loops == 0 {
 			c.errs.Add(n.Pos(), token.SyntaxError, "'break' outside loop")
@@ -90,9 +118,15 @@ func (c *checker) whileStmt(n *ast.While) {
 // range element type); its body runs inside a loop for break/continue.
 func (c *checker) forStmt(n *ast.For) {
 	c.forRange(n)
-	g := c.declare(n.Target.Name, types.Int, n.Target.Pos())
-	g.init = true
-	c.exprType[n.Target] = g.typ
+	if c.fn != nil {
+		l := c.declareLocal(n.Target.Name, types.Int, n.Target.Pos())
+		l.init = true
+		c.exprType[n.Target] = l.typ
+	} else {
+		g := c.declare(n.Target.Name, types.Int, n.Target.Pos())
+		g.init = true
+		c.exprType[n.Target] = g.typ
+	}
 	c.loops++
 	c.checkBlock(n.Body)
 	c.loops--
@@ -153,13 +187,23 @@ func (c *checker) annAssign(n *ast.AnnAssign) {
 			c.errs.Add(n.Ann.Pos(), token.UnsupportedType, "unknown type %q", name.Name)
 		}
 	}
-	g := c.declare(n.Target.Name, t, n.Pos())
+	var g *global
+	var l *local
+	if c.fn != nil {
+		l = c.declareLocal(n.Target.Name, t, n.Pos())
+	} else {
+		g = c.declare(n.Target.Name, t, n.Pos())
+	}
 	if n.Value != nil {
 		vt := c.expr(n.Value)
 		if t != types.Invalid && vt != types.Invalid && !types.AssignableTo(vt, t) {
 			c.errs.Add(n.Value.Pos(), token.TypeMismatch, "cannot assign %s to %s %q", vt, t, n.Target.Name)
 		}
-		g.init = true
+		if l != nil {
+			l.init = true
+		} else {
+			g.init = true
+		}
 	}
 }
 
@@ -168,7 +212,26 @@ func (c *checker) assign(n *ast.Assign) {
 	if !ok {
 		return
 	}
+	if c.fn == nil {
+		if _, isFunc := c.funcs[name.Name]; isFunc {
+			c.errs.Add(n.Pos(), token.TypeMismatch, "cannot assign to function %q", name.Name)
+			c.expr(n.Value)
+			return
+		}
+	}
 	vt := c.expr(n.Value)
+	if c.fn != nil {
+		l, declared := c.fn.locals[name.Name]
+		if !declared {
+			l = c.declareLocal(name.Name, vt, n.Pos())
+		}
+		if l.typ != types.Invalid && vt != types.Invalid && !types.AssignableTo(vt, l.typ) {
+			c.errs.Add(n.Value.Pos(), token.TypeMismatch, "cannot assign %s to %s %q", vt, l.typ, name.Name)
+		}
+		l.init = true
+		c.exprType[name] = l.typ
+		return
+	}
 	g, declared := c.globals[name.Name]
 	if !declared {
 		c.errs.Add(n.Pos(), token.MissingAnnotation, "global %q needs a type annotation on its first assignment", name.Name)
@@ -187,6 +250,25 @@ func (c *checker) assign(n *ast.Assign) {
 func (c *checker) augAssign(n *ast.AugAssign) {
 	name, ok := n.Target.(*ast.Name)
 	if !ok {
+		return
+	}
+	if c.fn != nil {
+		l, declared := c.fn.locals[name.Name]
+		if !declared {
+			c.errs.Add(n.Pos(), token.UndefinedName, "name %q is not defined", name.Name)
+			c.expr(n.Value)
+			return
+		}
+		if !l.init {
+			c.errs.Add(n.Pos(), token.UseBeforeDefinition, "name %q used before assignment", name.Name)
+		}
+		c.exprType[name] = l.typ
+		vt := c.expr(n.Value)
+		rt := c.binaryType(l.typ, n.Op, vt, n.Pos())
+		if rt != types.Invalid && l.typ != types.Invalid && !types.AssignableTo(rt, l.typ) {
+			c.errs.Add(n.Pos(), token.TypeMismatch, "result %s is not assignable to %s %q", rt, l.typ, name.Name)
+		}
+		l.init = true
 		return
 	}
 	g, declared := c.globals[name.Name]
@@ -211,6 +293,10 @@ func (c *checker) augAssign(n *ast.AugAssign) {
 // change on redeclaration.
 func (c *checker) declare(name string, t types.Type, pos token.Pos) *global {
 	if g, ok := c.globals[name]; ok {
+		if _, isFunc := c.funcs[name]; isFunc && t != types.Invalid {
+			c.errs.Add(pos, token.TypeMismatch, "cannot redeclare function %q", name)
+			return g
+		}
 		if t != types.Invalid && g.typ != types.Invalid && g.typ != t {
 			c.errs.Add(pos, token.TypeMismatch, "cannot redeclare %q from %s to %s", name, g.typ, t)
 		}
@@ -220,6 +306,115 @@ func (c *checker) declare(name string, t types.Type, pos token.Pos) *global {
 	c.globals[name] = g
 	c.order = append(c.order, name)
 	return g
+}
+
+func (c *checker) declareLocal(name string, t types.Type, pos token.Pos) *local {
+	if l, ok := c.fn.locals[name]; ok {
+		if t != types.Invalid && l.typ != types.Invalid && l.typ != t {
+			c.errs.Add(pos, token.TypeMismatch, "cannot redeclare %q from %s to %s", name, l.typ, t)
+		}
+		return l
+	}
+	l := &local{typ: t, index: len(c.fn.params) + len(c.fn.order)}
+	c.fn.locals[name] = l
+	c.fn.order = append(c.fn.order, name)
+	return l
+}
+
+func (c *checker) declareFuncs(body []ast.Stmt) {
+	for _, s := range body {
+		f, ok := s.(*ast.Function)
+		if !ok {
+			continue
+		}
+		if _, exists := c.funcs[f.Name.Name]; exists {
+			c.errs.Add(f.Name.Pos(), token.TypeMismatch, "cannot redeclare function %q", f.Name.Name)
+			continue
+		}
+		if _, exists := c.globals[f.Name.Name]; exists {
+			c.errs.Add(f.Name.Pos(), token.TypeMismatch, "cannot redeclare %q as a function", f.Name.Name)
+			continue
+		}
+		info := &fn{
+			name:   f.Name.Name,
+			ret:    c.resolveType(f.Returns),
+			locals: map[string]*local{},
+		}
+		for _, p := range f.Params {
+			pt := c.resolveType(p.Ann)
+			info.params = append(info.params, param{name: p.Name.Name, typ: pt})
+		}
+		info.slot = c.declare(f.Name.Name, types.Invalid, f.Pos())
+		c.funcs[f.Name.Name] = info
+	}
+}
+
+func (c *checker) resolveType(e ast.Expr) types.Type {
+	if name, ok := e.(*ast.Name); ok {
+		if resolved, known := types.Resolve(name.Name); known {
+			return resolved
+		}
+		c.errs.Add(e.Pos(), token.UnsupportedType, "unknown type %q", name.Name)
+	}
+	return types.Invalid
+}
+
+func (c *checker) function(n *ast.Function) {
+	if c.fn != nil {
+		c.errs.Add(n.Pos(), token.UnsupportedFeature, "nested functions are M4")
+		return
+	}
+	info := c.funcs[n.Name.Name]
+	if info == nil {
+		return
+	}
+	info.slot.init = true
+
+	prev := c.fn
+	c.fn = info
+	for i, p := range info.params {
+		if _, exists := info.locals[p.name]; exists {
+			c.errs.Add(n.Params[i].Name.Pos(), token.TypeMismatch, "duplicate parameter %q", p.name)
+			continue
+		}
+		info.locals[p.name] = &local{typ: p.typ, index: i, init: true}
+	}
+	c.checkBlock(n.Body)
+	if info.ret != types.None && !blockReturns(n.Body) {
+		c.errs.Add(n.Pos(), token.TypeMismatch, "function %q may fall through without returning %s", info.name, info.ret)
+	}
+	c.fn = prev
+}
+
+func (c *checker) ret(n *ast.Return) {
+	if c.fn == nil {
+		c.errs.Add(n.Pos(), token.SyntaxError, "'return' outside function")
+		if n.Value != nil {
+			c.expr(n.Value)
+		}
+		return
+	}
+	rt := types.None
+	if n.Value != nil {
+		rt = c.expr(n.Value)
+	}
+	if c.fn.ret != types.Invalid && rt != types.Invalid && !types.AssignableTo(rt, c.fn.ret) {
+		c.errs.Add(n.Pos(), token.TypeMismatch, "cannot return %s from function returning %s", rt, c.fn.ret)
+	}
+}
+
+func blockReturns(body []ast.Stmt) bool {
+	for _, s := range body {
+		switch n := s.(type) {
+		case *ast.Return:
+			return true
+		case *ast.If:
+			if len(n.Orelse) > 0 && blockReturns(n.Body) && blockReturns(n.Orelse) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // expr types an expression, records the result, and returns it.
@@ -277,6 +472,18 @@ func (c *checker) ifExpType(n *ast.IfExp) types.Type {
 }
 
 func (c *checker) nameType(n *ast.Name) types.Type {
+	if c.fn != nil {
+		if l, ok := c.fn.locals[n.Name]; ok {
+			if !l.init {
+				c.errs.Add(n.Pos(), token.UseBeforeDefinition, "name %q used before assignment", n.Name)
+			}
+			return l.typ
+		}
+	}
+	if _, ok := c.funcs[n.Name]; ok {
+		c.errs.Add(n.Pos(), token.UnsupportedFeature, "function values are not supported yet; call %s(...) directly", n.Name)
+		return types.Invalid
+	}
 	g, ok := c.globals[n.Name]
 	if !ok {
 		c.errs.Add(n.Pos(), token.UndefinedName, "name %q is not defined", n.Name)
@@ -425,8 +632,25 @@ func (c *checker) callType(n *ast.CallExpr) types.Type {
 		c.errs.Add(name.Pos(), token.UnsupportedFeature, "range as a value is M6; in M1 range(...) appears only in a 'for' loop")
 		return types.Invalid
 	}
+	if fn, ok := c.funcs[name.Name]; ok {
+		if c.fn == nil && !fn.slot.init {
+			c.errs.Add(name.Pos(), token.UseBeforeDefinition, "function %q used before definition", name.Name)
+			return types.Invalid
+		}
+		if len(argTypes) != len(fn.params) {
+			c.errs.Add(n.Pos(), token.ArityMismatch, "%s() takes exactly %d arguments (%d given)", name.Name, len(fn.params), len(argTypes))
+			return types.Invalid
+		}
+		for i, at := range argTypes {
+			pt := fn.params[i].typ
+			if at != types.Invalid && pt != types.Invalid && !types.AssignableTo(at, pt) {
+				c.errs.Add(n.Args[i].Pos(), token.TypeMismatch, "%s() argument %d must be %s, got %s", name.Name, i+1, pt, at)
+			}
+		}
+		return fn.ret
+	}
 	if !isBuiltin(name.Name) {
-		c.errs.Add(name.Pos(), token.UndefinedName, "name %q is not defined (user functions arrive in M2)", name.Name)
+		c.errs.Add(name.Pos(), token.UndefinedName, "name %q is not defined", name.Name)
 		return types.Invalid
 	}
 	if len(argTypes) != 1 {

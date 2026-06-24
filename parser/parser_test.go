@@ -204,20 +204,43 @@ else:
 		require.Equal(t, "c", ifExp.Cond.(*ast.Name).Name)
 		require.Equal(t, int64(2), ifExp.Orelse.(*ast.IntLit).Value)
 	})
+
+	t.Run("function definition with return", func(t *testing.T) {
+		mod, err := parse(`def add(x: int, y: int) -> int:
+    return x + y
+`)
+		require.NoError(t, err)
+		fn := mod.Body[0].(*ast.Function)
+		require.Equal(t, "add", fn.Name.Name)
+		require.Len(t, fn.Params, 2)
+		require.Equal(t, "x", fn.Params[0].Name.Name)
+		require.Equal(t, "int", fn.Params[0].Ann.(*ast.Name).Name)
+		require.Equal(t, "int", fn.Returns.(*ast.Name).Name)
+		ret := fn.Body[0].(*ast.Return)
+		require.Equal(t, token.PLUS, ret.Value.(*ast.BinaryExpr).Op)
+	})
+
+	t.Run("decorated function", func(t *testing.T) {
+		mod, err := parse("@staticmethod\ndef f() -> None:\n    return\n")
+		require.NoError(t, err)
+		fn := mod.Body[0].(*ast.Function)
+		require.Equal(t, "staticmethod", fn.Decorators[0].Name)
+		require.Nil(t, fn.Body[0].(*ast.Return).Value)
+	})
 }
 
 func TestParseErrors(t *testing.T) {
 	cases := map[string]token.Code{
-		"def f():\n    x\n":    token.UnsupportedFeature,
-		"return 1\n":           token.UnsupportedFeature,
-		"x = lambda: 1\n":      token.UnsupportedFeature,
-		"xs = [1, 2]\n":        token.UnsupportedFeature,
-		"d = {}\n":             token.UnsupportedFeature,
-		"t = (1, 2)\n":         token.UnsupportedFeature,
-		"v: list[int]\n":       token.UnsupportedType,
-		"1 = 2\n":              token.SyntaxError,
-		"else:\n    pass\n":    token.SyntaxError,
-		"for i, j in x:\n p\n": token.UnsupportedFeature,
+		"x = lambda: 1\n":        token.UnsupportedFeature,
+		"xs = [1, 2]\n":          token.UnsupportedFeature,
+		"d = {}\n":               token.UnsupportedFeature,
+		"t = (1, 2)\n":           token.UnsupportedFeature,
+		"v: list[int]\n":         token.UnsupportedType,
+		"1 = 2\n":                token.SyntaxError,
+		"else:\n    pass\n":      token.SyntaxError,
+		"for i, j in x:\n p\n":   token.UnsupportedFeature,
+		"def f(x) -> int:\n p\n": token.MissingAnnotation,
+		"@pkg.decorator\ndef f() -> None:\n pass\n": token.UnsupportedFeature,
 	}
 	for src, code := range cases {
 		_, err := parse(src)

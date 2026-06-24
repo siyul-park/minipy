@@ -261,6 +261,33 @@ print(str(total))
 `
 		require.Equal(t, "10\n", run(t, src))
 	})
+
+	t.Run("function call with local inference", func(t *testing.T) {
+		src := `def add(x: int, y: int) -> int:
+    z = x + y
+    return z
+print(str(add(20, 22)))
+`
+		require.Equal(t, "42\n", run(t, src))
+	})
+
+	t.Run("recursive function", func(t *testing.T) {
+		src := `def fib(n: int) -> int:
+    if n < 2:
+        return n
+    return fib(n - 1) + fib(n - 2)
+print(str(fib(10)))
+`
+		require.Equal(t, "55\n", run(t, src))
+	})
+
+	t.Run("none returning function", func(t *testing.T) {
+		src := `def greet() -> None:
+    print("hi")
+greet()
+`
+		require.Equal(t, "hi\n", run(t, src))
+	})
 }
 
 func TestCompileErrors(t *testing.T) {
@@ -292,6 +319,12 @@ func TestCompileErrors(t *testing.T) {
 		"a: int = 1\nfor i in range(0, 9, a):\n p\n": token.UnsupportedFeature,
 		"for i in range(0, 9, 0):\n    pass\n":       token.SyntaxError,
 		"x: int = 1 if True else \"a\"\n":            token.TypeMismatch,
+		// M2 functions
+		"return 1\n": token.SyntaxError,
+		"def f(x: int) -> int:\n    return \"x\"\n":              token.TypeMismatch,
+		"def f(x: int) -> int:\n    return x\nprint(f())\n":      token.ArityMismatch,
+		"def f(x: int) -> int:\n    return x\nprint(f(\"x\"))\n": token.TypeMismatch,
+		"def f(x: int) -> int:\n    pass\n":                      token.TypeMismatch,
 	}
 	for src, code := range cases {
 		_, err := Compile(strings.NewReader(src), WithOutput(&bytes.Buffer{}))
