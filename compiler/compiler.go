@@ -275,6 +275,8 @@ func (c *Compiler) stmt(s ast.Stmt) {
 		// scope declarations affect checking only
 	case *ast.Return:
 		c.ret(n)
+	case *ast.Yield:
+		c.yield(n)
 	case *ast.Break:
 		c.br(c.loops[len(c.loops)-1].brk)
 	case *ast.Continue:
@@ -453,61 +455,40 @@ func (c *Compiler) emitWhile(n *ast.While) {
 	c.bind(end)
 }
 
-// emitFor lowers `for NAME in range(...)` to an integer counter loop driven by
-// the target binding: start initializes the counter once, then the stop bound is
-// re-tested each iteration and the constant step's sign fixes the test direction
-// (docs/spec/05-codegen.md). continue → the increment, break → past the else
-// block.
+// emitFor lowers array-backed iterables with indexed loops and M6 Iterator[T]
+// values with the minivm coroutine/iterator protocol. continue → increment or
+// resume, break → past the else block.
 func (c *Compiler) emitFor(n *ast.For) {
-	target := forTargetName(n.Target)
-	if !isRangeCall(n.Iter) {
-		c.emitIterableFor(n)
+	if _, ok := c.types[n.Iter].(*types.Iterator); ok {
+		c.emitIteratorFor(n)
 		return
 	}
-	args := n.Iter.(*ast.CallExpr).Args
-	var startExpr, stopExpr ast.Expr
-	step := int64(1)
-	switch len(args) {
-	case 1:
-		stopExpr = args[0]
-	case 2:
-		startExpr, stopExpr = args[0], args[1]
-	default: // 3, validated by the checker
-		startExpr, stopExpr, step = args[0], args[1], constIntValue(args[2])
-	}
+	c.emitIterableFor(n)
+}
 
-	if startExpr != nil {
-		c.expr(startExpr)
-	} else {
-		c.emit(instr.I64_CONST, 0)
-	}
-	c.set(target.Name)
-
+func (c *Compiler) emitIteratorFor(n *ast.For) {
+	iterSlot := c.tmp()
+	c.expr(n.Iter)
+	c.emit(instr.GLOBAL_SET, uint64(iterSlot))
 	top := c.label()
 	cont := c.label()
 	elseL := c.label()
 	end := c.label()
 
 	c.bind(top)
-	c.get(target.Name)
-	c.expr(stopExpr)
-	if step < 0 {
-		c.emit(instr.I64_GT_S)
-	} else {
-		c.emit(instr.I64_LT_S)
-	}
-	c.emit(instr.I32_EQZ)
+	c.emit(instr.GLOBAL_GET, uint64(iterSlot))
+	c.emit(instr.CORO_DONE)
 	c.brIf(elseL)
+	c.emit(instr.GLOBAL_GET, uint64(iterSlot))
+	c.emit(instr.CORO_VALUE)
+	c.setLoopTarget(n.Target)
 
 	c.loops = append(c.loops, loopLabels{cont: cont, brk: end})
 	c.block(n.Body)
 	c.loops = c.loops[:len(c.loops)-1]
 
 	c.bind(cont)
-	c.get(target.Name)
-	c.emit(instr.I64_CONST, uint64(step))
-	c.emit(instr.I64_ADD)
-	c.set(target.Name)
+	c.emitResumeIterator(iterSlot)
 	c.br(top)
 
 	c.bind(elseL)
@@ -521,6 +502,9 @@ func (c *Compiler) emitIterableFor(n *ast.For) {
 
 	c.expr(n.Iter)
 	if _, ok := c.types[n.Iter].(*types.Dict); ok {
+		c.emit(instr.MAP_KEYS)
+	}
+	if _, ok := c.types[n.Iter].(*types.Set); ok {
 		c.emit(instr.MAP_KEYS)
 	}
 	c.emit(instr.GLOBAL_SET, uint64(iterSlot))
@@ -618,6 +602,9 @@ func (c *Compiler) funcValue(info *fn, body []ast.Stmt) {
 	child.boxed = map[*local]bool{}
 	child.block(body)
 	child.emitNoneReturn()
+	if child.next > c.next {
+		c.next = child.next
+	}
 
 	fn, err := fb.Build()
 	if err != nil {
@@ -652,6 +639,16 @@ func (c *Compiler) ret(n *ast.Return) {
 		c.emit(instr.REF_NULL)
 	}
 	c.emit(instr.RETURN)
+}
+
+func (c *Compiler) yield(n *ast.Yield) {
+	if n.Value != nil {
+		c.expr(n.Value)
+	} else {
+		c.emit(instr.REF_NULL)
+	}
+	c.emit(instr.YIELD)
+	c.emit(instr.DROP)
 }
 
 func (c *Compiler) emitNoneReturn() {
@@ -859,62 +856,22 @@ func (c *Compiler) comp(clauses []*ast.Comprehension, body func()) {
 				delete(c.temps, clause.Target.Name)
 			}
 		}()
-		if isRangeCall(clause.Iter) {
-			c.rangeComp(clause, targetSlot, func() { emit(i + 1) })
+		if _, ok := c.types[clause.Iter].(*types.Iterator); ok {
+			c.iteratorComp(clause, targetSlot, func() { emit(i + 1) })
 			return
 		}
 		c.iterComp(clause, targetSlot, func() { emit(i + 1) })
 	}
 	emit(0)
 }
-
-func (c *Compiler) rangeComp(clause *ast.Comprehension, targetSlot int, body func()) {
-	args := clause.Iter.(*ast.CallExpr).Args
-	var startExpr, stopExpr ast.Expr
-	step := int64(1)
-	switch len(args) {
-	case 1:
-		stopExpr = args[0]
-	case 2:
-		startExpr, stopExpr = args[0], args[1]
-	default:
-		startExpr, stopExpr, step = args[0], args[1], constIntValue(args[2])
-	}
-	if startExpr != nil {
-		c.expr(startExpr)
-	} else {
-		c.emit(instr.I64_CONST, 0)
-	}
-	c.emit(instr.GLOBAL_SET, uint64(targetSlot))
-	top := c.label()
-	cont := c.label()
-	end := c.label()
-	c.bind(top)
-	c.emit(instr.GLOBAL_GET, uint64(targetSlot))
-	c.expr(stopExpr)
-	if step < 0 {
-		c.emit(instr.I64_GT_S)
-	} else {
-		c.emit(instr.I64_LT_S)
-	}
-	c.emit(instr.I32_EQZ)
-	c.brIf(end)
-	c.compFilters(clause.Ifs, cont)
-	body()
-	c.bind(cont)
-	c.emit(instr.GLOBAL_GET, uint64(targetSlot))
-	c.emit(instr.I64_CONST, uint64(step))
-	c.emit(instr.I64_ADD)
-	c.emit(instr.GLOBAL_SET, uint64(targetSlot))
-	c.br(top)
-	c.bind(end)
-}
-
 func (c *Compiler) iterComp(clause *ast.Comprehension, targetSlot int, body func()) {
 	iterSlot := c.tmp()
 	idxSlot := c.tmp()
 	c.expr(clause.Iter)
 	if _, ok := c.types[clause.Iter].(*types.Dict); ok {
+		c.emit(instr.MAP_KEYS)
+	}
+	if _, ok := c.types[clause.Iter].(*types.Set); ok {
 		c.emit(instr.MAP_KEYS)
 	}
 	c.emit(instr.GLOBAL_SET, uint64(iterSlot))
@@ -943,6 +900,28 @@ func (c *Compiler) iterComp(clause *ast.Comprehension, targetSlot int, body func
 	c.emit(instr.I64_CONST, 1)
 	c.emit(instr.I64_ADD)
 	c.emit(instr.GLOBAL_SET, uint64(idxSlot))
+	c.br(top)
+	c.bind(end)
+}
+
+func (c *Compiler) iteratorComp(clause *ast.Comprehension, targetSlot int, body func()) {
+	iterSlot := c.tmp()
+	c.expr(clause.Iter)
+	c.emit(instr.GLOBAL_SET, uint64(iterSlot))
+	top := c.label()
+	cont := c.label()
+	end := c.label()
+	c.bind(top)
+	c.emit(instr.GLOBAL_GET, uint64(iterSlot))
+	c.emit(instr.CORO_DONE)
+	c.brIf(end)
+	c.emit(instr.GLOBAL_GET, uint64(iterSlot))
+	c.emit(instr.CORO_VALUE)
+	c.emit(instr.GLOBAL_SET, uint64(targetSlot))
+	c.compFilters(clause.Ifs, cont)
+	body()
+	c.bind(cont)
+	c.emitResumeIterator(iterSlot)
 	c.br(top)
 	c.bind(end)
 }
@@ -1193,6 +1172,13 @@ func (c *Compiler) contains(op token.Type, l ast.Expr, r ast.Expr) {
 	}
 }
 
+func (c *Compiler) emitResumeIterator(slot int) {
+	c.emit(instr.GLOBAL_GET, uint64(slot))
+	c.emit(instr.REF_NULL)
+	c.emit(instr.RESUME)
+	c.emit(instr.DROP)
+}
+
 // call lowers a direct builtin or user-function call. Inline builtins emit
 // opcodes directly; print/str and the parse helpers go through host functions.
 func (c *Compiler) call(x *ast.CallExpr) {
@@ -1305,7 +1291,73 @@ func (c *Compiler) call(x *ast.CallExpr) {
 		c.expr(x.Args[0])
 		c.expr(x.Args[1])
 		c.callHost(c.host.zip(c.types[x]))
+	case "range":
+		c.rangeCall(x)
+	case "iter":
+		c.iterCall(arg, at)
+	case "next":
+		c.nextCall(arg)
 	}
+}
+
+func (c *Compiler) rangeCall(x *ast.CallExpr) {
+	switch len(x.Args) {
+	case 1:
+		c.emit(instr.I64_CONST, 0)
+		c.expr(x.Args[0])
+		c.emit(instr.I64_CONST, 1)
+	case 2:
+		c.expr(x.Args[0])
+		c.expr(x.Args[1])
+		c.emit(instr.I64_CONST, 1)
+	default:
+		c.expr(x.Args[0])
+		c.expr(x.Args[1])
+		c.expr(x.Args[2])
+	}
+	c.callHost(c.host.rangeIter)
+}
+
+func (c *Compiler) iterCall(arg ast.Expr, at types.Type) {
+	if _, ok := at.(*types.Iterator); ok {
+		c.expr(arg)
+		return
+	}
+	c.expr(arg)
+	switch at.(type) {
+	case *types.Dict, *types.Set:
+		c.emit(instr.MAP_ITER)
+	case *types.List:
+		c.callHost(c.host.listIter(at))
+	default:
+		if types.Equal(at, types.Str) {
+			c.callHost(c.host.strIter())
+		}
+	}
+}
+
+func (c *Compiler) nextCall(arg ast.Expr) {
+	valSlot := c.tmp()
+	done := c.label()
+	end := c.label()
+	c.expr(arg)
+	c.emit(instr.DUP)
+	c.emit(instr.CORO_DONE)
+	c.brIf(done)
+	c.emit(instr.DUP)
+	c.emit(instr.CORO_VALUE)
+	c.emit(instr.GLOBAL_SET, uint64(valSlot))
+	c.emit(instr.REF_NULL)
+	c.emit(instr.RESUME)
+	c.emit(instr.DROP)
+	c.emit(instr.GLOBAL_GET, uint64(valSlot))
+	c.br(end)
+	c.bind(done)
+	c.emit(instr.REF_NULL)
+	c.emit(instr.RESUME)
+	c.emit(instr.DROP)
+	c.emit(instr.UNREACHABLE)
+	c.bind(end)
 }
 
 func (c *Compiler) methodCall(x *ast.CallExpr, attr *ast.Attribute) {

@@ -473,6 +473,80 @@ print(str(len(s)))
 		require.Error(t, err)
 		hasCode(t, err, token.UndefinedName)
 	})
+
+	t.Run("M6 generator roadmap sample", func(t *testing.T) {
+		src := `def upto(n: int) -> Iterator[int]:
+    i: int = 0
+    while i < n:
+        yield i
+        i = i + 1
+total: int = 0
+for v in upto(5):
+    total = total + v
+print(str(total))
+`
+		require.Equal(t, "10\n", run(t, src))
+	})
+
+	t.Run("M6 generator loop control and else", func(t *testing.T) {
+		src := `def upto(n: int) -> Iterator[int]:
+    i: int = 0
+    while i < n:
+        yield i
+        i = i + 1
+total: int = 0
+for v in upto(5):
+    if v == 1:
+        continue
+    if v == 4:
+        break
+    total = total + v
+else:
+    total = 99
+print(str(total))
+`
+		require.Equal(t, "5\n", run(t, src))
+	})
+
+	t.Run("M6 range value and direct next", func(t *testing.T) {
+		src := `r: Iterator[int] = range(2, 8, 3)
+print(str(next(r)))
+print(str(next(r)))
+`
+		require.Equal(t, "2\n5\n", run(t, src))
+	})
+
+	t.Run("M6 exhausted next reports runtime error", func(t *testing.T) {
+		prog, err := Compile(strings.NewReader("r: Iterator[int] = range(1)\nprint(str(next(r)))\nprint(str(next(r)))\n"), WithOutput(io.Discard))
+		require.NoError(t, err)
+		vm := interp.New(prog)
+		defer vm.Close()
+		require.Error(t, vm.Run(context.Background()))
+	})
+
+	t.Run("M6 iter over list dict set and str", func(t *testing.T) {
+		src := `xs: list[int] = [4, 5]
+d: dict[str, int] = {"a": 1}
+s: set[int] = {7}
+text: str = "xy"
+print(str(next(iter(xs))))
+print(next(iter(d)))
+print(str(next(iter(s))))
+print(next(iter(text)))
+`
+		require.Equal(t, "4\na\n7\nx\n", run(t, src))
+	})
+
+	t.Run("M6 nested generator captures outer local", func(t *testing.T) {
+		src := `def outer(base: int) -> Iterator[int]:
+    def inner() -> Iterator[int]:
+        yield base + 1
+    for v in inner():
+        yield v
+print(str(next(outer(9))))
+`
+		require.Equal(t, "10\n", run(t, src))
+	})
 }
 
 func hasOps(t *testing.T, constants []vmtypes.Value, ops ...instr.Opcode) {
@@ -512,15 +586,14 @@ func TestCompileErrors(t *testing.T) {
 		"print(str(1 < \"a\"))\n":             token.NotComparable,
 		"z += 1\n":                            token.UndefinedName,
 		// M1 control flow
-		"x: int = 1\nif x:\n    pass\n":              token.TypeMismatch,
-		"for i in 5:\n    pass\n":                    token.NotIterable,
-		"break\n":                                    token.SyntaxError,
-		"continue\n":                                 token.SyntaxError,
-		"for i in range(1.5):\n    pass\n":           token.TypeMismatch,
-		"for i in range():\n    pass\n":              token.ArityMismatch,
-		"a: int = 1\nfor i in range(0, 9, a):\n p\n": token.UnsupportedFeature,
-		"for i in range(0, 9, 0):\n    pass\n":       token.SyntaxError,
-		"x: int = 1 if True else \"a\"\n":            token.TypeMismatch,
+		"x: int = 1\nif x:\n    pass\n":        token.TypeMismatch,
+		"for i in 5:\n    pass\n":              token.NotIterable,
+		"break\n":                              token.SyntaxError,
+		"continue\n":                           token.SyntaxError,
+		"for i in range(1.5):\n    pass\n":     token.TypeMismatch,
+		"for i in range():\n    pass\n":        token.ArityMismatch,
+		"for i in range(0, 9, 0):\n    pass\n": token.SyntaxError,
+		"x: int = 1 if True else \"a\"\n":      token.TypeMismatch,
 		// M2 functions
 		"return 1\n": token.SyntaxError,
 		"def f(x: int) -> int:\n    return \"x\"\n":              token.TypeMismatch,
@@ -539,6 +612,12 @@ func TestCompileErrors(t *testing.T) {
 		"xs: list[int] = [i for i in range(3) if i]\n":        token.TypeMismatch,
 		"s: set[list[int]] = {[1] for i in range(1)}\n":       token.UnsupportedType,
 		"f: Callable[[int], int] = lambda x: x\nprint(f())\n": token.ArityMismatch,
+		// M6 generators and iterators
+		"yield 1\n":                                                token.SyntaxError,
+		"def g() -> int:\n    yield 1\n":                           token.TypeMismatch,
+		"def g() -> Iterator[int]:\n    yield \"x\"\n":             token.TypeMismatch,
+		"def g() -> Iterator[int]:\n    return 1\n":                token.TypeMismatch,
+		"def g() -> Iterator[int]:\n    yield 1\nprint(next(1))\n": token.TypeMismatch,
 	}
 	for src, code := range cases {
 		_, err := Compile(strings.NewReader(src), WithOutput(&bytes.Buffer{}))

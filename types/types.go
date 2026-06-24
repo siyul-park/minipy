@@ -44,6 +44,10 @@ type Tuple struct {
 	Elems []Type
 }
 
+type Iterator struct {
+	Elem Type
+}
+
 type Callable struct {
 	Params []Type
 	Return Type
@@ -63,6 +67,7 @@ func (*List) sealed()     {}
 func (*Dict) sealed()     {}
 func (*Set) sealed()      {}
 func (*Tuple) sealed()    {}
+func (*Iterator) sealed() {}
 func (*Callable) sealed() {}
 
 func (t primitive) String() string { return t.name }
@@ -172,6 +177,21 @@ func (t *Tuple) Equal(o Type) bool {
 	return true
 }
 
+func (t *Iterator) String() string {
+	if t == nil || t.Elem == nil {
+		return "Iterator[<invalid>]"
+	}
+	return "Iterator[" + t.Elem.String() + "]"
+}
+func (*Iterator) IsNumeric() bool { return false }
+func (t *Iterator) VM() vmtypes.Type {
+	return vmtypes.TypeRef
+}
+func (t *Iterator) Equal(o Type) bool {
+	other, ok := o.(*Iterator)
+	return ok && Equal(t.Elem, other.Elem)
+}
+
 func (t *Callable) String() string {
 	if t == nil {
 		return "Callable[[<invalid>], <invalid>]"
@@ -233,6 +253,10 @@ func SetOf(elem Type) Type {
 func TupleOf(elems ...Type) Type {
 	cp := append([]Type(nil), elems...)
 	return &Tuple{Elems: cp}
+}
+
+func IteratorOf(elem Type) Type {
+	return &Iterator{Elem: elem}
 }
 
 func CallableOf(params []Type, ret Type) Type {

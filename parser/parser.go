@@ -49,7 +49,6 @@ var compoundStmt = map[token.Type]string{
 }
 
 var simpleKeywordStmt = map[token.Type]string{
-	token.YIELD:  "'yield' (M6 generators)",
 	token.RAISE:  "'raise' (M7 exceptions)",
 	token.IMPORT: "'import' (M8 modules)",
 	token.FROM:   "'from' (M8 modules)",
@@ -353,6 +352,19 @@ func (p *Parser) parseSimpleStmt() ast.Stmt {
 			value = p.parseExpression()
 		}
 		return &ast.Return{Base: ast.Base{Position: t.Pos}, Value: value}
+	case token.YIELD:
+		t := p.cur()
+		p.advance()
+		if p.at(token.FROM) {
+			p.errs.Add(t.Pos, token.UnsupportedFeature, "'yield from' is not supported yet")
+			p.skipToStmtEnd()
+			return nil
+		}
+		var value ast.Expr
+		if !p.at(token.SEMICOLON) && !p.at(token.NEWLINE) && !p.at(token.EOF) {
+			value = p.parseExpression()
+		}
+		return &ast.Yield{Base: ast.Base{Position: t.Pos}, Value: value}
 	case token.GLOBAL:
 		t := p.cur()
 		p.advance()

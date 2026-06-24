@@ -259,6 +259,18 @@ else:
 		require.Equal(t, []string{"y"}, body[1].(*ast.Nonlocal).Names)
 	})
 
+	t.Run("yield statements and Iterator annotation", func(t *testing.T) {
+		mod, err := parse(`def ints() -> Iterator[int]:
+    yield 1
+    yield
+`)
+		require.NoError(t, err)
+		fn := mod.Body[0].(*ast.Function)
+		require.Equal(t, "Iterator", fn.Returns.(*ast.Subscript).X.(*ast.Name).Name)
+		require.Equal(t, int64(1), fn.Body[0].(*ast.Yield).Value.(*ast.IntLit).Value)
+		require.Nil(t, fn.Body[1].(*ast.Yield).Value)
+	})
+
 	t.Run("comprehensions and set display", func(t *testing.T) {
 		mod, err := parse("xs: list[int] = [i for i in range(3) if i < 2]\nd: dict[str, int] = {str(i): i for i in range(2)}\ns: set[int] = {i for i in [1, 2]}\nt: set[int] = {1, 2}\n")
 		require.NoError(t, err)
@@ -274,7 +286,8 @@ func TestParseErrors(t *testing.T) {
 		"1 = 2\n":                token.SyntaxError,
 		"else:\n    pass\n":      token.SyntaxError,
 		"def f(x) -> int:\n p\n": token.MissingAnnotation,
-		"@pkg.decorator\ndef f() -> None:\n pass\n": token.UnsupportedFeature,
+		"@pkg.decorator\ndef f() -> None:\n pass\n":      token.UnsupportedFeature,
+		"def f() -> Iterator[int]:\n    yield from xs\n": token.UnsupportedFeature,
 	}
 	for src, code := range cases {
 		_, err := parse(src)

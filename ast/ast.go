@@ -132,6 +132,12 @@ type Return struct {
 	Value Expr
 }
 
+// Yield is a generator suspension statement. Value is nil for bare `yield`.
+type Yield struct {
+	Base
+	Value Expr
+}
+
 // Break is the `break` statement.
 type Break struct{ Base }
 
@@ -335,6 +341,7 @@ func (*Function) stmtNode()  {}
 func (*Global) stmtNode()    {}
 func (*Nonlocal) stmtNode()  {}
 func (*Return) stmtNode()    {}
+func (*Yield) stmtNode()     {}
 func (*Break) stmtNode()     {}
 func (*Continue) stmtNode()  {}
 func (*Pass) stmtNode()      {}

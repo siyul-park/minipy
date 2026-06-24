@@ -24,6 +24,7 @@ import (
 type hostFuncs struct {
 	print       *interp.HostFunction
 	str         *interp.HostFunction
+	rangeIter   *interp.HostFunction
 	intParse    *interp.HostFunction
 	floatParse  *interp.HostFunction
 	powInt      *interp.HostFunction
@@ -36,6 +37,98 @@ type hostFuncs struct {
 	strJoin     *interp.HostFunction
 	strFind     *interp.HostFunction
 	strContains *interp.HostFunction
+}
+
+type rangeIterator struct {
+	stop, step int64
+	current    vmtypes.Boxed
+	done       bool
+}
+
+func newRangeIterator(start, stop, step int64) *rangeIterator {
+	it := &rangeIterator{stop: stop, step: step, done: true}
+	if step > 0 {
+		it.done = start >= stop
+	} else {
+		it.done = start <= stop
+	}
+	if !it.done {
+		it.current = vmtypes.BoxI64(start)
+	}
+	return it
+}
+
+func (it *rangeIterator) Kind() vmtypes.Kind { return vmtypes.KindRef }
+func (it *rangeIterator) Type() vmtypes.Type { return vmtypes.TypeRef }
+func (it *rangeIterator) String() string     { return "range.iterator" }
+func (it *rangeIterator) Current() vmtypes.Value {
+	if it.done {
+		return vmtypes.BoxedNull
+	}
+	return it.current
+}
+func (it *rangeIterator) Done() bool { return it.done }
+func (it *rangeIterator) Next() bool {
+	if it.done {
+		return false
+	}
+	next := it.current.I64() + it.step
+	if (it.step > 0 && next >= it.stop) || (it.step < 0 && next <= it.stop) {
+		it.current = vmtypes.BoxedNull
+		it.done = true
+		return false
+	}
+	it.current = vmtypes.BoxI64(next)
+	return true
+}
+
+type boxedIterator struct {
+	name    string
+	values  []vmtypes.Boxed
+	idx     int
+	current vmtypes.Boxed
+	done    bool
+}
+
+func newBoxedIterator(name string, values []vmtypes.Boxed) *boxedIterator {
+	it := &boxedIterator{name: name, values: append([]vmtypes.Boxed(nil), values...), done: true}
+	if len(values) > 0 {
+		it.current = values[0]
+		it.idx = 1
+		it.done = false
+	}
+	return it
+}
+
+func (it *boxedIterator) Kind() vmtypes.Kind { return vmtypes.KindRef }
+func (it *boxedIterator) Type() vmtypes.Type { return vmtypes.TypeRef }
+func (it *boxedIterator) String() string     { return it.name }
+func (it *boxedIterator) Current() vmtypes.Value {
+	if it.done {
+		return vmtypes.BoxedNull
+	}
+	return it.current
+}
+func (it *boxedIterator) Done() bool { return it.done }
+func (it *boxedIterator) Next() bool {
+	if it.idx >= len(it.values) {
+		it.current = vmtypes.BoxedNull
+		it.done = true
+		return false
+	}
+	it.current = it.values[it.idx]
+	it.idx++
+	it.done = false
+	return true
+}
+func (it *boxedIterator) Refs() []vmtypes.Ref {
+	var refs []vmtypes.Ref
+	for _, v := range it.values {
+		if v.Kind() == vmtypes.KindRef && v.Ref() != 0 {
+			refs = append(refs, vmtypes.Ref(v.Ref()))
+		}
+	}
+	return refs
 }
 
 func (h *hostFuncs) dictGet(recv, ret types.Type) *interp.HostFunction {
@@ -178,6 +271,42 @@ func (h *hostFuncs) zip(ret types.Type) *interp.HostFunction {
 	)
 }
 
+func (h *hostFuncs) listIter(arg types.Type) *interp.HostFunction {
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: []vmtypes.Type{arg.VM()}, Returns: []vmtypes.Type{vmtypes.TypeRef}},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			_, elems := arrayElems(i, params[0])
+			addr, err := i.Alloc(newBoxedIterator("list.iterator", elems))
+			if err != nil {
+				return nil, err
+			}
+			return []vmtypes.Boxed{vmtypes.BoxRef(addr)}, nil
+		},
+	)
+}
+
+func (h *hostFuncs) strIter() *interp.HostFunction {
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeString}, Returns: []vmtypes.Type{vmtypes.TypeRef}},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			s := loadStr(i, params[0])
+			values := make([]vmtypes.Boxed, 0, len([]rune(s)))
+			for _, r := range s {
+				addr, err := i.Alloc(vmtypes.String(string(r)))
+				if err != nil {
+					return nil, err
+				}
+				values = append(values, vmtypes.BoxRef(addr))
+			}
+			addr, err := i.Alloc(newBoxedIterator("str.iterator", values))
+			if err != nil {
+				return nil, err
+			}
+			return []vmtypes.Boxed{vmtypes.BoxRef(addr)}, nil
+		},
+	)
+}
+
 func (h *hostFuncs) format(t types.Type) *interp.HostFunction {
 	return interp.NewHostFunction(
 		&vmtypes.FunctionType{Params: []vmtypes.Type{t.VM(), vmtypes.TypeString}, Returns: []vmtypes.Type{vmtypes.TypeString}},
@@ -190,7 +319,7 @@ func (h *hostFuncs) format(t types.Type) *interp.HostFunction {
 // isBuiltin reports whether name is a builtin.
 func isBuiltin(name string) bool {
 	switch name {
-	case "print", "str", "int", "float", "bool", "abs", "len", "enumerate", "zip":
+	case "print", "str", "int", "float", "bool", "abs", "len", "enumerate", "zip", "range", "iter", "next":
 		return true
 	default:
 		return false
@@ -270,6 +399,31 @@ func builtinReturn(name string, args []types.Type) (types.Type, bool) {
 		if aok && bok {
 			return types.ListOf(types.TupleOf(a.Elem, b.Elem)), true
 		}
+	case "range":
+		if len(args) < 1 || len(args) > 3 {
+			return types.Invalid, false
+		}
+		for _, arg := range args {
+			if !types.Equal(arg, types.Int) {
+				return types.Invalid, false
+			}
+		}
+		return types.IteratorOf(types.Int), true
+	case "iter":
+		if len(args) != 1 {
+			return types.Invalid, false
+		}
+		elem := iterableElem(args[0])
+		if elem != types.Invalid {
+			return types.IteratorOf(elem), true
+		}
+	case "next":
+		if len(args) != 1 {
+			return types.Invalid, false
+		}
+		if it, ok := args[0].(*types.Iterator); ok {
+			return it.Elem, true
+		}
 	}
 	return types.Invalid, false
 }
@@ -280,7 +434,7 @@ func convertible(t types.Type) bool {
 
 func isContainer(t types.Type) bool {
 	switch t.(type) {
-	case *types.List, *types.Dict, *types.Set, *types.Tuple:
+	case *types.List, *types.Dict, *types.Set, *types.Tuple, *types.Iterator:
 		return true
 	default:
 		return false
@@ -301,6 +455,20 @@ func newHostFuncs(out io.Writer) *hostFuncs {
 			&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeRef}, Returns: []vmtypes.Type{vmtypes.TypeString}},
 			func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
 				return allocString(i, formatScalar(i, params[0]))
+			},
+		),
+		rangeIter: interp.NewHostFunction(
+			&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeI64, vmtypes.TypeI64, vmtypes.TypeI64}, Returns: []vmtypes.Type{vmtypes.TypeRef}},
+			func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+				step := loadI64(i, params[2])
+				if step == 0 {
+					return nil, fmt.Errorf("range() step must not be zero")
+				}
+				addr, err := i.Alloc(newRangeIterator(loadI64(i, params[0]), loadI64(i, params[1]), step))
+				if err != nil {
+					return nil, err
+				}
+				return []vmtypes.Boxed{vmtypes.BoxRef(addr)}, nil
 			},
 		),
 		intParse: interp.NewHostFunction(

@@ -27,19 +27,20 @@ type param struct {
 }
 
 type fn struct {
-	name     string
-	params   []param
-	ret      types.Type
-	slot     *global
-	local    *local
-	locals   map[string]*local
-	order    []string
-	parent   *fn
-	children map[string]*fn
-	captures map[string]*capture
-	capOrder []string
-	globals  map[string]bool
-	nonlocal map[string]bool
+	name      string
+	params    []param
+	ret       types.Type
+	generator bool
+	slot      *global
+	local     *local
+	locals    map[string]*local
+	order     []string
+	parent    *fn
+	children  map[string]*fn
+	captures  map[string]*capture
+	capOrder  []string
+	globals   map[string]bool
+	nonlocal  map[string]bool
 }
 
 type capture struct {
@@ -125,6 +126,8 @@ func (c *checker) stmt(s ast.Stmt) {
 		}
 	case *ast.Return:
 		c.ret(n)
+	case *ast.Yield:
+		c.yieldStmt(n)
 	case *ast.Break:
 		if c.loops == 0 {
 			c.errs.Add(n.Pos(), token.SyntaxError, "'break' outside loop")
@@ -152,27 +155,10 @@ func (c *checker) whileStmt(n *ast.While) {
 	c.checkBlock(n.Orelse)
 }
 
-// forStmt checks `for NAME in range(...)`. The target is auto-declared int (the
-// range element type); its body runs inside a loop for break/continue.
+// forStmt checks `for TARGET in ITERABLE`. The target is auto-declared to the
+// iterable element type; its body runs inside a loop for break/continue.
 func (c *checker) forStmt(n *ast.For) {
 	target := forTargetName(n.Target)
-	if isRangeCall(n.Iter) {
-		c.forRange(n)
-		if c.fn != nil {
-			l := c.declareLocal(target.Name, types.Int, target.Pos())
-			l.init = true
-			c.types[target] = l.typ
-		} else {
-			g := c.declare(target.Name, types.Int, target.Pos())
-			g.init = true
-			c.types[target] = g.typ
-		}
-		c.loops++
-		c.checkBlock(n.Body)
-		c.loops--
-		c.checkBlock(n.Orelse)
-		return
-	}
 	iter := c.expr(n.Iter)
 	elem := iterableElem(iter)
 	if elem == types.Invalid {
@@ -195,15 +181,6 @@ func (c *checker) forStmt(n *ast.For) {
 	c.checkBlock(n.Orelse)
 }
 
-func isRangeCall(e ast.Expr) bool {
-	call, ok := e.(*ast.CallExpr)
-	if !ok {
-		return false
-	}
-	name, ok := call.Fn.(*ast.Name)
-	return ok && name.Name == "range"
-}
-
 func iterableElem(t types.Type) types.Type {
 	switch x := t.(type) {
 	case *types.List:
@@ -211,6 +188,8 @@ func iterableElem(t types.Type) types.Type {
 	case *types.Dict:
 		return x.Key
 	case *types.Set:
+		return x.Elem
+	case *types.Iterator:
 		return x.Elem
 	default:
 		if types.Equal(t, types.Str) {
@@ -255,42 +234,6 @@ func forTargetName(e ast.Expr) *ast.Name {
 		return name
 	}
 	return &ast.Name{Base: ast.Base{Position: e.Pos()}, Name: ""}
-}
-
-// forRange validates that a for-loop iterable is a range(...) call with 1–3 int
-// arguments and, when present, a constant int literal step. Other iterables are
-// deferred to M3/M6.
-func (c *checker) forRange(n *ast.For) {
-	call, ok := n.Iter.(*ast.CallExpr)
-	if !ok {
-		c.errs.Add(n.Iter.Pos(), token.UnsupportedFeature, "'for' iterates only over range(...) in M1 (other iterables arrive in M3/M6)")
-		return
-	}
-	name, ok := call.Fn.(*ast.Name)
-	if !ok || name.Name != "range" {
-		c.errs.Add(n.Iter.Pos(), token.UnsupportedFeature, "'for' iterates only over range(...) in M1 (other iterables arrive in M3/M6)")
-		for _, a := range call.Args {
-			c.expr(a)
-		}
-		return
-	}
-	if len(call.Args) < 1 || len(call.Args) > 3 {
-		c.errs.Add(call.Pos(), token.ArityMismatch, "range() takes 1 to 3 arguments (%d given)", len(call.Args))
-	}
-	for i, a := range call.Args {
-		at := c.expr(a)
-		if !types.Equal(at, types.Int) && at != types.Invalid {
-			c.errs.Add(a.Pos(), token.TypeMismatch, "range() argument must be int, got %s", at)
-		}
-		if i == 2 {
-			switch {
-			case !isConstIntLiteral(a):
-				c.errs.Add(a.Pos(), token.UnsupportedFeature, "range() step must be a constant int literal in M1")
-			case constIntValue(a) == 0:
-				c.errs.Add(a.Pos(), token.SyntaxError, "range() step must not be zero")
-			}
-		}
-	}
 }
 
 // condition checks that a control-flow test types as bool (no truthiness
@@ -570,13 +513,14 @@ func (c *checker) declareFuncs(body []ast.Stmt) {
 			continue
 		}
 		info := &fn{
-			name:     f.Name.Name,
-			ret:      c.resolveType(f.Returns),
-			locals:   map[string]*local{},
-			children: map[string]*fn{},
-			captures: map[string]*capture{},
-			globals:  map[string]bool{},
-			nonlocal: map[string]bool{},
+			name:      f.Name.Name,
+			ret:       c.resolveType(f.Returns),
+			generator: containsYield(f.Body),
+			locals:    map[string]*local{},
+			children:  map[string]*fn{},
+			captures:  map[string]*capture{},
+			globals:   map[string]bool{},
+			nonlocal:  map[string]bool{},
 		}
 		for _, p := range f.Params {
 			pt := c.resolveType(p.Ann)
@@ -598,14 +542,15 @@ func (c *checker) nestedFuncs(info *fn, body []ast.Stmt) {
 			continue
 		}
 		child := &fn{
-			name:     f.Name.Name,
-			ret:      c.resolveType(f.Returns),
-			locals:   map[string]*local{},
-			parent:   info,
-			children: map[string]*fn{},
-			captures: map[string]*capture{},
-			globals:  map[string]bool{},
-			nonlocal: map[string]bool{},
+			name:      f.Name.Name,
+			ret:       c.resolveType(f.Returns),
+			generator: containsYield(f.Body),
+			locals:    map[string]*local{},
+			parent:    info,
+			children:  map[string]*fn{},
+			captures:  map[string]*capture{},
+			globals:   map[string]bool{},
+			nonlocal:  map[string]bool{},
 		}
 		for _, p := range f.Params {
 			child.params = append(child.params, param{name: p.Name.Name, typ: c.resolveType(p.Ann)})
@@ -668,6 +613,8 @@ func (c *checker) resolveType(e ast.Expr) types.Type {
 				return types.TupleOf(elems...)
 			}
 			return types.TupleOf(c.resolveType(sub.Index))
+		case "Iterator":
+			return types.IteratorOf(c.resolveType(sub.Index))
 		case "Callable":
 			args, ok := sub.Index.(*ast.TupleLit)
 			if !ok || len(args.Elems) != 2 {
@@ -721,8 +668,13 @@ func (c *checker) checkFunctionBody(body []ast.Stmt, params []*ast.Param, info *
 		}
 		info.locals[p.name] = &local{typ: p.typ, index: i, init: true}
 	}
+	if info.generator {
+		if _, ok := info.ret.(*types.Iterator); !ok && info.ret != types.Invalid {
+			c.errs.Add(pos, token.TypeMismatch, "generator function %q must return Iterator[T], got %s", info.name, info.ret)
+		}
+	}
 	c.checkBlock(body)
-	if !types.Equal(info.ret, types.None) && !blockReturns(body) {
+	if !info.generator && !types.Equal(info.ret, types.None) && !blockReturns(body) {
 		c.errs.Add(pos, token.TypeMismatch, "function %q may fall through without returning %s", info.name, info.ret)
 	}
 	c.fn = prev
@@ -736,12 +688,46 @@ func (c *checker) ret(n *ast.Return) {
 		}
 		return
 	}
+	if c.fn.generator {
+		if n.Value != nil {
+			c.errs.Add(n.Pos(), token.TypeMismatch, "generator function cannot return a value")
+			c.expr(n.Value)
+		}
+		return
+	}
 	rt := types.None
 	if n.Value != nil {
 		rt = c.exprWithHint(n.Value, c.fn.ret)
 	}
 	if c.fn.ret != types.Invalid && rt != types.Invalid && !types.AssignableTo(rt, c.fn.ret) {
 		c.errs.Add(n.Pos(), token.TypeMismatch, "cannot return %s from function returning %s", rt, c.fn.ret)
+	}
+}
+
+func (c *checker) yieldStmt(n *ast.Yield) {
+	if c.fn == nil {
+		c.errs.Add(n.Pos(), token.SyntaxError, "'yield' outside function")
+		if n.Value != nil {
+			c.expr(n.Value)
+		}
+		return
+	}
+	iter, ok := c.fn.ret.(*types.Iterator)
+	if !ok {
+		if c.fn.ret != types.Invalid {
+			c.errs.Add(n.Pos(), token.TypeMismatch, "yield in function returning %s; expected Iterator[T]", c.fn.ret)
+		}
+		if n.Value != nil {
+			c.expr(n.Value)
+		}
+		return
+	}
+	yt := types.None
+	if n.Value != nil {
+		yt = c.exprWithHint(n.Value, iter.Elem)
+	}
+	if yt != types.Invalid && iter.Elem != types.Invalid && !types.AssignableTo(yt, iter.Elem) {
+		c.errs.Add(n.Pos(), token.TypeMismatch, "cannot yield %s from generator yielding %s", yt, iter.Elem)
 	}
 }
 
@@ -754,6 +740,30 @@ func blockReturns(body []ast.Stmt) bool {
 			if len(n.Orelse) > 0 && blockReturns(n.Body) && blockReturns(n.Orelse) {
 				return true
 			}
+		}
+	}
+	return false
+}
+
+func containsYield(body []ast.Stmt) bool {
+	for _, s := range body {
+		switch n := s.(type) {
+		case *ast.Yield:
+			return true
+		case *ast.If:
+			if containsYield(n.Body) || containsYield(n.Orelse) {
+				return true
+			}
+		case *ast.While:
+			if containsYield(n.Body) || containsYield(n.Orelse) {
+				return true
+			}
+		case *ast.For:
+			if containsYield(n.Body) || containsYield(n.Orelse) {
+				return true
+			}
+		case *ast.Function:
+			continue
 		}
 	}
 	return false
@@ -1133,16 +1143,10 @@ func (c *checker) compElem(clauses []*ast.Comprehension, elem ast.Expr) types.Ty
 func (c *checker) compClauses(clauses []*ast.Comprehension) func() {
 	var tempGlobals []string
 	for _, clause := range clauses {
-		elem := types.Invalid
-		if isRangeCall(clause.Iter) {
-			c.forRange(&ast.For{Base: ast.Base{Position: clause.Pos()}, Target: clause.Target, Iter: clause.Iter})
-			elem = types.Int
-		} else {
-			iter := c.expr(clause.Iter)
-			elem = iterableElem(iter)
-			if elem == types.Invalid {
-				c.errs.Add(clause.Iter.Pos(), token.NotIterable, "%s is not iterable", iter)
-			}
+		iter := c.expr(clause.Iter)
+		elem := iterableElem(iter)
+		if elem == types.Invalid {
+			c.errs.Add(clause.Iter.Pos(), token.NotIterable, "%s is not iterable", iter)
 		}
 		if c.fn != nil {
 			l := c.declareLocal(clause.Target.Name, elem, clause.Target.Pos())
@@ -1306,6 +1310,8 @@ func containsType(needle, haystack types.Type) bool {
 		return types.AssignableTo(needle, t.Elem)
 	case *types.Dict:
 		return types.AssignableTo(needle, t.Key)
+	case *types.Set:
+		return types.AssignableTo(needle, t.Elem)
 	default:
 		return types.Equal(haystack, types.Str) && types.Equal(needle, types.Str)
 	}
@@ -1326,10 +1332,6 @@ func (c *checker) callType(n *ast.CallExpr) types.Type {
 		argTypes[i] = c.expr(a)
 	}
 
-	if name.Name == "range" {
-		c.errs.Add(name.Pos(), token.UnsupportedFeature, "range as a value is M6; in M1 range(...) appears only in a 'for' loop")
-		return types.Invalid
-	}
 	if fn, ok := c.funcs[name.Name]; ok {
 		if c.fn == nil && !fn.slot.init {
 			c.errs.Add(name.Pos(), token.UseBeforeDefinition, "function %q used before definition", name.Name)
@@ -1375,6 +1377,9 @@ func (c *checker) callType(n *ast.CallExpr) types.Type {
 		c.errs.Add(n.Pos(), token.TypeMismatch, "%s() does not accept these arguments", name.Name)
 		return types.Invalid
 	}
+	if name.Name == "range" && len(n.Args) == 3 && isConstIntLiteral(n.Args[2]) && constIntValue(n.Args[2]) == 0 {
+		c.errs.Add(n.Args[2].Pos(), token.SyntaxError, "range() step must not be zero")
+	}
 	return rt
 }
 
@@ -1404,10 +1409,12 @@ func (c *checker) callableCallType(n *ast.CallExpr, fnType types.Type) types.Typ
 
 func builtinArity(name string) (min int, max int, ok bool) {
 	switch name {
-	case "print", "str", "int", "float", "bool", "abs", "len", "enumerate":
+	case "print", "str", "int", "float", "bool", "abs", "len", "enumerate", "iter", "next":
 		return 1, 1, true
 	case "zip":
 		return 2, 2, true
+	case "range":
+		return 1, 3, true
 	default:
 		return 0, 0, false
 	}
@@ -1485,7 +1492,7 @@ func (c *checker) methodCallType(n *ast.CallExpr, attr *ast.Attribute) types.Typ
 }
 
 // isConstIntLiteral reports whether e is an int literal, optionally with a unary
-// +/- sign — the only form M1 accepts as a range step.
+// +/- sign; M6 uses this only to catch range(..., 0) statically when possible.
 func isConstIntLiteral(e ast.Expr) bool {
 	switch x := e.(type) {
 	case *ast.IntLit:
@@ -1499,8 +1506,7 @@ func isConstIntLiteral(e ast.Expr) bool {
 	return false
 }
 
-// constIntValue evaluates a constant int literal (the form isConstIntLiteral
-// accepts) to its int64 value; used by the compiler to fix the range step.
+// constIntValue evaluates a constant int literal accepted by isConstIntLiteral.
 func constIntValue(e ast.Expr) int64 {
 	switch x := e.(type) {
 	case *ast.IntLit:

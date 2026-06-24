@@ -44,6 +44,7 @@ func TestNodePos(t *testing.T) {
 		&For{Base: Base{Position: pos}},
 		&Function{Base: Base{Position: pos}},
 		&Return{Base: Base{Position: pos}},
+		&Yield{Base: Base{Position: pos}},
 		&Break{Base: Base{Position: pos}},
 		&Continue{Base: Base{Position: pos}},
 		&Pass{Base: Base{Position: pos}},
