@@ -22,59 +22,266 @@ import (
 // (bp == sp). They are candidates for a JIT-able extension op later
 // (docs/spec/05-codegen.md); see compiler.go.
 type hostFuncs struct {
-	print      *interp.HostFunction
-	str        *interp.HostFunction
-	intParse   *interp.HostFunction
-	floatParse *interp.HostFunction
-	powInt     *interp.HostFunction
-	powFloat   *interp.HostFunction
-	floatMod   *interp.HostFunction
+	print       *interp.HostFunction
+	str         *interp.HostFunction
+	intParse    *interp.HostFunction
+	floatParse  *interp.HostFunction
+	powInt      *interp.HostFunction
+	powFloat    *interp.HostFunction
+	floatMod    *interp.HostFunction
+	strIndex    *interp.HostFunction
+	strUpper    *interp.HostFunction
+	strLower    *interp.HostFunction
+	strSplit    *interp.HostFunction
+	strJoin     *interp.HostFunction
+	strFind     *interp.HostFunction
+	strContains *interp.HostFunction
 }
 
-// isBuiltin reports whether name is an M0 builtin.
+func (h *hostFuncs) dictGet(recv, ret types.Type) *interp.HostFunction {
+	dt := recv.(*types.Dict)
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: []vmtypes.Type{recv.VM(), dt.Key.VM(), ret.VM()}, Returns: []vmtypes.Type{ret.VM()}},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			if val, ok := mapGet(i, params[0], params[1]); ok {
+				return []vmtypes.Boxed{val}, nil
+			}
+			return []vmtypes.Boxed{params[2]}, nil
+		},
+	)
+}
+
+func (h *hostFuncs) dictValues(recv, ret types.Type) *interp.HostFunction {
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: []vmtypes.Type{recv.VM()}, Returns: []vmtypes.Type{ret.VM()}},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			_, vals := mapEntries(i, params[0])
+			return allocArray(i, ret.VM().(*vmtypes.ArrayType), vals)
+		},
+	)
+}
+
+func (h *hostFuncs) dictItems(recv, ret types.Type) *interp.HostFunction {
+	tupleType := ret.(*types.List).Elem.VM().(*vmtypes.StructType)
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: []vmtypes.Type{recv.VM()}, Returns: []vmtypes.Type{ret.VM()}},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			keys, vals := mapEntries(i, params[0])
+			items := make([]vmtypes.Boxed, 0, len(keys))
+			for idx := range keys {
+				addr, err := i.Alloc(vmtypes.NewStruct(tupleType, keys[idx], vals[idx]))
+				if err != nil {
+					return nil, err
+				}
+				items = append(items, vmtypes.BoxRef(addr))
+			}
+			return allocArray(i, ret.VM().(*vmtypes.ArrayType), items)
+		},
+	)
+}
+
+func (h *hostFuncs) listAppend(recv types.Type) *interp.HostFunction {
+	elem := recv.(*types.List).Elem
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: []vmtypes.Type{recv.VM(), elem.VM()}, Returns: nil},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			arrType, elems := arrayElems(i, params[0])
+			elems = append(elems, params[1])
+			return nil, i.Store(params[0].Ref(), vmtypes.NewArray(arrType, elems...))
+		},
+	)
+}
+
+func (h *hostFuncs) listPop(recv, ret types.Type) *interp.HostFunction {
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: []vmtypes.Type{recv.VM(), vmtypes.TypeI64}, Returns: []vmtypes.Type{ret.VM()}},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			arrType, elems := arrayElems(i, params[0])
+			if len(elems) == 0 {
+				return nil, interp.ErrIndexOutOfRange
+			}
+			idx := int(loadI64(i, params[1]))
+			if idx < 0 {
+				idx += len(elems)
+			}
+			if idx < 0 || idx >= len(elems) {
+				return nil, interp.ErrIndexOutOfRange
+			}
+			val := elems[idx]
+			elems = append(elems[:idx], elems[idx+1:]...)
+			if err := i.Store(params[0].Ref(), vmtypes.NewArray(arrType, elems...)); err != nil {
+				return nil, err
+			}
+			return []vmtypes.Boxed{val}, nil
+		},
+	)
+}
+
+func (h *hostFuncs) listContains(elem, recv types.Type) *interp.HostFunction {
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: []vmtypes.Type{recv.VM(), elem.VM()}, Returns: []vmtypes.Type{vmtypes.TypeI32}},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			_, elems := arrayElems(i, params[0])
+			for _, elem := range elems {
+				if boxedEqual(i, elem, params[1]) {
+					return []vmtypes.Boxed{vmtypes.BoxI32(1)}, nil
+				}
+			}
+			return []vmtypes.Boxed{vmtypes.BoxI32(0)}, nil
+		},
+	)
+}
+
+func (h *hostFuncs) enumerate(ret types.Type) *interp.HostFunction {
+	list := ret.(*types.List)
+	tupleType := list.Elem.VM().(*vmtypes.StructType)
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: []vmtypes.Type{types.ListOf(list.Elem.(*types.Tuple).Elems[1]).VM()}, Returns: []vmtypes.Type{ret.VM()}},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			_, elems := arrayElems(i, params[0])
+			out := make([]vmtypes.Boxed, 0, len(elems))
+			for idx, elem := range elems {
+				addr, err := i.Alloc(vmtypes.NewStruct(tupleType, vmtypes.BoxI64(int64(idx)), elem))
+				if err != nil {
+					return nil, err
+				}
+				out = append(out, vmtypes.BoxRef(addr))
+			}
+			return allocArray(i, ret.VM().(*vmtypes.ArrayType), out)
+		},
+	)
+}
+
+func (h *hostFuncs) zip(ret types.Type) *interp.HostFunction {
+	list := ret.(*types.List)
+	tupleType := list.Elem.VM().(*vmtypes.StructType)
+	tuple := list.Elem.(*types.Tuple)
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: []vmtypes.Type{types.ListOf(tuple.Elems[0]).VM(), types.ListOf(tuple.Elems[1]).VM()}, Returns: []vmtypes.Type{ret.VM()}},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			_, a := arrayElems(i, params[0])
+			_, b := arrayElems(i, params[1])
+			n := len(a)
+			if len(b) < n {
+				n = len(b)
+			}
+			out := make([]vmtypes.Boxed, 0, n)
+			for idx := 0; idx < n; idx++ {
+				addr, err := i.Alloc(vmtypes.NewStruct(tupleType, a[idx], b[idx]))
+				if err != nil {
+					return nil, err
+				}
+				out = append(out, vmtypes.BoxRef(addr))
+			}
+			return allocArray(i, ret.VM().(*vmtypes.ArrayType), out)
+		},
+	)
+}
+
+func (h *hostFuncs) format(t types.Type) *interp.HostFunction {
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: []vmtypes.Type{t.VM(), vmtypes.TypeString}, Returns: []vmtypes.Type{vmtypes.TypeString}},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			return allocString(i, pyFormat(i, params[0], loadStr(i, params[1])))
+		},
+	)
+}
+
+// isBuiltin reports whether name is a builtin.
 func isBuiltin(name string) bool {
 	switch name {
-	case "print", "str", "int", "float", "bool", "abs":
+	case "print", "str", "int", "float", "bool", "abs", "len", "enumerate", "zip":
 		return true
 	default:
 		return false
 	}
 }
 
-// builtinReturn returns the result type of a unary builtin call given its
-// argument type, or ok=false when the argument type is unsupported.
-func builtinReturn(name string, arg types.Type) (types.Type, bool) {
+// builtinReturn returns the result type of a builtin call, or ok=false when the
+// argument types are unsupported.
+func builtinReturn(name string, args []types.Type) (types.Type, bool) {
 	switch name {
-	case "print":
-		if types.Printable(arg) {
-			return types.None, true
+	case "print", "str":
+		if len(args) != 1 {
+			return types.Invalid, false
 		}
-	case "str":
+		arg := args[0]
 		if types.Printable(arg) {
+			if name == "print" {
+				return types.None, true
+			}
 			return types.Str, true
 		}
-	case "int":
-		if convertible(arg) {
+	case "int", "float", "bool", "abs":
+		if len(args) != 1 {
+			return types.Invalid, false
+		}
+		arg := args[0]
+		switch name {
+		case "int":
+			if convertible(arg) {
+				return types.Int, true
+			}
+		case "float":
+			if convertible(arg) {
+				return types.Float, true
+			}
+		case "bool":
+			if convertible(arg) || isContainer(arg) {
+				return types.Bool, true
+			}
+		case "abs":
+			if types.Equal(arg, types.Int) || types.Equal(arg, types.Float) {
+				return arg, true
+			}
+		}
+	case "len":
+		if len(args) != 1 {
+			return types.Invalid, false
+		}
+		if _, ok := args[0].(*types.List); ok {
 			return types.Int, true
 		}
-	case "float":
-		if convertible(arg) {
-			return types.Float, true
+		if _, ok := args[0].(*types.Dict); ok {
+			return types.Int, true
 		}
-	case "bool":
-		if convertible(arg) {
-			return types.Bool, true
+		if _, ok := args[0].(*types.Tuple); ok {
+			return types.Int, true
 		}
-	case "abs":
-		if arg == types.Int || arg == types.Float {
-			return arg, true
+		if types.Equal(args[0], types.Str) {
+			return types.Int, true
+		}
+	case "enumerate":
+		if len(args) != 1 {
+			return types.Invalid, false
+		}
+		if list, ok := args[0].(*types.List); ok {
+			return types.ListOf(types.TupleOf(types.Int, list.Elem)), true
+		}
+	case "zip":
+		if len(args) != 2 {
+			return types.Invalid, false
+		}
+		a, aok := args[0].(*types.List)
+		b, bok := args[1].(*types.List)
+		if aok && bok {
+			return types.ListOf(types.TupleOf(a.Elem, b.Elem)), true
 		}
 	}
 	return types.Invalid, false
 }
 
 func convertible(t types.Type) bool {
-	return t == types.Int || t == types.Float || t == types.Bool || t == types.Str
+	return types.Equal(t, types.Int) || types.Equal(t, types.Float) || types.Equal(t, types.Bool) || types.Equal(t, types.Str)
+}
+
+func isContainer(t types.Type) bool {
+	switch t.(type) {
+	case *types.List, *types.Dict, *types.Tuple:
+		return true
+	default:
+		return false
+	}
 }
 
 // newHostFuncs builds the host-function set, binding print's output to out.
@@ -146,6 +353,73 @@ func newHostFuncs(out io.Writer) *hostFuncs {
 				return []vmtypes.Boxed{vmtypes.BoxF64(r)}, nil
 			},
 		),
+		strIndex: interp.NewHostFunction(
+			&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeString, vmtypes.TypeI64}, Returns: []vmtypes.Type{vmtypes.TypeString}},
+			func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+				s := []rune(loadStr(i, params[0]))
+				idx := int(loadI64(i, params[1]))
+				if idx < 0 {
+					idx += len(s)
+				}
+				if idx < 0 || idx >= len(s) {
+					return nil, interp.ErrIndexOutOfRange
+				}
+				return allocString(i, string(s[idx]))
+			},
+		),
+		strUpper: interp.NewHostFunction(
+			&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeString}, Returns: []vmtypes.Type{vmtypes.TypeString}},
+			func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+				return allocString(i, strings.ToUpper(loadStr(i, params[0])))
+			},
+		),
+		strLower: interp.NewHostFunction(
+			&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeString}, Returns: []vmtypes.Type{vmtypes.TypeString}},
+			func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+				return allocString(i, strings.ToLower(loadStr(i, params[0])))
+			},
+		),
+		strFind: interp.NewHostFunction(
+			&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeString, vmtypes.TypeString}, Returns: []vmtypes.Type{vmtypes.TypeI64}},
+			func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+				return []vmtypes.Boxed{vmtypes.BoxI64(int64(strings.Index(loadStr(i, params[0]), loadStr(i, params[1]))))}, nil
+			},
+		),
+		strContains: interp.NewHostFunction(
+			&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeString, vmtypes.TypeString}, Returns: []vmtypes.Type{vmtypes.TypeI32}},
+			func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+				if strings.Contains(loadStr(i, params[0]), loadStr(i, params[1])) {
+					return []vmtypes.Boxed{vmtypes.BoxI32(1)}, nil
+				}
+				return []vmtypes.Boxed{vmtypes.BoxI32(0)}, nil
+			},
+		),
+		strSplit: interp.NewHostFunction(
+			&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeString, vmtypes.TypeString}, Returns: []vmtypes.Type{vmtypes.NewArrayType(vmtypes.TypeString)}},
+			func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+				parts := strings.Split(loadStr(i, params[0]), loadStr(i, params[1]))
+				out := make([]vmtypes.Boxed, 0, len(parts))
+				for _, part := range parts {
+					box, err := allocString(i, part)
+					if err != nil {
+						return nil, err
+					}
+					out = append(out, box[0])
+				}
+				return allocArray(i, vmtypes.NewArrayType(vmtypes.TypeString), out)
+			},
+		),
+		strJoin: interp.NewHostFunction(
+			&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeString, vmtypes.NewArrayType(vmtypes.TypeString)}, Returns: []vmtypes.Type{vmtypes.TypeString}},
+			func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+				_, elems := arrayElems(i, params[1])
+				parts := make([]string, len(elems))
+				for idx, elem := range elems {
+					parts[idx] = loadStr(i, elem)
+				}
+				return allocString(i, strings.Join(parts, loadStr(i, params[0])))
+			},
+		),
 	}
 }
 
@@ -180,6 +454,27 @@ func pyFloat(f float64) string {
 		s += ".0"
 	}
 	return s
+}
+
+func pyFormat(i *interp.Interpreter, v vmtypes.Boxed, spec string) string {
+	if spec == "" {
+		return formatScalar(i, v)
+	}
+	if v.Kind() == vmtypes.KindI64 && strings.HasSuffix(spec, "d") {
+		widthSpec := strings.TrimSuffix(spec, "d")
+		pad := byte(' ')
+		if strings.HasPrefix(widthSpec, "0") {
+			pad = '0'
+			widthSpec = strings.TrimPrefix(widthSpec, "0")
+		}
+		width, _ := strconv.Atoi(widthSpec)
+		s := strconv.FormatInt(loadI64(i, v), 10)
+		for len(s) < width {
+			s = string(pad) + s
+		}
+		return s
+	}
+	return formatScalar(i, v)
 }
 
 func allocString(i *interp.Interpreter, s string) ([]vmtypes.Boxed, error) {
@@ -218,4 +513,145 @@ func loadI64(i *interp.Interpreter, v vmtypes.Boxed) int64 {
 		return 0
 	}
 	return v.I64()
+}
+
+func allocArray(i *interp.Interpreter, typ *vmtypes.ArrayType, elems []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+	addr, err := i.Alloc(vmtypes.NewArray(typ, elems...))
+	if err != nil {
+		return nil, err
+	}
+	return []vmtypes.Boxed{vmtypes.BoxRef(addr)}, nil
+}
+
+func arrayElems(i *interp.Interpreter, ref vmtypes.Boxed) (*vmtypes.ArrayType, []vmtypes.Boxed) {
+	val, err := i.Load(ref.Ref())
+	if err != nil {
+		return vmtypes.NewArrayType(vmtypes.TypeRef), nil
+	}
+	switch a := val.(type) {
+	case *vmtypes.Array:
+		return a.Typ, append([]vmtypes.Boxed(nil), a.Elems...)
+	case vmtypes.TypedArray[int8]:
+		out := make([]vmtypes.Boxed, len(a))
+		for idx, elem := range a {
+			out[idx] = vmtypes.BoxI32(int32(elem))
+		}
+		return vmtypes.TypeI8Array, out
+	case vmtypes.TypedArray[int32]:
+		out := make([]vmtypes.Boxed, len(a))
+		for idx, elem := range a {
+			out[idx] = vmtypes.BoxI32(elem)
+		}
+		return vmtypes.TypeI32Array, out
+	case vmtypes.TypedArray[int64]:
+		out := make([]vmtypes.Boxed, len(a))
+		for idx, elem := range a {
+			out[idx] = vmtypes.BoxI64(elem)
+		}
+		return vmtypes.TypeI64Array, out
+	case vmtypes.TypedArray[float32]:
+		out := make([]vmtypes.Boxed, len(a))
+		for idx, elem := range a {
+			out[idx] = vmtypes.BoxF32(elem)
+		}
+		return vmtypes.TypeF32Array, out
+	case vmtypes.TypedArray[float64]:
+		out := make([]vmtypes.Boxed, len(a))
+		for idx, elem := range a {
+			out[idx] = vmtypes.BoxF64(elem)
+		}
+		return vmtypes.TypeF64Array, out
+	default:
+		return vmtypes.NewArrayType(vmtypes.TypeRef), nil
+	}
+}
+
+func mapGet(i *interp.Interpreter, ref vmtypes.Boxed, key vmtypes.Boxed) (vmtypes.Boxed, bool) {
+	val, err := i.Load(ref.Ref())
+	if err != nil {
+		return 0, false
+	}
+	switch m := val.(type) {
+	case *vmtypes.TypedMap[int32]:
+		return m.Get(key.I32())
+	case *vmtypes.TypedMap[int64]:
+		return m.Get(loadI64(i, key))
+	case *vmtypes.TypedMap[float32]:
+		return m.Get(key.F32())
+	case *vmtypes.TypedMap[float64]:
+		return m.Get(key.F64())
+	case *vmtypes.Map:
+		entry, ok := m.Get(mapKey(key))
+		return entry.Value, ok
+	default:
+		return 0, false
+	}
+}
+
+func mapEntries(i *interp.Interpreter, ref vmtypes.Boxed) ([]vmtypes.Boxed, []vmtypes.Boxed) {
+	val, err := i.Load(ref.Ref())
+	if err != nil {
+		return nil, nil
+	}
+	var keys, vals []vmtypes.Boxed
+	switch m := val.(type) {
+	case *vmtypes.TypedMap[int32]:
+		m.Range(func(k int32, v vmtypes.Boxed) {
+			keys = append(keys, vmtypes.BoxI32(k))
+			vals = append(vals, v)
+		})
+	case *vmtypes.TypedMap[int64]:
+		m.Range(func(k int64, v vmtypes.Boxed) {
+			keys = append(keys, vmtypes.BoxI64(k))
+			vals = append(vals, v)
+		})
+	case *vmtypes.TypedMap[float32]:
+		m.Range(func(k float32, v vmtypes.Boxed) {
+			keys = append(keys, vmtypes.BoxF32(k))
+			vals = append(vals, v)
+		})
+	case *vmtypes.TypedMap[float64]:
+		m.Range(func(k float64, v vmtypes.Boxed) {
+			keys = append(keys, vmtypes.BoxF64(k))
+			vals = append(vals, v)
+		})
+	case *vmtypes.Map:
+		m.Range(func(_ vmtypes.MapKey, entry vmtypes.MapEntry) {
+			keys = append(keys, entry.Key)
+			vals = append(vals, entry.Value)
+		})
+	}
+	return keys, vals
+}
+
+func mapKey(v vmtypes.Boxed) vmtypes.MapKey {
+	switch v.Kind() {
+	case vmtypes.KindI32:
+		return vmtypes.MapKey{Kind: vmtypes.KindI32, Bits: uint64(uint32(v.I32()))}
+	case vmtypes.KindI64:
+		return vmtypes.MapKey{Kind: vmtypes.KindI64, Bits: uint64(v.I64())}
+	case vmtypes.KindF32:
+		return vmtypes.MapKey{Kind: vmtypes.KindF32, Bits: uint64(math.Float32bits(v.F32()))}
+	case vmtypes.KindF64:
+		return vmtypes.MapKey{Kind: vmtypes.KindF64, Bits: math.Float64bits(v.F64())}
+	default:
+		return vmtypes.MapKey{Kind: vmtypes.KindRef, Bits: uint64(v.Ref())}
+	}
+}
+
+func boxedEqual(i *interp.Interpreter, a, b vmtypes.Boxed) bool {
+	if a.Kind() != b.Kind() {
+		return false
+	}
+	if a.Kind() != vmtypes.KindRef {
+		return a == b
+	}
+	av, _ := i.Load(a.Ref())
+	bv, _ := i.Load(b.Ref())
+	as, aok := av.(vmtypes.String)
+	bs, bok := bv.(vmtypes.String)
+	if aok && bok {
+		return as == bs
+	}
+	return a.Ref() == b.Ref()
 }

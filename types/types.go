@@ -6,75 +6,188 @@
 // than re-modelling them.
 package types
 
-import vmtypes "github.com/siyul-park/minivm/types"
+import (
+	"strings"
 
-// Type is a minipy source-level type.
-type Type int
-
-const (
-	Invalid Type = iota
-	Int
-	Float
-	Bool
-	Str
-	None
+	vmtypes "github.com/siyul-park/minivm/types"
 )
 
-// String returns the minipy spelling of the type.
-func (t Type) String() string {
-	switch t {
-	case Int:
-		return "int"
-	case Float:
-		return "float"
-	case Bool:
-		return "bool"
-	case Str:
-		return "str"
-	case None:
-		return "None"
-	default:
-		return "<invalid>"
+// Type is a minipy source-level type.
+type Type interface {
+	String() string
+	IsNumeric() bool
+	VM() vmtypes.Type
+	Equal(Type) bool
+	sealed()
+}
+
+type primitive struct {
+	name string
+	vm   vmtypes.Type
+	num  bool
+}
+
+type List struct {
+	Elem Type
+}
+
+type Dict struct {
+	Key   Type
+	Value Type
+}
+
+type Tuple struct {
+	Elems []Type
+}
+
+var (
+	Invalid Type = primitive{name: "<invalid>"}
+	Int     Type = primitive{name: "int", vm: vmtypes.TypeI64, num: true}
+	Float   Type = primitive{name: "float", vm: vmtypes.TypeF64, num: true}
+	Bool    Type = primitive{name: "bool", vm: vmtypes.TypeI32}
+	Str     Type = primitive{name: "str", vm: vmtypes.TypeString}
+	None    Type = primitive{name: "None", vm: vmtypes.TypeRef}
+)
+
+func (primitive) sealed() {}
+func (*List) sealed()     {}
+func (*Dict) sealed()     {}
+func (*Tuple) sealed()    {}
+
+func (t primitive) String() string { return t.name }
+func (t primitive) IsNumeric() bool {
+	return t.num
+}
+func (t primitive) VM() vmtypes.Type {
+	return t.vm
+}
+func (t primitive) Equal(o Type) bool {
+	other, ok := o.(primitive)
+	return ok && t.name == other.name
+}
+
+func (t *List) String() string {
+	if t == nil || t.Elem == nil {
+		return "list[<invalid>]"
 	}
+	return "list[" + t.Elem.String() + "]"
 }
-
-// IsNumeric reports whether t is int or float.
-func (t Type) IsNumeric() bool {
-	return t == Int || t == Float
-}
-
-// VM returns the minivm runtime type that backs t.
-func (t Type) VM() vmtypes.Type {
-	switch t {
-	case Int:
-		return vmtypes.TypeI64
-	case Float:
-		return vmtypes.TypeF64
-	case Bool:
-		return vmtypes.TypeI32
-	case Str:
-		return vmtypes.TypeString
-	case None:
-		return vmtypes.TypeRef
-	default:
+func (*List) IsNumeric() bool { return false }
+func (t *List) VM() vmtypes.Type {
+	if t == nil || t.Elem == nil {
 		return nil
 	}
+	return vmtypes.NewArrayType(t.Elem.VM())
+}
+func (t *List) Equal(o Type) bool {
+	other, ok := o.(*List)
+	return ok && Equal(t.Elem, other.Elem)
+}
+
+func (t *Dict) String() string {
+	if t == nil || t.Key == nil || t.Value == nil {
+		return "dict[<invalid>, <invalid>]"
+	}
+	return "dict[" + t.Key.String() + ", " + t.Value.String() + "]"
+}
+func (*Dict) IsNumeric() bool { return false }
+func (t *Dict) VM() vmtypes.Type {
+	if t == nil || t.Key == nil || t.Value == nil {
+		return nil
+	}
+	return vmtypes.NewMapType(t.Key.VM(), t.Value.VM())
+}
+func (t *Dict) Equal(o Type) bool {
+	other, ok := o.(*Dict)
+	return ok && Equal(t.Key, other.Key) && Equal(t.Value, other.Value)
+}
+
+func (t *Tuple) String() string {
+	if t == nil {
+		return "tuple[<invalid>]"
+	}
+	parts := make([]string, len(t.Elems))
+	for i, elem := range t.Elems {
+		if elem == nil {
+			parts[i] = "<invalid>"
+		} else {
+			parts[i] = elem.String()
+		}
+	}
+	if len(parts) == 1 {
+		parts[0] += ","
+	}
+	return "tuple[" + strings.Join(parts, ", ") + "]"
+}
+func (*Tuple) IsNumeric() bool { return false }
+func (t *Tuple) VM() vmtypes.Type {
+	if t == nil {
+		return nil
+	}
+	fields := make([]vmtypes.StructField, len(t.Elems))
+	for i, elem := range t.Elems {
+		fields[i] = vmtypes.NewStructField(elem.VM())
+	}
+	return vmtypes.NewStructType(fields...)
+}
+func (t *Tuple) Equal(o Type) bool {
+	other, ok := o.(*Tuple)
+	if !ok || len(t.Elems) != len(other.Elems) {
+		return false
+	}
+	for i := range t.Elems {
+		if !Equal(t.Elems[i], other.Elems[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+func ListOf(elem Type) Type {
+	return &List{Elem: elem}
+}
+
+func DictOf(key, value Type) Type {
+	return &Dict{Key: key, Value: value}
+}
+
+func TupleOf(elems ...Type) Type {
+	cp := append([]Type(nil), elems...)
+	return &Tuple{Elems: cp}
+}
+
+// Equal reports structural equality of two source types.
+func Equal(a, b Type) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return a.Equal(b)
 }
 
 // AssignableTo reports whether a value of type src may be stored where dst is
-// expected. M0 has no implicit coercion, so types must match exactly: `bool` is
-// not assignable to `int`, and there is no `int`->`float` widening.
+// expected. M3 still has no implicit coercion, so structural equality is enough.
 func AssignableTo(src, dst Type) bool {
-	return src != Invalid && src == dst
+	return src != nil && dst != nil && src != Invalid && dst != Invalid && Equal(src, dst)
 }
 
 // Printable reports whether str()/print() accept t.
 func Printable(t Type) bool {
-	return t == Int || t == Float || t == Bool || t == Str || t == None
+	if t == nil || t == Invalid {
+		return false
+	}
+	if Equal(t, Int) || Equal(t, Float) || Equal(t, Bool) || Equal(t, Str) || Equal(t, None) {
+		return true
+	}
+	switch t.(type) {
+	case *List, *Dict, *Tuple:
+		return true
+	default:
+		return false
+	}
 }
 
-// Resolve maps an annotation name to a source type. ok is false for names
-// outside the M0 scalar set.
+// Resolve maps a scalar annotation name to a source type. Container annotations
+// are parsed structurally by the checker.
 func Resolve(name string) (Type, bool) {
 	switch name {
 	case "int":

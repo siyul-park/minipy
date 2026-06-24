@@ -17,8 +17,7 @@ func run(t *testing.T, src string) string {
 	prog, err := Compile(strings.NewReader(src), WithOutput(&buf))
 	require.NoError(t, err)
 
-	vm, err := interp.New(prog)
-	require.NoError(t, err)
+	vm := interp.New(prog)
 	defer vm.Close()
 	require.NoError(t, vm.Run(context.Background()))
 	return buf.String()
@@ -244,6 +243,50 @@ print("big" if x > 3 else "small")
 		require.Equal(t, "small\n", run(t, small))
 	})
 
+	t.Run("M3 roadmap dict counting sample", func(t *testing.T) {
+		src := `counts: dict[str, int] = {}
+for w in ["a", "b", "a"]:
+    counts[w] = counts.get(w, 0) + 1
+print(str(counts["a"]))
+`
+		require.Equal(t, "2\n", run(t, src))
+	})
+
+	t.Run("M3 containers and methods", func(t *testing.T) {
+		src := `xs: list[int] = [1]
+xs.append(2)
+print(str(len(xs)))
+print(str(xs.pop()))
+d: dict[str, int] = {"a": 1, "b": 2}
+print(str(len(d.keys())))
+for k, v in d.items():
+    print(k + str(v))
+t: tuple[int, str] = (7, "x")
+print(str(t[0]))
+print(t[1])
+`
+		out := run(t, src)
+		require.Contains(t, out, "2\n2\n")
+		require.Contains(t, out, "a1\n")
+		require.Contains(t, out, "b2\n")
+		require.Contains(t, out, "7\nx\n")
+	})
+
+	t.Run("M3 str methods enumerate zip and f-string", func(t *testing.T) {
+		src := `print("A,B".lower())
+print("a,b".split(",")[1])
+print("-".join(["x", "y"]))
+print(str("abc".find("b")))
+for i, v in enumerate([4, 5]):
+    print(str(i) + str(v))
+for a, b in zip([1, 2], [3, 4]):
+    print(str(a + b))
+x: int = 7
+print(f"x={x!s:03d}")
+`
+		require.Equal(t, "a,b\nb\nx-y\n1\n04\n15\n4\n6\nx=007\n", run(t, src))
+	})
+
 	t.Run("pass is a no-op", func(t *testing.T) {
 		src := `x: int = 1
 if x == 1:
@@ -311,7 +354,7 @@ func TestCompileErrors(t *testing.T) {
 		"z += 1\n":                            token.UndefinedName,
 		// M1 control flow
 		"x: int = 1\nif x:\n    pass\n":              token.TypeMismatch,
-		"for i in 5:\n    pass\n":                    token.UnsupportedFeature,
+		"for i in 5:\n    pass\n":                    token.NotIterable,
 		"break\n":                                    token.SyntaxError,
 		"continue\n":                                 token.SyntaxError,
 		"for i in range(1.5):\n    pass\n":           token.TypeMismatch,
@@ -325,6 +368,12 @@ func TestCompileErrors(t *testing.T) {
 		"def f(x: int) -> int:\n    return x\nprint(f())\n":      token.ArityMismatch,
 		"def f(x: int) -> int:\n    return x\nprint(f(\"x\"))\n": token.TypeMismatch,
 		"def f(x: int) -> int:\n    pass\n":                      token.TypeMismatch,
+		// M3 containers
+		"xs: list[int] = []\nprint(xs[\"0\"])\n":                 token.TypeMismatch,
+		"xs = []\n":                                              token.UnsupportedType,
+		"xs: list[int] = [1, \"x\"]\n":                           token.TypeMismatch,
+		"t: tuple[int, int] = (1, 2)\ni: int = 0\nprint(t[i])\n": token.UnsupportedFeature,
+		"d: dict[list[int], int] = {}\n":                         token.UnsupportedType,
 	}
 	for src, code := range cases {
 		_, err := Compile(strings.NewReader(src), WithOutput(&bytes.Buffer{}))

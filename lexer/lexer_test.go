@@ -261,9 +261,11 @@ func TestLexErrors(t *testing.T) {
 		hasCode(t, err, token.UnsupportedFeature)
 	})
 
-	t.Run("f-string unsupported in M0", func(t *testing.T) {
-		_, err := lex(`f"x"`)
-		hasCode(t, err, token.UnsupportedFeature)
+	t.Run("f-string token", func(t *testing.T) {
+		toks, err := lex(`f"x={x}"`)
+		require.NoError(t, err)
+		require.Equal(t, token.FSTRING, toks[0].Type)
+		require.Equal(t, "x={x}", toks[0].Literal)
 	})
 
 	t.Run("lone bang is illegal", func(t *testing.T) {

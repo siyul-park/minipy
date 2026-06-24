@@ -9,6 +9,7 @@ package parser
 import (
 	"io"
 	"strconv"
+	"strings"
 
 	"github.com/siyul-park/minipy/ast"
 	"github.com/siyul-park/minipy/lexer"
@@ -288,7 +289,7 @@ func (p *Parser) parseParams() []*ast.Param {
 
 // parseForTarget parses the single NAME loop variable. Tuple-unpacking targets
 // (`for k, v in ...`) are an M3 extension.
-func (p *Parser) parseForTarget() *ast.Name {
+func (p *Parser) parseForTarget() ast.Expr {
 	t := p.cur()
 	if t.Type != token.NAME {
 		p.errs.Add(t.Pos, token.SyntaxError, "expected a loop variable name, got %s", t.Type)
@@ -296,13 +297,16 @@ func (p *Parser) parseForTarget() *ast.Name {
 	}
 	p.advance()
 	if p.at(token.COMMA) {
-		p.errs.Add(p.cur().Pos, token.UnsupportedFeature, "tuple-unpacking 'for' targets are M3")
+		elems := []ast.Expr{&ast.Name{Base: ast.Base{Position: t.Pos}, Name: t.Literal}}
 		for p.at(token.COMMA) {
 			p.advance()
 			if p.at(token.NAME) {
+				elem := &ast.Name{Base: ast.Base{Position: p.cur().Pos}, Name: p.cur().Literal}
+				elems = append(elems, elem)
 				p.advance()
 			}
 		}
+		return &ast.TupleLit{Base: ast.Base{Position: t.Pos}, Elems: elems}
 	}
 	return &ast.Name{Base: ast.Base{Position: t.Pos}, Name: t.Literal}
 }
@@ -364,6 +368,15 @@ func (p *Parser) parseSimpleStmt() ast.Stmt {
 	}
 
 	pos := p.cur().Pos
+	if p.at(token.NAME) && p.peek(1).Type == token.COMMA {
+		target := p.parseFlatTupleTarget()
+		if p.at(token.ASSIGN) {
+			p.advance()
+			return &ast.Assign{Base: ast.Base{Position: pos}, Target: target, Value: p.parseExpression()}
+		}
+		p.errs.Add(target.Pos(), token.SyntaxError, "tuple target requires assignment")
+		return nil
+	}
 	target := p.parseExpression()
 
 	switch {
@@ -399,8 +412,21 @@ func (p *Parser) parseAnnAssign() ast.Stmt {
 	return &ast.AnnAssign{Base: ast.Base{Position: nameTok.Pos}, Target: name, Ann: ann, Value: value}
 }
 
-// parseType parses an annotation. M0 accepts only a scalar type name; container,
-// optional, and union forms are reported as UnsupportedType.
+func (p *Parser) parseFlatTupleTarget() ast.Expr {
+	pos := p.cur().Pos
+	var elems []ast.Expr
+	for {
+		t := p.expect(token.NAME)
+		elems = append(elems, &ast.Name{Base: ast.Base{Position: t.Pos}, Name: t.Literal})
+		if !p.at(token.COMMA) {
+			break
+		}
+		p.advance()
+	}
+	return &ast.TupleLit{Base: ast.Base{Position: pos}, Elems: elems}
+}
+
+// parseType parses an annotation.
 func (p *Parser) parseType() ast.Expr {
 	t := p.cur()
 	if t.Type == token.NAME || t.Type == token.NONE {
@@ -410,8 +436,27 @@ func (p *Parser) parseType() ast.Expr {
 			name = "None"
 		}
 		node := &ast.Name{Base: ast.Base{Position: t.Pos}, Name: name}
-		if p.at(token.LBRACKET) || p.at(token.PIPE) {
-			p.errs.Add(t.Pos, token.UnsupportedType, "container/optional/union annotations arrive later")
+		if p.at(token.LBRACKET) {
+			p.advance()
+			var args []ast.Expr
+			for !p.at(token.RBRACKET) && !p.at(token.EOF) {
+				args = append(args, p.parseType())
+				if !p.at(token.COMMA) {
+					break
+				}
+				p.advance()
+			}
+			p.expect(token.RBRACKET)
+			var index ast.Expr
+			if len(args) == 1 {
+				index = args[0]
+			} else {
+				index = &ast.TupleLit{Base: ast.Base{Position: t.Pos}, Elems: args}
+			}
+			return &ast.Subscript{Base: ast.Base{Position: t.Pos}, X: node, Index: index}
+		}
+		if p.at(token.PIPE) {
+			p.errs.Add(t.Pos, token.UnsupportedType, "optional/union annotations arrive later")
 			p.skipTypeTail()
 		}
 		return node
@@ -481,6 +526,17 @@ func (p *Parser) parseComparison() ast.Expr {
 			p.errs.Add(p.cur().Pos, token.UnsupportedFeature, "'%s' comparison is not supported yet", op)
 			p.advance()
 			ops = append(ops, op)
+			rest = append(rest, p.parseBinary(1))
+		case token.NOT:
+			if p.peek(1).Type != token.IN {
+				if len(ops) == 0 {
+					return x
+				}
+				return &ast.Compare{Base: ast.Base{Position: x.Pos()}, X: x, Ops: ops, Comparators: rest}
+			}
+			p.advance()
+			p.advance()
+			ops = append(ops, token.NOTIN)
 			rest = append(rest, p.parseBinary(1))
 		default:
 			if len(ops) == 0 {
@@ -553,14 +609,16 @@ func (p *Parser) parsePrimary() ast.Expr {
 		case token.LPAREN:
 			x = p.parseCall(x)
 		case token.DOT:
-			p.errs.Add(p.cur().Pos, token.UnsupportedFeature, "attribute access is M5")
+			pos := p.cur().Pos
 			p.advance()
-			if p.at(token.NAME) {
-				p.advance()
-			}
+			name := p.expect(token.NAME)
+			x = &ast.Attribute{Base: ast.Base{Position: pos}, X: x, Name: name.Literal}
 		case token.LBRACKET:
-			p.errs.Add(p.cur().Pos, token.UnsupportedFeature, "subscripting is M3")
-			p.skipBracketed(token.LBRACKET, token.RBRACKET)
+			pos := p.cur().Pos
+			p.advance()
+			idx := p.parseExpression()
+			p.expect(token.RBRACKET)
+			x = &ast.Subscript{Base: ast.Base{Position: pos}, X: x, Index: idx}
 		default:
 			return x
 		}
@@ -607,18 +665,14 @@ func (p *Parser) parseAtom() ast.Expr {
 		p.advance()
 		v, _ := strconv.ParseFloat(t.Literal, 64)
 		return &ast.FloatLit{Base: ast.Base{Position: t.Pos}, Value: v}
-	case token.STRING:
+	case token.STRING, token.FSTRING:
 		return p.parseString()
 	case token.LPAREN:
 		return p.parseGroup()
 	case token.LBRACKET:
-		p.errs.Add(t.Pos, token.UnsupportedFeature, "list displays are M3")
-		p.skipBracketed(token.LBRACKET, token.RBRACKET)
-		return &ast.NoneLit{Base: ast.Base{Position: t.Pos}}
+		return p.parseList()
 	case token.LBRACE:
-		p.errs.Add(t.Pos, token.UnsupportedFeature, "dict/set displays are M3")
-		p.skipBracketed(token.LBRACE, token.RBRACE)
-		return &ast.NoneLit{Base: ast.Base{Position: t.Pos}}
+		return p.parseDict()
 	case token.LAMBDA:
 		p.errs.Add(t.Pos, token.UnsupportedFeature, "lambda is M4")
 		p.skipToStmtEnd()
@@ -636,6 +690,10 @@ func (p *Parser) parseAtom() ast.Expr {
 // concatenation, docs/spec/01-lexical.md).
 func (p *Parser) parseString() ast.Expr {
 	t := p.cur()
+	if t.Type == token.FSTRING {
+		p.advance()
+		return p.parseFStringToken(t)
+	}
 	value := t.Literal
 	p.advance()
 	for p.at(token.STRING) {
@@ -647,24 +705,186 @@ func (p *Parser) parseString() ast.Expr {
 
 // parseGroup parses a parenthesized expression; tuple displays are M3.
 func (p *Parser) parseGroup() ast.Expr {
+	pos := p.cur().Pos
 	p.advance() // (
+	if p.at(token.RPAREN) {
+		p.advance()
+		return &ast.TupleLit{Base: ast.Base{Position: pos}}
+	}
 	inner := p.parseExpression()
-	if p.at(token.COMMA) {
-		p.errs.Add(p.cur().Pos, token.UnsupportedFeature, "tuple displays are M3")
-		for p.at(token.COMMA) {
-			p.advance()
-			if p.at(token.RPAREN) || p.at(token.EOF) {
-				break
-			}
-			p.parseExpression()
+	if !p.at(token.COMMA) {
+		p.expect(token.RPAREN)
+		return inner
+	}
+	elems := []ast.Expr{inner}
+	for p.at(token.COMMA) {
+		p.advance()
+		if p.at(token.RPAREN) || p.at(token.EOF) {
+			break
 		}
+		elems = append(elems, p.parseExpression())
 	}
 	p.expect(token.RPAREN)
-	return inner
+	return &ast.TupleLit{Base: ast.Base{Position: pos}, Elems: elems}
+}
+
+func (p *Parser) parseList() ast.Expr {
+	pos := p.cur().Pos
+	p.advance()
+	var elems []ast.Expr
+	for !p.at(token.RBRACKET) && !p.at(token.EOF) {
+		elems = append(elems, p.parseExpression())
+		if !p.at(token.COMMA) {
+			break
+		}
+		p.advance()
+	}
+	p.expect(token.RBRACKET)
+	return &ast.ListLit{Base: ast.Base{Position: pos}, Elems: elems}
+}
+
+func (p *Parser) parseDict() ast.Expr {
+	pos := p.cur().Pos
+	p.advance()
+	var keys, values []ast.Expr
+	for !p.at(token.RBRACE) && !p.at(token.EOF) {
+		key := p.parseExpression()
+		if !p.at(token.COLON) {
+			p.errs.Add(key.Pos(), token.UnsupportedFeature, "set displays are M4")
+			for !p.at(token.RBRACE) && !p.at(token.EOF) {
+				p.advance()
+			}
+			break
+		}
+		p.advance()
+		keys = append(keys, key)
+		values = append(values, p.parseExpression())
+		if !p.at(token.COMMA) {
+			break
+		}
+		p.advance()
+	}
+	p.expect(token.RBRACE)
+	return &ast.DictLit{Base: ast.Base{Position: pos}, Keys: keys, Values: values}
+}
+
+func (p *Parser) parseFStringToken(t token.Token) ast.Expr {
+	return &ast.FString{Base: ast.Base{Position: t.Pos}, Parts: p.parseFStringParts(t.Literal, t.Pos)}
+}
+
+func (p *Parser) parseFStringParts(s string, pos token.Pos) []ast.FStringPart {
+	var parts []ast.FStringPart
+	var text strings.Builder
+	flush := func() {
+		if text.Len() > 0 {
+			parts = append(parts, &ast.FStringText{Base: ast.Base{Position: pos}, Value: text.String()})
+			text.Reset()
+		}
+	}
+	for i := 0; i < len(s); i++ {
+		switch s[i] {
+		case '{':
+			if i+1 < len(s) && s[i+1] == '{' {
+				text.WriteByte('{')
+				i++
+				continue
+			}
+			flush()
+			body, end, ok := fstringField(s, i+1)
+			if !ok {
+				p.errs.Add(pos, token.SyntaxError, "unterminated f-string replacement field")
+				return parts
+			}
+			parts = append(parts, p.parseFStringField(body, pos))
+			i = end
+		case '}':
+			if i+1 < len(s) && s[i+1] == '}' {
+				text.WriteByte('}')
+				i++
+				continue
+			}
+			p.errs.Add(pos, token.SyntaxError, "single '}' is not allowed in f-string")
+		default:
+			text.WriteByte(s[i])
+		}
+	}
+	flush()
+	return parts
+}
+
+func fstringField(s string, start int) (string, int, bool) {
+	depth := 0
+	for i := start; i < len(s); i++ {
+		switch s[i] {
+		case '{':
+			depth++
+		case '}':
+			if depth == 0 {
+				return s[start:i], i, true
+			}
+			depth--
+		}
+	}
+	return "", len(s), false
+}
+
+func (p *Parser) parseFStringField(body string, pos token.Pos) ast.FStringPart {
+	exprSrc, debug, conv, format := splitFStringField(body)
+	expr, err := parseFStringExpr(exprSrc)
+	if err != nil {
+		p.errs.Add(pos, token.SyntaxError, "invalid f-string expression")
+		expr = &ast.NoneLit{Base: ast.Base{Position: pos}}
+	}
+	var formatParts []ast.FStringPart
+	if format != "" {
+		formatParts = p.parseFStringParts(format, pos)
+	}
+	return &ast.FStringExpr{Base: ast.Base{Position: pos}, Expr: expr, Debug: debug, Conversion: conv, Format: formatParts}
+}
+
+func splitFStringField(body string) (expr, debug string, conv rune, format string) {
+	cut := len(body)
+	for i, r := range body {
+		if r == '!' || r == ':' || r == '=' {
+			cut = i
+			break
+		}
+	}
+	expr = strings.TrimSpace(body[:cut])
+	rest := body[cut:]
+	if strings.HasPrefix(rest, "=") {
+		debug = body[:cut] + "="
+		rest = rest[1:]
+	}
+	if strings.HasPrefix(rest, "!") && len(rest) >= 2 {
+		conv = rune(rest[1])
+		rest = rest[2:]
+	}
+	if strings.HasPrefix(rest, ":") {
+		format = rest[1:]
+	}
+	return expr, debug, conv, format
+}
+
+func parseFStringExpr(src string) (ast.Expr, error) {
+	mod, err := Parse(strings.NewReader(src + "\n"))
+	if err != nil {
+		return nil, err
+	}
+	if len(mod.Body) != 1 {
+		return nil, token.ErrorList{}
+	}
+	stmt, ok := mod.Body[0].(*ast.ExprStmt)
+	if !ok {
+		return nil, token.ErrorList{}
+	}
+	return stmt.X, nil
 }
 
 func (p *Parser) requireTarget(target ast.Expr) {
-	if _, ok := target.(*ast.Name); !ok {
+	switch target.(type) {
+	case *ast.Name, *ast.Subscript, *ast.TupleLit:
+	default:
 		p.errs.Add(target.Pos(), token.SyntaxError, "cannot assign to this expression")
 	}
 }

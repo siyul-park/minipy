@@ -22,6 +22,8 @@ const (
 	UseBeforeDefinition Code = "UseBeforeDefinition"
 	ArityMismatch       Code = "ArityMismatch"
 	NotComparable       Code = "NotComparable"
+	NotIterable         Code = "NotIterable"
+	NotIndexable        Code = "NotIndexable"
 )
 
 // Error is a single diagnostic with its source position and catalogue code.
@@ -43,7 +45,7 @@ func (c Code) Python() string {
 		return "SyntaxError"
 	case IntOverflow:
 		return "ValueError"
-	case MissingAnnotation, TypeMismatch, ArityMismatch, NotComparable:
+	case MissingAnnotation, TypeMismatch, ArityMismatch, NotComparable, NotIterable, NotIndexable:
 		return "TypeError"
 	case UndefinedName, UseBeforeDefinition:
 		return "NameError"

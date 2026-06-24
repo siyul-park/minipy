@@ -23,6 +23,12 @@ func TestNodePos(t *testing.T) {
 		&Compare{Base: Base{Position: pos}},
 		&CallExpr{Base: Base{Position: pos}},
 		&IfExp{Base: Base{Position: pos}},
+		&Attribute{Base: Base{Position: pos}},
+		&Subscript{Base: Base{Position: pos}},
+		&ListLit{Base: Base{Position: pos}},
+		&DictLit{Base: Base{Position: pos}},
+		&TupleLit{Base: Base{Position: pos}},
+		&FString{Base: Base{Position: pos}},
 	}
 	for _, e := range exprs {
 		require.Equal(t, pos, e.Pos())
@@ -48,4 +54,12 @@ func TestNodePos(t *testing.T) {
 
 	mod := &Module{Base: Base{Position: pos}}
 	require.Equal(t, pos, mod.Pos())
+
+	parts := []FStringPart{
+		&FStringText{Base: Base{Position: pos}},
+		&FStringExpr{Base: Base{Position: pos}},
+	}
+	for _, part := range parts {
+		require.Equal(t, pos, part.Pos())
+	}
 }

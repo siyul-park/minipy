@@ -87,10 +87,11 @@ type While struct {
 }
 
 // For is `for Target in Iter: Body [else: Orelse]`. In M1 Iter must be a
-// range(...) call; Orelse runs only when the loop exits without a break.
+// range(...) call; Orelse runs only when the loop exits without a break. M3
+// allows a flat tuple target.
 type For struct {
 	Base
-	Target *Name
+	Target Expr
 	Iter   Expr
 	Body   []Stmt
 	Orelse []Stmt
@@ -207,6 +208,66 @@ type CallExpr struct {
 	Args []Expr
 }
 
+// Attribute is `x.name`.
+type Attribute struct {
+	Base
+	X    Expr
+	Name string
+}
+
+// Subscript is `x[index]`.
+type Subscript struct {
+	Base
+	X     Expr
+	Index Expr
+}
+
+// ListLit is `[a, b, c]`.
+type ListLit struct {
+	Base
+	Elems []Expr
+}
+
+// DictLit is `{k: v}`.
+type DictLit struct {
+	Base
+	Keys   []Expr
+	Values []Expr
+}
+
+// TupleLit is `(a, b)` or a flat tuple target `a, b`.
+type TupleLit struct {
+	Base
+	Elems []Expr
+}
+
+// FString is an f-string split into literal and formatted expression parts.
+type FString struct {
+	Base
+	Parts []FStringPart
+}
+
+// FStringPart is either raw text or a formatted expression.
+type FStringPart interface {
+	Node
+	fstringPartNode()
+}
+
+// FStringText is literal text inside an f-string.
+type FStringText struct {
+	Base
+	Value string
+}
+
+// FStringExpr is a replacement field inside an f-string.
+type FStringExpr struct {
+	Base
+	Expr       Expr
+	Debug      string
+	Conversion rune
+	Format     []FStringPart
+}
+
 func (*AnnAssign) stmtNode() {}
 func (*Assign) stmtNode()    {}
 func (*AugAssign) stmtNode() {}
@@ -232,3 +293,12 @@ func (*BoolOp) exprNode()     {}
 func (*Compare) exprNode()    {}
 func (*CallExpr) exprNode()   {}
 func (*IfExp) exprNode()      {}
+func (*Attribute) exprNode()  {}
+func (*Subscript) exprNode()  {}
+func (*ListLit) exprNode()    {}
+func (*DictLit) exprNode()    {}
+func (*TupleLit) exprNode()   {}
+func (*FString) exprNode()    {}
+
+func (*FStringText) fstringPartNode() {}
+func (*FStringExpr) fstringPartNode() {}

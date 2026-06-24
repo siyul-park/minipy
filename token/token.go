@@ -35,6 +35,7 @@ const (
 	INT
 	FLOAT
 	STRING
+	FSTRING
 
 	// Keywords — the full Python reserved set (docs/spec/01-lexical.md).
 	keywordBeg
@@ -50,6 +51,7 @@ const (
 	WHILE
 	FOR
 	IN
+	NOTIN
 	BREAK
 	CONTINUE
 	PASS
@@ -133,6 +135,7 @@ var names = map[Type]string{
 	INT:     "INT",
 	FLOAT:   "FLOAT",
 	STRING:  "STRING",
+	FSTRING: "FSTRING",
 
 	TRUE:     "True",
 	FALSE:    "False",
@@ -146,6 +149,7 @@ var names = map[Type]string{
 	WHILE:    "while",
 	FOR:      "for",
 	IN:       "in",
+	NOTIN:    "not in",
 	BREAK:    "break",
 	CONTINUE: "continue",
 	PASS:     "pass",

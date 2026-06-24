@@ -176,7 +176,7 @@ else:
 `)
 		require.NoError(t, err)
 		f := mod.Body[0].(*ast.For)
-		require.Equal(t, "i", f.Target.Name)
+		require.Equal(t, "i", f.Target.(*ast.Name).Name)
 		call := f.Iter.(*ast.CallExpr)
 		require.Equal(t, "range", call.Fn.(*ast.Name).Name)
 		require.IsType(t, &ast.Pass{}, f.Body[0])
@@ -227,18 +227,25 @@ else:
 		require.Equal(t, "staticmethod", fn.Decorators[0].Name)
 		require.Nil(t, fn.Body[0].(*ast.Return).Value)
 	})
+
+	t.Run("M3 displays, subscript, method, f-string", func(t *testing.T) {
+		mod, err := parse("xs: list[int] = [1, 2]\nd: dict[str, int] = {\"a\": 1}\na, b = (1, 2)\nprint(f\"a={a}\")\nxs.append(d[\"a\"])\n")
+		require.NoError(t, err)
+		require.IsType(t, &ast.ListLit{}, mod.Body[0].(*ast.AnnAssign).Value)
+		require.IsType(t, &ast.DictLit{}, mod.Body[1].(*ast.AnnAssign).Value)
+		require.IsType(t, &ast.TupleLit{}, mod.Body[2].(*ast.Assign).Target)
+		require.IsType(t, &ast.FString{}, mod.Body[3].(*ast.ExprStmt).X.(*ast.CallExpr).Args[0])
+		call := mod.Body[4].(*ast.ExprStmt).X.(*ast.CallExpr)
+		require.Equal(t, "append", call.Fn.(*ast.Attribute).Name)
+		require.IsType(t, &ast.Subscript{}, call.Args[0])
+	})
 }
 
 func TestParseErrors(t *testing.T) {
 	cases := map[string]token.Code{
 		"x = lambda: 1\n":        token.UnsupportedFeature,
-		"xs = [1, 2]\n":          token.UnsupportedFeature,
-		"d = {}\n":               token.UnsupportedFeature,
-		"t = (1, 2)\n":           token.UnsupportedFeature,
-		"v: list[int]\n":         token.UnsupportedType,
 		"1 = 2\n":                token.SyntaxError,
 		"else:\n    pass\n":      token.SyntaxError,
-		"for i, j in x:\n p\n":   token.UnsupportedFeature,
 		"def f(x) -> int:\n p\n": token.MissingAnnotation,
 		"@pkg.decorator\ndef f() -> None:\n pass\n": token.UnsupportedFeature,
 	}

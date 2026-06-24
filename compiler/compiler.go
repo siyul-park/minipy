@@ -9,6 +9,7 @@ import (
 	"io"
 	"math"
 	"os"
+	"strings"
 
 	"github.com/siyul-park/minipy/ast"
 	"github.com/siyul-park/minipy/parser"
@@ -59,6 +60,7 @@ type compiler struct {
 	host     *hostFuncs
 	constIdx map[*interp.HostFunction]int
 	loops    []loopLabels // enclosing-loop branch targets, innermost last
+	scratch  int
 }
 
 func newCompiler(b *program.Builder, exprType map[ast.Expr]types.Type, globals map[string]*global, funcs map[string]*fn, host *hostFuncs) *compiler {
@@ -70,6 +72,7 @@ func newCompiler(b *program.Builder, exprType map[ast.Expr]types.Type, globals m
 		funcs:    funcs,
 		host:     host,
 		constIdx: map[*interp.HostFunction]int{},
+		scratch:  len(globals),
 	}
 }
 
@@ -123,6 +126,16 @@ func (c *compiler) constGet(v vmtypes.Value) {
 	c.emit(instr.CONST_GET, uint64(c.prog.Const(v)))
 }
 
+func (c *compiler) typeIndex(t types.Type) uint64 {
+	return uint64(c.prog.Type(t.VM()))
+}
+
+func (c *compiler) scratchGlobal() int {
+	idx := c.scratch
+	c.scratch++
+	return idx
+}
+
 // Compile reads minipy source from r, type-checks it, and lowers it into a
 // minivm program. On any lexical, syntactic, or semantic error it returns a
 // token.ErrorList describing every diagnostic found and a nil program.
@@ -155,9 +168,16 @@ func Compile(r io.Reader, opts ...Option) (*program.Program, error) {
 		return nil, fmt.Errorf("assemble program: %w", err)
 	}
 
-	optimized, err := optimize.NewOptimizer(optimize.O1).Optimize(prog)
+	typesPool := append([]vmtypes.Type(nil), prog.Types...)
+	handlers := append([]instr.Handler(nil), prog.Handlers...)
+	optimized, err := optimize.NewOptimizer(optimize.O0).Optimize(prog)
 	if err != nil {
 		return nil, fmt.Errorf("optimize program: %w", err)
+	}
+	optimized.Types = typesPool
+	optimized.Handlers = handlers
+	if err := program.Verify(optimized); err != nil {
+		return nil, fmt.Errorf("verify program: %w", err)
 	}
 	return optimized, nil
 }
@@ -187,9 +207,12 @@ func (c *compiler) stmt(s ast.Stmt) {
 			c.set(n.Target.Name)
 		}
 	case *ast.Assign:
-		name := n.Target.(*ast.Name)
-		c.expr(n.Value)
-		c.set(name.Name)
+		if name, ok := n.Target.(*ast.Name); ok {
+			c.expr(n.Value)
+			c.set(name.Name)
+		} else {
+			c.assignTarget(n.Target, n.Value)
+		}
 	case *ast.AugAssign:
 		name := n.Target.(*ast.Name)
 		t := c.typ(name.Name)
@@ -217,6 +240,57 @@ func (c *compiler) stmt(s ast.Stmt) {
 	case *ast.Pass:
 		// no-op
 	}
+}
+
+func (c *compiler) assignTarget(target ast.Expr, value ast.Expr) {
+	switch t := target.(type) {
+	case *ast.Subscript:
+		c.expr(t.X)
+		c.expr(t.Index)
+		c.expr(value)
+		switch c.exprType[t.X].(type) {
+		case *types.List:
+			c.emit(instr.SWAP)
+			c.emit(instr.I64_TO_I32)
+			c.emit(instr.SWAP)
+			c.emit(instr.ARRAY_SET)
+		case *types.Dict:
+			c.emit(instr.MAP_SET)
+		default:
+			panic("unsupported subscript assignment")
+		}
+	case *ast.TupleLit:
+		c.unpackAssign(t, value)
+	default:
+		panic("unsupported assignment target")
+	}
+}
+
+func (c *compiler) unpackAssign(target *ast.TupleLit, value ast.Expr) {
+	if tupleValue, ok := value.(*ast.TupleLit); ok {
+		for i, elem := range target.Elems {
+			name := elem.(*ast.Name)
+			c.expr(tupleValue.Elems[i])
+			c.set(name.Name)
+		}
+		return
+	}
+	c.expr(value)
+	for i, elem := range target.Elems {
+		name := elem.(*ast.Name)
+		c.emit(instr.DUP)
+		c.emit(instr.I32_CONST, uint64(i))
+		switch c.exprType[value].(type) {
+		case *types.Tuple:
+			c.emit(instr.STRUCT_GET)
+		case *types.List:
+			c.emit(instr.ARRAY_GET)
+		default:
+			panic("unsupported unpack value")
+		}
+		c.set(name.Name)
+	}
+	c.emit(instr.DROP)
 }
 
 func (c *compiler) get(name string) {
@@ -291,6 +365,11 @@ func (c *compiler) emitWhile(n *ast.While) {
 // (docs/spec/05-codegen.md). continue → the increment, break → past the else
 // block.
 func (c *compiler) emitFor(n *ast.For) {
+	target := forTargetName(n.Target)
+	if !isRangeCall(n.Iter) {
+		c.emitIterableFor(n)
+		return
+	}
 	args := n.Iter.(*ast.CallExpr).Args
 	var startExpr, stopExpr ast.Expr
 	step := int64(1)
@@ -308,7 +387,7 @@ func (c *compiler) emitFor(n *ast.For) {
 	} else {
 		c.emit(instr.I64_CONST, 0)
 	}
-	c.set(n.Target.Name)
+	c.set(target.Name)
 
 	top := c.label()
 	cont := c.label()
@@ -316,7 +395,7 @@ func (c *compiler) emitFor(n *ast.For) {
 	end := c.label()
 
 	c.bind(top)
-	c.get(n.Target.Name)
+	c.get(target.Name)
 	c.expr(stopExpr)
 	if step < 0 {
 		c.emit(instr.I64_GT_S)
@@ -331,15 +410,81 @@ func (c *compiler) emitFor(n *ast.For) {
 	c.loops = c.loops[:len(c.loops)-1]
 
 	c.bind(cont)
-	c.get(n.Target.Name)
+	c.get(target.Name)
 	c.emit(instr.I64_CONST, uint64(step))
 	c.emit(instr.I64_ADD)
-	c.set(n.Target.Name)
+	c.set(target.Name)
 	c.br(top)
 
 	c.bind(elseL)
 	c.block(n.Orelse)
 	c.bind(end)
+}
+
+func (c *compiler) emitIterableFor(n *ast.For) {
+	iterSlot := c.scratchGlobal()
+	idxSlot := c.scratchGlobal()
+
+	c.expr(n.Iter)
+	if _, ok := c.exprType[n.Iter].(*types.Dict); ok {
+		c.emit(instr.MAP_KEYS)
+	}
+	c.emit(instr.GLOBAL_SET, uint64(iterSlot))
+	c.emit(instr.I64_CONST, 0)
+	c.emit(instr.GLOBAL_SET, uint64(idxSlot))
+
+	top := c.label()
+	cont := c.label()
+	elseL := c.label()
+	end := c.label()
+
+	c.bind(top)
+	c.emit(instr.GLOBAL_GET, uint64(idxSlot))
+	c.emit(instr.GLOBAL_GET, uint64(iterSlot))
+	c.emit(instr.ARRAY_LEN)
+	c.emit(instr.I32_TO_I64_S)
+	c.emit(instr.I64_LT_S)
+	c.emit(instr.I32_EQZ)
+	c.brIf(elseL)
+
+	c.emit(instr.GLOBAL_GET, uint64(iterSlot))
+	c.emit(instr.GLOBAL_GET, uint64(idxSlot))
+	c.emit(instr.I64_TO_I32)
+	c.emit(instr.ARRAY_GET)
+	c.setLoopTarget(n.Target)
+
+	c.loops = append(c.loops, loopLabels{cont: cont, brk: end})
+	c.block(n.Body)
+	c.loops = c.loops[:len(c.loops)-1]
+
+	c.bind(cont)
+	c.emit(instr.GLOBAL_GET, uint64(idxSlot))
+	c.emit(instr.I64_CONST, 1)
+	c.emit(instr.I64_ADD)
+	c.emit(instr.GLOBAL_SET, uint64(idxSlot))
+	c.br(top)
+
+	c.bind(elseL)
+	c.block(n.Orelse)
+	c.bind(end)
+}
+
+func (c *compiler) setLoopTarget(target ast.Expr) {
+	switch t := target.(type) {
+	case *ast.Name:
+		c.set(t.Name)
+	case *ast.TupleLit:
+		for i, elem := range t.Elems {
+			name := elem.(*ast.Name)
+			c.emit(instr.DUP)
+			c.emit(instr.I32_CONST, uint64(i))
+			c.emit(instr.STRUCT_GET)
+			c.set(name.Name)
+		}
+		c.emit(instr.DROP)
+	default:
+		panic("unsupported for target")
+	}
 }
 
 func (c *compiler) function(n *ast.Function) {
@@ -431,7 +576,118 @@ func (c *compiler) expr(n ast.Expr) {
 		c.call(x)
 	case *ast.IfExp:
 		c.ifExp(x)
+	case *ast.ListLit:
+		c.listLit(x)
+	case *ast.DictLit:
+		c.dictLit(x)
+	case *ast.TupleLit:
+		c.tupleLit(x)
+	case *ast.Subscript:
+		c.subscript(x)
+	case *ast.FString:
+		c.fstring(x)
 	}
+}
+
+func (c *compiler) listLit(x *ast.ListLit) {
+	t := c.exprType[x].(*types.List)
+	c.emit(instr.I32_CONST, uint64(len(x.Elems)))
+	c.emit(instr.ARRAY_NEW_DEFAULT, c.typeIndex(t))
+	for i, elem := range x.Elems {
+		c.emit(instr.DUP)
+		c.emit(instr.I32_CONST, uint64(i))
+		c.expr(elem)
+		c.emit(instr.ARRAY_SET)
+	}
+}
+
+func (c *compiler) dictLit(x *ast.DictLit) {
+	t := c.exprType[x].(*types.Dict)
+	for i := range x.Keys {
+		c.expr(x.Keys[i])
+		c.expr(x.Values[i])
+	}
+	c.emit(instr.I32_CONST, uint64(len(x.Keys)))
+	c.emit(instr.MAP_NEW, c.typeIndex(t))
+}
+
+func (c *compiler) tupleLit(x *ast.TupleLit) {
+	t := c.exprType[x].(*types.Tuple)
+	c.emit(instr.STRUCT_NEW_DEFAULT, c.typeIndex(t))
+	for i, elem := range x.Elems {
+		c.emit(instr.DUP)
+		c.emit(instr.I32_CONST, uint64(i))
+		c.expr(elem)
+		c.emit(instr.STRUCT_SET)
+	}
+}
+
+func (c *compiler) subscript(x *ast.Subscript) {
+	c.expr(x.X)
+	c.expr(x.Index)
+	switch c.exprType[x.X].(type) {
+	case *types.List:
+		c.emit(instr.I64_TO_I32)
+		c.emit(instr.ARRAY_GET)
+	case *types.Dict:
+		c.emit(instr.MAP_GET)
+	case *types.Tuple:
+		c.emit(instr.I64_TO_I32)
+		c.emit(instr.STRUCT_GET)
+	default:
+		if types.Equal(c.exprType[x.X], types.Str) {
+			c.callStringIndex(x)
+		}
+	}
+}
+
+func (c *compiler) callStringIndex(x *ast.Subscript) {
+	// Stack already has string and index; helper returns a one-codepoint string.
+	c.callHost(c.host.strIndex)
+}
+
+func (c *compiler) fstring(x *ast.FString) {
+	c.constGet(vmtypes.String(""))
+	for _, part := range x.Parts {
+		c.fstringPart(part)
+		c.emit(instr.STRING_CONCAT)
+	}
+}
+
+func (c *compiler) fstringPart(part ast.FStringPart) {
+	switch p := part.(type) {
+	case *ast.FStringText:
+		c.constGet(vmtypes.String(p.Value))
+	case *ast.FStringExpr:
+		if p.Debug != "" {
+			c.constGet(vmtypes.String(p.Debug))
+			c.expr(p.Expr)
+			c.callHost(c.host.str)
+			c.emit(instr.STRING_CONCAT)
+			return
+		}
+		c.expr(p.Expr)
+		if format, ok := staticFStringFormat(p.Format); ok && format != "" {
+			c.constGet(vmtypes.String(format))
+			c.callHost(c.host.format(c.exprType[p.Expr]))
+			return
+		}
+		if !types.Equal(c.exprType[p.Expr], types.Str) || p.Conversion != 0 || len(p.Format) > 0 {
+			c.callHost(c.host.str)
+		}
+	}
+}
+
+func staticFStringFormat(parts []ast.FStringPart) (string, bool) {
+	var sb strings.Builder
+	for _, part := range parts {
+		text, ok := part.(*ast.FStringText)
+		if !ok {
+			return "", false
+		}
+		sb.WriteString(text.Value)
+	}
+	return sb.String(), true
 }
 
 // ifExp lowers the conditional expression `body if cond else orelse`
@@ -565,14 +821,41 @@ func (c *compiler) compare(x *ast.Compare) {
 
 func (c *compiler) emitCmp(l ast.Expr, op token.Type, r ast.Expr) {
 	t := c.exprType[l]
+	if op == token.IN || op == token.NOTIN {
+		c.expr(r)
+		c.expr(l)
+		c.contains(op, l, r)
+		return
+	}
 	c.expr(l)
 	c.expr(r)
 	c.emit(cmpOpcode(op, t))
 }
 
+func (c *compiler) contains(op token.Type, l ast.Expr, r ast.Expr) {
+	switch c.exprType[r].(type) {
+	case *types.Dict:
+		c.emit(instr.MAP_LOOKUP)
+		c.emit(instr.DROP)
+	case *types.List:
+		c.callHost(c.host.listContains(c.exprType[l], c.exprType[r]))
+	default:
+		if types.Equal(c.exprType[r], types.Str) {
+			c.callHost(c.host.strContains)
+		}
+	}
+	if op == token.NOTIN {
+		c.emit(instr.I32_EQZ)
+	}
+}
+
 // call lowers a direct builtin or user-function call. Inline builtins emit
 // opcodes directly; print/str and the parse helpers go through host functions.
 func (c *compiler) call(x *ast.CallExpr) {
+	if attr, ok := x.Fn.(*ast.Attribute); ok {
+		c.methodCall(x, attr)
+		return
+	}
 	name := x.Fn.(*ast.Name).Name
 	if fn, ok := c.funcs[name]; ok {
 		for _, arg := range x.Args {
@@ -583,8 +866,12 @@ func (c *compiler) call(x *ast.CallExpr) {
 		return
 	}
 
-	arg := x.Args[0]
-	at := c.exprType[arg]
+	var arg ast.Expr
+	var at types.Type
+	if len(x.Args) > 0 {
+		arg = x.Args[0]
+		at = c.exprType[arg]
+	}
 
 	switch name {
 	case "print":
@@ -626,8 +913,8 @@ func (c *compiler) call(x *ast.CallExpr) {
 			c.emit(instr.F64_NE)
 		case types.Str:
 			c.emit(instr.STRING_LEN)
-			c.emit(instr.I64_CONST, 0)
-			c.emit(instr.I64_NE)
+			c.emit(instr.I32_CONST, 0)
+			c.emit(instr.I32_NE)
 		}
 	case "abs":
 		if at == types.Int {
@@ -636,6 +923,84 @@ func (c *compiler) call(x *ast.CallExpr) {
 			c.expr(arg)
 			c.emit(instr.F64_ABS)
 		}
+	case "len":
+		c.expr(arg)
+		switch at.(type) {
+		case *types.List:
+			c.emit(instr.ARRAY_LEN)
+		case *types.Dict:
+			c.emit(instr.MAP_LEN)
+		case *types.Tuple:
+			c.emit(instr.I32_CONST, uint64(len(at.(*types.Tuple).Elems)))
+		default:
+			c.emit(instr.STRING_LEN)
+		}
+		c.emit(instr.I32_TO_I64_S)
+	case "enumerate":
+		c.expr(arg)
+		c.callHost(c.host.enumerate(c.exprType[x]))
+	case "zip":
+		c.expr(x.Args[0])
+		c.expr(x.Args[1])
+		c.callHost(c.host.zip(c.exprType[x]))
+	}
+}
+
+func (c *compiler) methodCall(x *ast.CallExpr, attr *ast.Attribute) {
+	recvType := c.exprType[attr.X]
+	c.expr(attr.X)
+	for _, arg := range x.Args {
+		c.expr(arg)
+	}
+	switch attr.Name {
+	case "get":
+		if len(x.Args) == 1 {
+			c.emitZeroValue(c.exprType[x])
+		}
+		c.callHost(c.host.dictGet(recvType, c.exprType[x]))
+	case "keys":
+		c.emit(instr.MAP_KEYS)
+	case "values":
+		c.callHost(c.host.dictValues(recvType, c.exprType[x]))
+	case "items":
+		c.callHost(c.host.dictItems(recvType, c.exprType[x]))
+	case "append":
+		c.callHostVoid(c.host.listAppend(recvType))
+	case "pop":
+		if len(x.Args) == 0 {
+			c.emit(instr.I64_CONST, ^uint64(0))
+		}
+		c.callHost(c.host.listPop(recvType, c.exprType[x]))
+	case "upper":
+		c.callHost(c.host.strUpper)
+	case "lower":
+		c.callHost(c.host.strLower)
+	case "split":
+		if len(x.Args) == 0 {
+			c.constGet(vmtypes.String(" "))
+		}
+		c.callHost(c.host.strSplit)
+	case "join":
+		c.callHost(c.host.strJoin)
+	case "find":
+		c.callHost(c.host.strFind)
+	default:
+		panic("unsupported method")
+	}
+}
+
+func (c *compiler) emitZeroValue(t types.Type) {
+	switch {
+	case types.Equal(t, types.Int):
+		c.emit(instr.I64_CONST, 0)
+	case types.Equal(t, types.Float):
+		c.emit(instr.F64_CONST, 0)
+	case types.Equal(t, types.Bool):
+		c.emit(instr.I32_CONST, 0)
+	case types.Equal(t, types.Str):
+		c.constGet(vmtypes.String(""))
+	default:
+		c.emit(instr.REF_NULL)
 	}
 }
 

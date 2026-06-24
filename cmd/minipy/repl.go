@@ -28,10 +28,7 @@ func runFile(path string, out io.Writer) error {
 	if err != nil {
 		return err
 	}
-	vm, err := interp.New(prog)
-	if err != nil {
-		return err
-	}
+	vm := interp.New(prog)
 	defer vm.Close()
 	return vm.Run(context.Background())
 }
@@ -98,11 +95,7 @@ func runTransient(state, line string, x ast.Expr, out io.Writer) {
 		fmt.Fprintln(out, pyError(err))
 		return
 	}
-	vm, err := interp.New(prog)
-	if err != nil {
-		fmt.Fprintln(out, pyError(err))
-		return
-	}
+	vm := interp.New(prog)
 	defer vm.Close()
 	if err := vm.Run(context.Background()); err != nil {
 		fmt.Fprintln(out, pyError(err))

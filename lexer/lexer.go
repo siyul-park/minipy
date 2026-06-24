@@ -316,10 +316,6 @@ func (l *Lexer) scanStringAt(pos token.Pos, raw, fstr, bytes bool) {
 	if bytes {
 		l.errs.Add(pos, token.UnsupportedFeature, "bytes/unicode string prefixes are not supported yet")
 	}
-	if fstr {
-		l.errs.Add(pos, token.UnsupportedFeature, "f-strings arrive in M3")
-	}
-
 	q := l.cur()
 	triple := l.at(1) == q && l.at(2) == q
 	if triple {
@@ -382,6 +378,10 @@ func (l *Lexer) scanStringAt(pos token.Pos, raw, fstr, bytes bool) {
 		sb.WriteRune(c)
 		l.pos++
 		l.col++
+	}
+	if fstr {
+		l.add(token.FSTRING, sb.String(), pos)
+		return
 	}
 	l.add(token.STRING, sb.String(), pos)
 }
