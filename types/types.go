@@ -36,8 +36,17 @@ type Dict struct {
 	Value Type
 }
 
+type Set struct {
+	Elem Type
+}
+
 type Tuple struct {
 	Elems []Type
+}
+
+type Callable struct {
+	Params []Type
+	Return Type
 }
 
 var (
@@ -52,7 +61,9 @@ var (
 func (primitive) sealed() {}
 func (*List) sealed()     {}
 func (*Dict) sealed()     {}
+func (*Set) sealed()      {}
 func (*Tuple) sealed()    {}
+func (*Callable) sealed() {}
 
 func (t primitive) String() string { return t.name }
 func (t primitive) IsNumeric() bool {
@@ -102,6 +113,24 @@ func (t *Dict) Equal(o Type) bool {
 	return ok && Equal(t.Key, other.Key) && Equal(t.Value, other.Value)
 }
 
+func (t *Set) String() string {
+	if t == nil || t.Elem == nil {
+		return "set[<invalid>]"
+	}
+	return "set[" + t.Elem.String() + "]"
+}
+func (*Set) IsNumeric() bool { return false }
+func (t *Set) VM() vmtypes.Type {
+	if t == nil || t.Elem == nil {
+		return nil
+	}
+	return vmtypes.NewMapType(t.Elem.VM(), vmtypes.TypeI32)
+}
+func (t *Set) Equal(o Type) bool {
+	other, ok := o.(*Set)
+	return ok && Equal(t.Elem, other.Elem)
+}
+
 func (t *Tuple) String() string {
 	if t == nil {
 		return "tuple[<invalid>]"
@@ -143,6 +172,52 @@ func (t *Tuple) Equal(o Type) bool {
 	return true
 }
 
+func (t *Callable) String() string {
+	if t == nil {
+		return "Callable[[<invalid>], <invalid>]"
+	}
+	params := make([]string, len(t.Params))
+	for i, param := range t.Params {
+		if param == nil {
+			params[i] = "<invalid>"
+		} else {
+			params[i] = param.String()
+		}
+	}
+	ret := "<invalid>"
+	if t.Return != nil {
+		ret = t.Return.String()
+	}
+	return "Callable[[" + strings.Join(params, ", ") + "], " + ret + "]"
+}
+func (*Callable) IsNumeric() bool { return false }
+func (t *Callable) VM() vmtypes.Type {
+	if t == nil {
+		return nil
+	}
+	params := make([]vmtypes.Type, len(t.Params))
+	for i, param := range t.Params {
+		params[i] = param.VM()
+	}
+	returns := []vmtypes.Type{}
+	if t.Return != nil {
+		returns = append(returns, t.Return.VM())
+	}
+	return &vmtypes.FunctionType{Params: params, Returns: returns}
+}
+func (t *Callable) Equal(o Type) bool {
+	other, ok := o.(*Callable)
+	if !ok || len(t.Params) != len(other.Params) || !Equal(t.Return, other.Return) {
+		return false
+	}
+	for i := range t.Params {
+		if !Equal(t.Params[i], other.Params[i]) {
+			return false
+		}
+	}
+	return true
+}
+
 func ListOf(elem Type) Type {
 	return &List{Elem: elem}
 }
@@ -151,9 +226,17 @@ func DictOf(key, value Type) Type {
 	return &Dict{Key: key, Value: value}
 }
 
+func SetOf(elem Type) Type {
+	return &Set{Elem: elem}
+}
+
 func TupleOf(elems ...Type) Type {
 	cp := append([]Type(nil), elems...)
 	return &Tuple{Elems: cp}
+}
+
+func CallableOf(params []Type, ret Type) Type {
+	return &Callable{Params: append([]Type(nil), params...), Return: ret}
 }
 
 // Equal reports structural equality of two source types.
@@ -179,7 +262,7 @@ func Printable(t Type) bool {
 		return true
 	}
 	switch t.(type) {
-	case *List, *Dict, *Tuple:
+	case *List, *Dict, *Set, *Tuple:
 		return true
 	default:
 		return false

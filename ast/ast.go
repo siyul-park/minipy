@@ -114,6 +114,18 @@ type Function struct {
 	Body       []Stmt
 }
 
+// Global is a `global x, y` declaration inside a function.
+type Global struct {
+	Base
+	Names []string
+}
+
+// Nonlocal is a `nonlocal x, y` declaration inside a nested function.
+type Nonlocal struct {
+	Base
+	Names []string
+}
+
 // Return is a `return` statement. Value is nil for bare `return`.
 type Return struct {
 	Base
@@ -135,6 +147,14 @@ type IfExp struct {
 	Body   Expr
 	Cond   Expr
 	Orelse Expr
+}
+
+// LambdaExpr is `lambda params: body`; Params carry inferred annotations when
+// a Callable context is available.
+type LambdaExpr struct {
+	Base
+	Params []*Param
+	Body   Expr
 }
 
 // Name is an identifier reference.
@@ -235,6 +255,42 @@ type DictLit struct {
 	Values []Expr
 }
 
+// SetLit is `{a, b, c}`.
+type SetLit struct {
+	Base
+	Elems []Expr
+}
+
+// Comprehension is one `for target in iter if ...` clause.
+type Comprehension struct {
+	Base
+	Target *Name
+	Iter   Expr
+	Ifs    []Expr
+}
+
+// ListComp is `[elem for ...]`.
+type ListComp struct {
+	Base
+	Elem    Expr
+	Clauses []*Comprehension
+}
+
+// DictComp is `{key: value for ...}`.
+type DictComp struct {
+	Base
+	Key     Expr
+	Value   Expr
+	Clauses []*Comprehension
+}
+
+// SetComp is `{elem for ...}`.
+type SetComp struct {
+	Base
+	Elem    Expr
+	Clauses []*Comprehension
+}
+
 // TupleLit is `(a, b)` or a flat tuple target `a, b`.
 type TupleLit struct {
 	Base
@@ -276,12 +332,15 @@ func (*If) stmtNode()        {}
 func (*While) stmtNode()     {}
 func (*For) stmtNode()       {}
 func (*Function) stmtNode()  {}
+func (*Global) stmtNode()    {}
+func (*Nonlocal) stmtNode()  {}
 func (*Return) stmtNode()    {}
 func (*Break) stmtNode()     {}
 func (*Continue) stmtNode()  {}
 func (*Pass) stmtNode()      {}
 
 func (*Name) exprNode()       {}
+func (*LambdaExpr) exprNode() {}
 func (*IntLit) exprNode()     {}
 func (*FloatLit) exprNode()   {}
 func (*StrLit) exprNode()     {}
@@ -297,6 +356,10 @@ func (*Attribute) exprNode()  {}
 func (*Subscript) exprNode()  {}
 func (*ListLit) exprNode()    {}
 func (*DictLit) exprNode()    {}
+func (*SetLit) exprNode()     {}
+func (*ListComp) exprNode()   {}
+func (*DictComp) exprNode()   {}
+func (*SetComp) exprNode()    {}
 func (*TupleLit) exprNode()   {}
 func (*FString) exprNode()    {}
 

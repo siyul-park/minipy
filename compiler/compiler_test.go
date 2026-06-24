@@ -3,11 +3,15 @@ package compiler
 import (
 	"bytes"
 	"context"
+	"io"
 	"strings"
 	"testing"
 
 	"github.com/siyul-park/minipy/token"
+	"github.com/siyul-park/minivm/instr"
 	"github.com/siyul-park/minivm/interp"
+	"github.com/siyul-park/minivm/optimize"
+	vmtypes "github.com/siyul-park/minivm/types"
 	"github.com/stretchr/testify/require"
 )
 
@@ -36,6 +40,18 @@ func hasCode(t *testing.T, err error, code token.Code) {
 }
 
 func TestCompile(t *testing.T) {
+	t.Run("compiler object API and optimization option", func(t *testing.T) {
+		var buf bytes.Buffer
+		c := New(strings.NewReader("print(\"api\")\n"), WithOutput(&buf), WithOptimizationLevel(optimize.O1))
+		prog, err := c.Compile()
+		require.NoError(t, err)
+
+		vm := interp.New(prog)
+		defer vm.Close()
+		require.NoError(t, vm.Run(context.Background()))
+		require.Equal(t, "api\n", buf.String())
+	})
+
 	t.Run("worked example", func(t *testing.T) {
 		require.Equal(t, "42\n", run(t, "x: int = 6\ny: int = 7\nprint(str(x * y))\n"))
 	})
@@ -331,6 +347,149 @@ greet()
 `
 		require.Equal(t, "hi\n", run(t, src))
 	})
+
+	t.Run("lambda captures enclosing value", func(t *testing.T) {
+		src := `def adder(n: int) -> Callable[[int], int]:
+    return lambda x: x + n
+add5: Callable[[int], int] = adder(5)
+print(str(add5(10)))
+`
+		require.Equal(t, "15\n", run(t, src))
+		prog, err := Compile(strings.NewReader(src), WithOutput(io.Discard))
+		require.NoError(t, err)
+		hasOps(t, prog.Constants, instr.CLOSURE_NEW, instr.UPVAL_GET)
+	})
+
+	t.Run("lambda closure does not depend on function name", func(t *testing.T) {
+		src := `def shift(delta: int) -> Callable[[int], int]:
+    return lambda value: value + delta
+plus3: Callable[[int], int] = shift(3)
+print(str(plus3(4)))
+`
+		require.Equal(t, "7\n", run(t, src))
+	})
+
+	t.Run("nested function returned as closure", func(t *testing.T) {
+		src := `def make(n: int) -> Callable[[int], int]:
+    def add(x: int) -> int:
+        return x + n
+    return add
+f: Callable[[int], int] = make(7)
+print(str(f(8)))
+`
+		require.Equal(t, "15\n", run(t, src))
+	})
+
+	t.Run("nested function closure does not depend on function name", func(t *testing.T) {
+		src := `def factory(base: int) -> Callable[[int], int]:
+    def apply(arg: int) -> int:
+        return base + arg
+    return apply
+f: Callable[[int], int] = factory(9)
+print(str(f(6)))
+`
+		require.Equal(t, "15\n", run(t, src))
+	})
+
+	t.Run("deep nested function captures outer local", func(t *testing.T) {
+		src := `def outer(base: int) -> Callable[[int], int]:
+    def middle() -> Callable[[int], int]:
+        def inner(x: int) -> int:
+            return base + x
+        return inner
+    return middle()
+f: Callable[[int], int] = outer(11)
+print(str(f(4)))
+`
+		require.Equal(t, "15\n", run(t, src))
+	})
+
+	t.Run("nonlocal mutation shares boxed capture", func(t *testing.T) {
+		src := `def counter() -> Callable[[], int]:
+    n = 0
+    def inc() -> int:
+        nonlocal n
+        n = n + 1
+        return n
+    return inc
+c: Callable[[], int] = counter()
+print(str(c()))
+print(str(c()))
+`
+		require.Equal(t, "1\n2\n", run(t, src))
+	})
+
+	t.Run("nonlocal augmented assignment updates boxed capture", func(t *testing.T) {
+		src := `def counter() -> Callable[[], int]:
+    n = 0
+    def inc() -> int:
+        nonlocal n
+        n += 2
+        return n
+    return inc
+c: Callable[[], int] = counter()
+print(str(c()))
+print(str(c()))
+`
+		require.Equal(t, "2\n4\n", run(t, src))
+	})
+
+	t.Run("global rebinding from nested function", func(t *testing.T) {
+		src := `x: int = 1
+def setx() -> None:
+    global x
+    x = 9
+setx()
+print(str(x))
+`
+		require.Equal(t, "9\n", run(t, src))
+	})
+
+	t.Run("comprehensions", func(t *testing.T) {
+		src := `xs: list[int] = [i * i for i in range(6) if i % 2 == 0]
+print(str(xs[2]))
+d: dict[str, int] = {str(i): i + 1 for i in range(2)}
+print(str(d["1"]))
+s: set[int] = {i for i in [1, 1, 2]}
+print(str(len(s)))
+`
+		require.Equal(t, "16\n2\n2\n", run(t, src))
+	})
+
+	t.Run("comprehensions do not depend on sample literals", func(t *testing.T) {
+		src := `xs: list[int] = [i + 10 for i in range(3)]
+print(str(xs[2]))
+d: dict[str, int] = {str(i): i for i in range(3)}
+print(str(d["2"]))
+s: set[int] = {i for i in [2, 2, 3]}
+print(str(len(s)))
+`
+		require.Equal(t, "12\n2\n2\n", run(t, src))
+	})
+
+	t.Run("comprehension loop variable does not leak", func(t *testing.T) {
+		var buf bytes.Buffer
+		_, err := Compile(strings.NewReader("xs: list[int] = [i for i in range(3)]\nprint(str(i))\n"), WithOutput(&buf))
+		require.Error(t, err)
+		hasCode(t, err, token.UndefinedName)
+	})
+}
+
+func hasOps(t *testing.T, constants []vmtypes.Value, ops ...instr.Opcode) {
+	t.Helper()
+	seen := map[instr.Opcode]bool{}
+	for _, constant := range constants {
+		fn, ok := constant.(*vmtypes.Function)
+		if !ok {
+			continue
+		}
+		for _, ins := range instr.Unmarshal(fn.Code) {
+			seen[ins.Opcode()] = true
+		}
+	}
+	for _, op := range ops {
+		require.Truef(t, seen[op], "expected function constant to contain %s", op)
+	}
 }
 
 func TestCompileErrors(t *testing.T) {
@@ -374,10 +533,30 @@ func TestCompileErrors(t *testing.T) {
 		"xs: list[int] = [1, \"x\"]\n":                           token.TypeMismatch,
 		"t: tuple[int, int] = (1, 2)\ni: int = 0\nprint(t[i])\n": token.UnsupportedFeature,
 		"d: dict[list[int], int] = {}\n":                         token.UnsupportedType,
+		// Closures and comprehensions
+		"f = lambda x: x\n":                                   token.MissingAnnotation,
+		"def f() -> None:\n    nonlocal x\n":                  token.NoBindingForNonlocal,
+		"xs: list[int] = [i for i in range(3) if i]\n":        token.TypeMismatch,
+		"s: set[list[int]] = {[1] for i in range(1)}\n":       token.UnsupportedType,
+		"f: Callable[[int], int] = lambda x: x\nprint(f())\n": token.ArityMismatch,
 	}
 	for src, code := range cases {
 		_, err := Compile(strings.NewReader(src), WithOutput(&bytes.Buffer{}))
 		require.Errorf(t, err, "src=%q", src)
 		hasCode(t, err, code)
 	}
+}
+
+func TestCompileOptionDefaults(t *testing.T) {
+	c := New(strings.NewReader("print(\"x\")\n"))
+	require.NotNil(t, c)
+	first, err := c.Compile()
+	require.NoError(t, err)
+	require.NotNil(t, first)
+	second, err := c.Compile()
+	require.NoError(t, err)
+	require.NotNil(t, second)
+	prog, err := Compile(strings.NewReader("print(\"x\")\n"), WithOutput(io.Discard), WithOptimizationLevel(optimize.O2))
+	require.NoError(t, err)
+	require.NotNil(t, prog)
 }

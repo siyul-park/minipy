@@ -11,19 +11,20 @@ import (
 type Code string
 
 const (
-	LexError            Code = "LexError"
-	SyntaxError         Code = "SyntaxError"
-	UnsupportedFeature  Code = "UnsupportedFeature"
-	UnsupportedType     Code = "UnsupportedType"
-	IntOverflow         Code = "IntOverflow"
-	MissingAnnotation   Code = "MissingAnnotation"
-	TypeMismatch        Code = "TypeMismatch"
-	UndefinedName       Code = "UndefinedName"
-	UseBeforeDefinition Code = "UseBeforeDefinition"
-	ArityMismatch       Code = "ArityMismatch"
-	NotComparable       Code = "NotComparable"
-	NotIterable         Code = "NotIterable"
-	NotIndexable        Code = "NotIndexable"
+	LexError             Code = "LexError"
+	SyntaxError          Code = "SyntaxError"
+	UnsupportedFeature   Code = "UnsupportedFeature"
+	UnsupportedType      Code = "UnsupportedType"
+	IntOverflow          Code = "IntOverflow"
+	MissingAnnotation    Code = "MissingAnnotation"
+	TypeMismatch         Code = "TypeMismatch"
+	UndefinedName        Code = "UndefinedName"
+	UseBeforeDefinition  Code = "UseBeforeDefinition"
+	ArityMismatch        Code = "ArityMismatch"
+	NotComparable        Code = "NotComparable"
+	NotIterable          Code = "NotIterable"
+	NotIndexable         Code = "NotIndexable"
+	NoBindingForNonlocal Code = "NoBindingForNonlocal"
 )
 
 // Error is a single diagnostic with its source position and catalogue code.
@@ -47,7 +48,7 @@ func (c Code) Python() string {
 		return "ValueError"
 	case MissingAnnotation, TypeMismatch, ArityMismatch, NotComparable, NotIterable, NotIndexable:
 		return "TypeError"
-	case UndefinedName, UseBeforeDefinition:
+	case UndefinedName, UseBeforeDefinition, NoBindingForNonlocal:
 		return "NameError"
 	default:
 		return "Error"

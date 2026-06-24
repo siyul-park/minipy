@@ -49,14 +49,12 @@ var compoundStmt = map[token.Type]string{
 }
 
 var simpleKeywordStmt = map[token.Type]string{
-	token.GLOBAL:   "'global' (M4 closures)",
-	token.NONLOCAL: "'nonlocal' (M4 closures)",
-	token.YIELD:    "'yield' (M6 generators)",
-	token.RAISE:    "'raise' (M7 exceptions)",
-	token.IMPORT:   "'import' (M8 modules)",
-	token.FROM:     "'from' (M8 modules)",
-	token.DEL:      "'del' (out of scope)",
-	token.ASSERT:   "'assert' (out of scope)",
+	token.YIELD:  "'yield' (M6 generators)",
+	token.RAISE:  "'raise' (M7 exceptions)",
+	token.IMPORT: "'import' (M8 modules)",
+	token.FROM:   "'from' (M8 modules)",
+	token.DEL:    "'del' (out of scope)",
+	token.ASSERT: "'assert' (out of scope)",
 }
 
 // New returns a Parser over source read from r. No input is read until Parse
@@ -355,6 +353,14 @@ func (p *Parser) parseSimpleStmt() ast.Stmt {
 			value = p.parseExpression()
 		}
 		return &ast.Return{Base: ast.Base{Position: t.Pos}, Value: value}
+	case token.GLOBAL:
+		t := p.cur()
+		p.advance()
+		return &ast.Global{Base: ast.Base{Position: t.Pos}, Names: p.parseNameList()}
+	case token.NONLOCAL:
+		t := p.cur()
+		p.advance()
+		return &ast.Nonlocal{Base: ast.Base{Position: t.Pos}, Names: p.parseNameList()}
 	}
 
 	if msg, ok := simpleKeywordStmt[p.cur().Type]; ok {
@@ -426,6 +432,21 @@ func (p *Parser) parseFlatTupleTarget() ast.Expr {
 	return &ast.TupleLit{Base: ast.Base{Position: pos}, Elems: elems}
 }
 
+func (p *Parser) parseNameList() []string {
+	var names []string
+	for {
+		t := p.expect(token.NAME)
+		if t.Literal != "" {
+			names = append(names, t.Literal)
+		}
+		if !p.at(token.COMMA) {
+			break
+		}
+		p.advance()
+	}
+	return names
+}
+
 // parseType parses an annotation.
 func (p *Parser) parseType() ast.Expr {
 	t := p.cur()
@@ -437,6 +458,9 @@ func (p *Parser) parseType() ast.Expr {
 		}
 		node := &ast.Name{Base: ast.Base{Position: t.Pos}, Name: name}
 		if p.at(token.LBRACKET) {
+			if name == "Callable" {
+				return p.parseCallableType(node)
+			}
 			p.advance()
 			var args []ast.Expr
 			for !p.at(token.RBRACKET) && !p.at(token.EOF) {
@@ -465,9 +489,38 @@ func (p *Parser) parseType() ast.Expr {
 	return &ast.Name{Base: ast.Base{Position: t.Pos}, Name: ""}
 }
 
+func (p *Parser) parseCallableType(base *ast.Name) ast.Expr {
+	pos := base.Pos()
+	p.expect(token.LBRACKET)
+	p.expect(token.LBRACKET)
+	var params []ast.Expr
+	for !p.at(token.RBRACKET) && !p.at(token.EOF) {
+		params = append(params, p.parseType())
+		if !p.at(token.COMMA) {
+			break
+		}
+		p.advance()
+	}
+	p.expect(token.RBRACKET)
+	p.expect(token.COMMA)
+	ret := p.parseType()
+	p.expect(token.RBRACKET)
+	return &ast.Subscript{
+		Base: ast.Base{Position: pos},
+		X:    base,
+		Index: &ast.TupleLit{Base: ast.Base{Position: pos}, Elems: []ast.Expr{
+			&ast.TupleLit{Base: ast.Base{Position: pos}, Elems: params},
+			ret,
+		}},
+	}
+}
+
 // parseExpression is the expression entry: a disjunction, optionally followed by
-// a conditional `if cond else orelse` (M1). lambda arrives in M4.
+// a conditional `if cond else orelse` (M1) or a lambda expression.
 func (p *Parser) parseExpression() ast.Expr {
+	if p.at(token.LAMBDA) {
+		return p.parseLambda()
+	}
 	x := p.parseDisjunction()
 	if p.at(token.IF) {
 		p.advance()
@@ -477,6 +530,25 @@ func (p *Parser) parseExpression() ast.Expr {
 		return &ast.IfExp{Base: ast.Base{Position: x.Pos()}, Body: x, Cond: cond, Orelse: orelse}
 	}
 	return x
+}
+
+func (p *Parser) parseLambda() ast.Expr {
+	pos := p.cur().Pos
+	p.advance()
+	var params []*ast.Param
+	if !p.at(token.COLON) {
+		for {
+			t := p.expect(token.NAME)
+			name := &ast.Name{Base: ast.Base{Position: t.Pos}, Name: t.Literal}
+			params = append(params, &ast.Param{Base: ast.Base{Position: t.Pos}, Name: name})
+			if !p.at(token.COMMA) {
+				break
+			}
+			p.advance()
+		}
+	}
+	p.expect(token.COLON)
+	return &ast.LambdaExpr{Base: ast.Base{Position: pos}, Params: params, Body: p.parseExpression()}
 }
 
 func (p *Parser) parseDisjunction() ast.Expr {
@@ -674,9 +746,7 @@ func (p *Parser) parseAtom() ast.Expr {
 	case token.LBRACE:
 		return p.parseDict()
 	case token.LAMBDA:
-		p.errs.Add(t.Pos, token.UnsupportedFeature, "lambda is M4")
-		p.skipToStmtEnd()
-		return &ast.NoneLit{Base: ast.Base{Position: t.Pos}}
+		return p.parseLambda()
 	default:
 		p.errs.Add(t.Pos, token.SyntaxError, "unexpected token %s", t.Type)
 		if !p.at(token.EOF) {
@@ -733,7 +803,13 @@ func (p *Parser) parseList() ast.Expr {
 	p.advance()
 	var elems []ast.Expr
 	for !p.at(token.RBRACKET) && !p.at(token.EOF) {
-		elems = append(elems, p.parseExpression())
+		elem := p.parseExpression()
+		if p.at(token.FOR) {
+			clauses := p.parseComprehensionClauses()
+			p.expect(token.RBRACKET)
+			return &ast.ListComp{Base: ast.Base{Position: pos}, Elem: elem, Clauses: clauses}
+		}
+		elems = append(elems, elem)
 		if !p.at(token.COMMA) {
 			break
 		}
@@ -750,15 +826,37 @@ func (p *Parser) parseDict() ast.Expr {
 	for !p.at(token.RBRACE) && !p.at(token.EOF) {
 		key := p.parseExpression()
 		if !p.at(token.COLON) {
-			p.errs.Add(key.Pos(), token.UnsupportedFeature, "set displays are M4")
-			for !p.at(token.RBRACE) && !p.at(token.EOF) {
-				p.advance()
+			if p.at(token.FOR) {
+				clauses := p.parseComprehensionClauses()
+				p.expect(token.RBRACE)
+				return &ast.SetComp{Base: ast.Base{Position: pos}, Elem: key, Clauses: clauses}
 			}
-			break
+			elems := []ast.Expr{key}
+			for p.at(token.COMMA) {
+				p.advance()
+				if p.at(token.RBRACE) || p.at(token.EOF) {
+					break
+				}
+				elem := p.parseExpression()
+				if p.at(token.FOR) {
+					clauses := p.parseComprehensionClauses()
+					p.expect(token.RBRACE)
+					return &ast.SetComp{Base: ast.Base{Position: pos}, Elem: elem, Clauses: clauses}
+				}
+				elems = append(elems, elem)
+			}
+			p.expect(token.RBRACE)
+			return &ast.SetLit{Base: ast.Base{Position: pos}, Elems: elems}
 		}
 		p.advance()
 		keys = append(keys, key)
-		values = append(values, p.parseExpression())
+		value := p.parseExpression()
+		if p.at(token.FOR) {
+			clauses := p.parseComprehensionClauses()
+			p.expect(token.RBRACE)
+			return &ast.DictComp{Base: ast.Base{Position: pos}, Key: key, Value: value, Clauses: clauses}
+		}
+		values = append(values, value)
 		if !p.at(token.COMMA) {
 			break
 		}
@@ -766,6 +864,25 @@ func (p *Parser) parseDict() ast.Expr {
 	}
 	p.expect(token.RBRACE)
 	return &ast.DictLit{Base: ast.Base{Position: pos}, Keys: keys, Values: values}
+}
+
+func (p *Parser) parseComprehensionClauses() []*ast.Comprehension {
+	var clauses []*ast.Comprehension
+	for p.at(token.FOR) {
+		pos := p.cur().Pos
+		p.advance()
+		t := p.expect(token.NAME)
+		target := &ast.Name{Base: ast.Base{Position: t.Pos}, Name: t.Literal}
+		p.expect(token.IN)
+		iter := p.parseDisjunction()
+		var ifs []ast.Expr
+		for p.at(token.IF) {
+			p.advance()
+			ifs = append(ifs, p.parseDisjunction())
+		}
+		clauses = append(clauses, &ast.Comprehension{Base: ast.Base{Position: pos}, Target: target, Iter: iter, Ifs: ifs})
+	}
+	return clauses
 }
 
 func (p *Parser) parseFStringToken(t token.Token) ast.Expr {

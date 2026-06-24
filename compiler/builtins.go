@@ -245,6 +245,9 @@ func builtinReturn(name string, args []types.Type) (types.Type, bool) {
 		if _, ok := args[0].(*types.Dict); ok {
 			return types.Int, true
 		}
+		if _, ok := args[0].(*types.Set); ok {
+			return types.Int, true
+		}
 		if _, ok := args[0].(*types.Tuple); ok {
 			return types.Int, true
 		}
@@ -277,7 +280,7 @@ func convertible(t types.Type) bool {
 
 func isContainer(t types.Type) bool {
 	switch t.(type) {
-	case *types.List, *types.Dict, *types.Tuple:
+	case *types.List, *types.Dict, *types.Set, *types.Tuple:
 		return true
 	default:
 		return false

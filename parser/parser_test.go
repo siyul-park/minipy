@@ -239,11 +239,38 @@ else:
 		require.Equal(t, "append", call.Fn.(*ast.Attribute).Name)
 		require.IsType(t, &ast.Subscript{}, call.Args[0])
 	})
+
+	t.Run("lambda expression", func(t *testing.T) {
+		mod, err := parse("f: Callable[[int], int] = lambda x: x + 1\n")
+		require.NoError(t, err)
+		lambda := mod.Body[0].(*ast.AnnAssign).Value.(*ast.LambdaExpr)
+		require.Equal(t, "x", lambda.Params[0].Name.Name)
+		require.Equal(t, token.PLUS, lambda.Body.(*ast.BinaryExpr).Op)
+	})
+
+	t.Run("global and nonlocal declarations", func(t *testing.T) {
+		mod, err := parse(`def f() -> None:
+    global x
+    nonlocal y
+`)
+		require.NoError(t, err)
+		body := mod.Body[0].(*ast.Function).Body
+		require.Equal(t, []string{"x"}, body[0].(*ast.Global).Names)
+		require.Equal(t, []string{"y"}, body[1].(*ast.Nonlocal).Names)
+	})
+
+	t.Run("comprehensions and set display", func(t *testing.T) {
+		mod, err := parse("xs: list[int] = [i for i in range(3) if i < 2]\nd: dict[str, int] = {str(i): i for i in range(2)}\ns: set[int] = {i for i in [1, 2]}\nt: set[int] = {1, 2}\n")
+		require.NoError(t, err)
+		require.IsType(t, &ast.ListComp{}, mod.Body[0].(*ast.AnnAssign).Value)
+		require.IsType(t, &ast.DictComp{}, mod.Body[1].(*ast.AnnAssign).Value)
+		require.IsType(t, &ast.SetComp{}, mod.Body[2].(*ast.AnnAssign).Value)
+		require.IsType(t, &ast.SetLit{}, mod.Body[3].(*ast.AnnAssign).Value)
+	})
 }
 
 func TestParseErrors(t *testing.T) {
 	cases := map[string]token.Code{
-		"x = lambda: 1\n":        token.UnsupportedFeature,
 		"1 = 2\n":                token.SyntaxError,
 		"else:\n    pass\n":      token.SyntaxError,
 		"def f(x) -> int:\n p\n": token.MissingAnnotation,
