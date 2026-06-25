@@ -38,7 +38,7 @@ func runFile(path string, out io.Writer) error {
 // re-running the accumulated state each time so prior side effects do not
 // repeat. A bare printable expression is auto-echoed via str()+print.
 func repl(in io.Reader, out io.Writer) error {
-	fmt.Fprintln(out, "minipy M0 REPL — type Ctrl-D to exit")
+	fmt.Fprintln(out, "minipy REPL — type Ctrl-D to exit")
 	scanner := bufio.NewScanner(in)
 	var state strings.Builder
 	for {

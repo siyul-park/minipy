@@ -1,7 +1,7 @@
 // Package parser builds an ast.Module from minipy source. It implements the
-// M0–M2 subset of the Python grammar (docs/spec/03-grammar.md): simple
-// statements over the full operator-precedence expression chain, M1 control
-// flow, and M2 function definitions/calls/returns. Constructs outside the
+// supported subset of the Python grammar (docs/spec/03-grammar.md): simple
+// statements over the full operator-precedence expression chain, control
+// flow, and function definitions/calls/returns. Constructs outside the
 // subset are reported as UnsupportedFeature with the milestone that introduces
 // them.
 package parser
@@ -41,17 +41,16 @@ var augAssign = map[token.Type]token.Type{
 }
 
 var compoundStmt = map[token.Type]string{
-	token.CLASS:   "'class' (M5 classes)",
-	token.TRY:     "'try' (M7 exceptions)",
-	token.EXCEPT:  "'except' (M7 exceptions)",
-	token.FINALLY: "'finally' (M7 exceptions)",
-	token.WITH:    "'with' (M7 context managers)",
+	token.TRY:     "'try' exceptions",
+	token.EXCEPT:  "'except' exceptions",
+	token.FINALLY: "'finally' exceptions",
+	token.WITH:    "'with' context managers",
 }
 
 var simpleKeywordStmt = map[token.Type]string{
-	token.RAISE:  "'raise' (M7 exceptions)",
-	token.IMPORT: "'import' (M8 modules)",
-	token.FROM:   "'from' (M8 modules)",
+	token.RAISE:  "'raise' exceptions",
+	token.IMPORT: "'import' modules",
+	token.FROM:   "'from' modules",
 	token.DEL:    "'del' (out of scope)",
 	token.ASSERT: "'assert' (out of scope)",
 }
@@ -108,7 +107,9 @@ func (p *Parser) parseStatement() []ast.Stmt {
 	case token.FOR:
 		return []ast.Stmt{p.parseFor()}
 	case token.DEF:
-		return []ast.Stmt{p.parseFunction(nil)}
+		return []ast.Stmt{p.parseFunction(nil, false)}
+	case token.CLASS:
+		return []ast.Stmt{p.parseClass(nil)}
 	case token.AT:
 		return []ast.Stmt{p.parseDecorated()}
 	case token.ELIF, token.ELSE:
@@ -200,15 +201,15 @@ func (p *Parser) parseFor() ast.Stmt {
 	return &ast.For{Base: ast.Base{Position: pos}, Target: target, Iter: iter, Body: body, Orelse: orelse}
 }
 
-// parseDecorated parses one or more bare-name decorators followed by a
-// function definition. Decorator expressions beyond bare names are deferred.
+// parseDecorated parses one or more bare-name decorators followed by a function
+// or class definition. Decorator expressions beyond bare names are deferred.
 func (p *Parser) parseDecorated() ast.Stmt {
 	var decorators []*ast.Name
 	for p.at(token.AT) {
 		pos := p.cur().Pos
 		p.advance()
 		if !p.at(token.NAME) {
-			p.errs.Add(p.cur().Pos, token.UnsupportedFeature, "decorators must be bare names in M2")
+			p.errs.Add(p.cur().Pos, token.UnsupportedFeature, "decorators must be bare names")
 			p.skipLine()
 			continue
 		}
@@ -222,23 +223,32 @@ func (p *Parser) parseDecorated() ast.Stmt {
 		}
 		p.expectLineEnd()
 	}
-	if !p.at(token.DEF) {
-		p.errs.Add(p.cur().Pos, token.SyntaxError, "expected def after decorator")
+	switch p.cur().Type {
+	case token.DEF:
+		return p.parseFunction(decorators, false)
+	case token.CLASS:
+		for _, dec := range decorators {
+			if dec.Name != "dataclass" {
+				p.errs.Add(dec.Pos(), token.UnsupportedFeature, "class decorator @%s is not supported", dec.Name)
+			}
+		}
+		return p.parseClass(decorators)
+	default:
+		p.errs.Add(p.cur().Pos, token.SyntaxError, "expected def or class after decorator")
 		p.skipLine()
 		p.skipBlock()
 		return nil
 	}
-	return p.parseFunction(decorators)
 }
 
 // parseFunction parses `def NAME(params) -> type: block`.
-func (p *Parser) parseFunction(decorators []*ast.Name) ast.Stmt {
+func (p *Parser) parseFunction(decorators []*ast.Name, allowBareSelf bool) ast.Stmt {
 	pos := p.cur().Pos
 	p.advance() // def
 	nameTok := p.expect(token.NAME)
 	name := &ast.Name{Base: ast.Base{Position: nameTok.Pos}, Name: nameTok.Literal}
 	p.expect(token.LPAREN)
-	params := p.parseParams()
+	params := p.parseParams(allowBareSelf)
 	p.expect(token.RPAREN)
 	p.expect(token.ARROW)
 	returns := p.parseType()
@@ -253,7 +263,7 @@ func (p *Parser) parseFunction(decorators []*ast.Name) ast.Stmt {
 	}
 }
 
-func (p *Parser) parseParams() []*ast.Param {
+func (p *Parser) parseParams(allowBareSelf bool) []*ast.Param {
 	var params []*ast.Param
 	if p.at(token.RPAREN) || p.at(token.EOF) {
 		return params
@@ -261,14 +271,19 @@ func (p *Parser) parseParams() []*ast.Param {
 	for {
 		nameTok := p.expect(token.NAME)
 		name := &ast.Name{Base: ast.Base{Position: nameTok.Pos}, Name: nameTok.Literal}
+		index := len(params)
+		var ann ast.Expr
 		if !p.at(token.COLON) {
-			p.errs.Add(p.cur().Pos, token.MissingAnnotation, "parameter %q needs a type annotation", name.Name)
+			if !(allowBareSelf && index == 0 && name.Name == "self") {
+				p.errs.Add(p.cur().Pos, token.MissingAnnotation, "parameter %q needs a type annotation", name.Name)
+				ann = p.parseType()
+			}
 		} else {
 			p.advance()
+			ann = p.parseType()
 		}
-		ann := p.parseType()
 		if p.at(token.ASSIGN) {
-			p.errs.Add(p.cur().Pos, token.UnsupportedFeature, "default parameter values are M2.1")
+			p.errs.Add(p.cur().Pos, token.UnsupportedFeature, "default parameter values are not supported")
 			p.advance()
 			p.parseExpression()
 		}
@@ -284,8 +299,74 @@ func (p *Parser) parseParams() []*ast.Param {
 	return params
 }
 
+// parseClass parses `class NAME[(Base)]: class_block`.
+func (p *Parser) parseClass(decorators []*ast.Name) ast.Stmt {
+	pos := p.cur().Pos
+	p.advance() // class
+	nameTok := p.expect(token.NAME)
+	name := &ast.Name{Base: ast.Base{Position: nameTok.Pos}, Name: nameTok.Literal}
+	var base *ast.Name
+	if p.at(token.LPAREN) {
+		p.advance()
+		baseTok := p.expect(token.NAME)
+		base = &ast.Name{Base: ast.Base{Position: baseTok.Pos}, Name: baseTok.Literal}
+		if p.at(token.COMMA) {
+			p.errs.Add(p.cur().Pos, token.UnsupportedFeature, "multiple inheritance is not supported")
+			for !p.at(token.RPAREN) && !p.at(token.EOF) {
+				p.advance()
+			}
+		}
+		p.expect(token.RPAREN)
+	}
+	body := p.parseClassBlock()
+	return &ast.Class{Base: ast.Base{Position: pos}, Name: name, BaseClass: base, Decorators: decorators, Body: body}
+}
+
+func (p *Parser) parseClassBlock() []ast.Stmt {
+	p.expect(token.COLON)
+	if !p.at(token.NEWLINE) {
+		p.errs.Add(p.cur().Pos, token.SyntaxError, "class body must be an indented block")
+		p.skipLine()
+		return nil
+	}
+	p.advance()
+	if !p.at(token.INDENT) {
+		p.errs.Add(p.cur().Pos, token.SyntaxError, "expected an indented block")
+		return nil
+	}
+	p.advance()
+	var body []ast.Stmt
+	for !p.at(token.DEDENT) && !p.at(token.EOF) {
+		switch p.cur().Type {
+		case token.NEWLINE:
+			p.advance()
+		case token.PASS:
+			t := p.cur()
+			p.advance()
+			body = append(body, &ast.Pass{Base: ast.Base{Position: t.Pos}})
+			p.expectLineEnd()
+		case token.DEF:
+			body = append(body, p.parseFunction(nil, true))
+		case token.NAME:
+			if p.peek(1).Type == token.COLON {
+				body = append(body, p.parseAnnAssign())
+				p.expectLineEnd()
+			} else {
+				p.errs.Add(p.cur().Pos, token.SyntaxError, "class body supports only fields and methods")
+				p.skipLine()
+			}
+		default:
+			p.errs.Add(p.cur().Pos, token.SyntaxError, "class body supports only fields and methods")
+			p.skipLine()
+			p.skipBlock()
+		}
+	}
+	p.expect(token.DEDENT)
+	return body
+}
+
 // parseForTarget parses the single NAME loop variable. Tuple-unpacking targets
-// (`for k, v in ...`) are an M3 extension.
+// (`for k, v in ...`) are also accepted.
 func (p *Parser) parseForTarget() ast.Expr {
 	t := p.cur()
 	if t.Type != token.NAME {
@@ -528,7 +609,7 @@ func (p *Parser) parseCallableType(base *ast.Name) ast.Expr {
 }
 
 // parseExpression is the expression entry: a disjunction, optionally followed by
-// a conditional `if cond else orelse` (M1) or a lambda expression.
+// a conditional `if cond else orelse` or a lambda expression.
 func (p *Parser) parseExpression() ast.Expr {
 	if p.at(token.LAMBDA) {
 		return p.parseLambda()
@@ -709,7 +790,7 @@ func (p *Parser) parsePrimary() ast.Expr {
 	}
 }
 
-// parseCall parses `fn(arg, arg, ...)` (positional args only in M0).
+// parseCall parses `fn(arg, arg, ...)` (positional args only).
 func (p *Parser) parseCall(fn ast.Expr) ast.Expr {
 	pos := p.cur().Pos
 	p.advance() // (
@@ -785,7 +866,7 @@ func (p *Parser) parseString() ast.Expr {
 	return &ast.StrLit{Base: ast.Base{Position: t.Pos}, Value: value}
 }
 
-// parseGroup parses a parenthesized expression; tuple displays are M3.
+// parseGroup parses a parenthesized expression or tuple display.
 func (p *Parser) parseGroup() ast.Expr {
 	pos := p.cur().Pos
 	p.advance() // (
@@ -1012,7 +1093,7 @@ func parseFStringExpr(src string) (ast.Expr, error) {
 
 func (p *Parser) requireTarget(target ast.Expr) {
 	switch target.(type) {
-	case *ast.Name, *ast.Subscript, *ast.TupleLit:
+	case *ast.Name, *ast.Subscript, *ast.TupleLit, *ast.Attribute:
 	default:
 		p.errs.Add(target.Pos(), token.SyntaxError, "cannot assign to this expression")
 	}

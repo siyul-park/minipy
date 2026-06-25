@@ -144,7 +144,7 @@ func TestCompile(t *testing.T) {
 		require.Equal(t, "None\n", run(t, "x: None = None\nprint(str(x))\n"))
 	})
 
-	t.Run("roadmap M1 sample sums even numbers", func(t *testing.T) {
+	t.Run("roadmap control-flow sample sums even numbers", func(t *testing.T) {
 		src := `total: int = 0
 for i in range(1, 101):
     if i % 2 == 0:
@@ -259,7 +259,7 @@ print("big" if x > 3 else "small")
 		require.Equal(t, "small\n", run(t, small))
 	})
 
-	t.Run("M3 roadmap dict counting sample", func(t *testing.T) {
+	t.Run("roadmap dict counting sample", func(t *testing.T) {
 		src := `counts: dict[str, int] = {}
 for w in ["a", "b", "a"]:
     counts[w] = counts.get(w, 0) + 1
@@ -268,7 +268,7 @@ print(str(counts["a"]))
 		require.Equal(t, "2\n", run(t, src))
 	})
 
-	t.Run("M3 containers and methods", func(t *testing.T) {
+	t.Run("containers and methods", func(t *testing.T) {
 		src := `xs: list[int] = [1]
 xs.append(2)
 print(str(len(xs)))
@@ -288,7 +288,7 @@ print(t[1])
 		require.Contains(t, out, "7\nx\n")
 	})
 
-	t.Run("M3 str methods enumerate zip and f-string", func(t *testing.T) {
+	t.Run("str methods enumerate zip and f-string", func(t *testing.T) {
 		src := `print("A,B".lower())
 print("a,b".split(",")[1])
 print("-".join(["x", "y"]))
@@ -474,7 +474,7 @@ print(str(len(s)))
 		hasCode(t, err, token.UndefinedName)
 	})
 
-	t.Run("M6 generator roadmap sample", func(t *testing.T) {
+	t.Run("generator roadmap sample", func(t *testing.T) {
 		src := `def upto(n: int) -> Iterator[int]:
     i: int = 0
     while i < n:
@@ -488,7 +488,7 @@ print(str(total))
 		require.Equal(t, "10\n", run(t, src))
 	})
 
-	t.Run("M6 generator loop control and else", func(t *testing.T) {
+	t.Run("generator loop control and else", func(t *testing.T) {
 		src := `def upto(n: int) -> Iterator[int]:
     i: int = 0
     while i < n:
@@ -508,7 +508,7 @@ print(str(total))
 		require.Equal(t, "5\n", run(t, src))
 	})
 
-	t.Run("M6 range value and direct next", func(t *testing.T) {
+	t.Run("range value and direct next", func(t *testing.T) {
 		src := `r: Iterator[int] = range(2, 8, 3)
 print(str(next(r)))
 print(str(next(r)))
@@ -516,7 +516,7 @@ print(str(next(r)))
 		require.Equal(t, "2\n5\n", run(t, src))
 	})
 
-	t.Run("M6 exhausted next reports runtime error", func(t *testing.T) {
+	t.Run("exhausted next reports runtime error", func(t *testing.T) {
 		prog, err := Compile(strings.NewReader("r: Iterator[int] = range(1)\nprint(str(next(r)))\nprint(str(next(r)))\n"), WithOutput(io.Discard))
 		require.NoError(t, err)
 		vm := interp.New(prog)
@@ -524,7 +524,7 @@ print(str(next(r)))
 		require.Error(t, vm.Run(context.Background()))
 	})
 
-	t.Run("M6 iter over list dict set and str", func(t *testing.T) {
+	t.Run("iter over list dict set and str", func(t *testing.T) {
 		src := `xs: list[int] = [4, 5]
 d: dict[str, int] = {"a": 1}
 s: set[int] = {7}
@@ -537,7 +537,7 @@ print(next(iter(text)))
 		require.Equal(t, "4\na\n7\nx\n", run(t, src))
 	})
 
-	t.Run("M6 nested generator captures outer local", func(t *testing.T) {
+	t.Run("nested generator captures outer local", func(t *testing.T) {
 		src := `def outer(base: int) -> Iterator[int]:
     def inner() -> Iterator[int]:
         yield base + 1
@@ -546,6 +546,37 @@ print(next(iter(text)))
 print(str(next(outer(9))))
 `
 		require.Equal(t, "10\n", run(t, src))
+	})
+
+	t.Run("class explicit init fields and method", func(t *testing.T) {
+		src := `class Point:
+    x: int
+    y: int
+    def __init__(self, x: int, y: int) -> None:
+        self.x = x
+        self.y = y
+    def norm2(self) -> int:
+        return self.x * self.x + self.y * self.y
+print(str(Point(3, 4).norm2()))
+`
+		require.Equal(t, "25\n", run(t, src))
+	})
+
+	t.Run("dataclass constructor defaults and inherited fields", func(t *testing.T) {
+		src := `@dataclass
+class Base:
+    x: int
+    y: int = 5
+@dataclass
+class Point(Base):
+    z: int = 7
+    def total(self) -> int:
+        return self.x + self.y + self.z
+p: Point = Point(3)
+print(str(p.x))
+print(str(p.total()))
+`
+		require.Equal(t, "3\n15\n", run(t, src))
 	})
 }
 
@@ -585,7 +616,7 @@ func TestCompileErrors(t *testing.T) {
 		"print(str(True and 1))\n":            token.TypeMismatch,
 		"print(str(1 < \"a\"))\n":             token.NotComparable,
 		"z += 1\n":                            token.UndefinedName,
-		// M1 control flow
+		// control flow
 		"x: int = 1\nif x:\n    pass\n":        token.TypeMismatch,
 		"for i in 5:\n    pass\n":              token.NotIterable,
 		"break\n":                              token.SyntaxError,
@@ -594,14 +625,15 @@ func TestCompileErrors(t *testing.T) {
 		"for i in range():\n    pass\n":        token.ArityMismatch,
 		"for i in range(0, 9, 0):\n    pass\n": token.SyntaxError,
 		"x: int = 1 if True else \"a\"\n":      token.TypeMismatch,
-		// M2 functions
+		// functions
 		"return 1\n": token.SyntaxError,
 		"def f(x: int) -> int:\n    return \"x\"\n":              token.TypeMismatch,
 		"def f(x: int) -> int:\n    return x\nprint(f())\n":      token.ArityMismatch,
 		"def f(x: int) -> int:\n    return x\nprint(f(\"x\"))\n": token.TypeMismatch,
 		"def f(x: int) -> int:\n    pass\n":                      token.TypeMismatch,
-		// M3 containers
+		// containers
 		"xs: list[int] = []\nprint(xs[\"0\"])\n":                 token.TypeMismatch,
+		"xs: list[int] = [1]\nxs[0] += 1\n":                      token.UnsupportedFeature,
 		"xs = []\n":                                              token.UnsupportedType,
 		"xs: list[int] = [1, \"x\"]\n":                           token.TypeMismatch,
 		"t: tuple[int, int] = (1, 2)\ni: int = 0\nprint(t[i])\n": token.UnsupportedFeature,
@@ -612,12 +644,18 @@ func TestCompileErrors(t *testing.T) {
 		"xs: list[int] = [i for i in range(3) if i]\n":        token.TypeMismatch,
 		"s: set[list[int]] = {[1] for i in range(1)}\n":       token.UnsupportedType,
 		"f: Callable[[int], int] = lambda x: x\nprint(f())\n": token.ArityMismatch,
-		// M6 generators and iterators
+		// generators and iterators
 		"yield 1\n":                                                token.SyntaxError,
 		"def g() -> int:\n    yield 1\n":                           token.TypeMismatch,
 		"def g() -> Iterator[int]:\n    yield \"x\"\n":             token.TypeMismatch,
 		"def g() -> Iterator[int]:\n    return 1\n":                token.TypeMismatch,
 		"def g() -> Iterator[int]:\n    yield 1\nprint(next(1))\n": token.TypeMismatch,
+		// classes
+		"@dataclass\nclass Point:\n    x: int\nprint(Point(\"x\"))\n":                          token.TypeMismatch,
+		"@dataclass\nclass Point:\n    x: int\np: Point = Point(1)\np.x = \"x\"\n":             token.TypeMismatch,
+		"@dataclass\nclass Point:\n    x: int\np: Point = Point(1)\nprint(p.y)\n":              token.UndefinedName,
+		"@dataclass\nclass Point:\n    x: int\np: Point = Point(1)\nprint(p.missing())\n":      token.UnsupportedFeature,
+		"class Point:\n    x: int\n    def __init__(self, x: int) -> int:\n        return x\n": token.TypeMismatch,
 	}
 	for src, code := range cases {
 		_, err := Compile(strings.NewReader(src), WithOutput(&bytes.Buffer{}))

@@ -228,7 +228,7 @@ else:
 		require.Nil(t, fn.Body[0].(*ast.Return).Value)
 	})
 
-	t.Run("M3 displays, subscript, method, f-string", func(t *testing.T) {
+	t.Run("displays, subscript, method, f-string", func(t *testing.T) {
 		mod, err := parse("xs: list[int] = [1, 2]\nd: dict[str, int] = {\"a\": 1}\na, b = (1, 2)\nprint(f\"a={a}\")\nxs.append(d[\"a\"])\n")
 		require.NoError(t, err)
 		require.IsType(t, &ast.ListLit{}, mod.Body[0].(*ast.AnnAssign).Value)
@@ -259,6 +259,32 @@ else:
 		require.Equal(t, []string{"y"}, body[1].(*ast.Nonlocal).Names)
 	})
 
+	t.Run("class definition with fields methods base and dataclass decorator", func(t *testing.T) {
+		mod, err := parse(`@dataclass
+class Point(Base):
+    x: int
+    y: int = 0
+    def __init__(self, x: int, y: int) -> None:
+        self.x = x
+        self.y = y
+    def norm2(self) -> int:
+        return self.x * self.x + self.y * self.y
+`)
+		require.NoError(t, err)
+		cls := mod.Body[0].(*ast.Class)
+		require.Equal(t, "Point", cls.Name.Name)
+		require.Equal(t, "Base", cls.BaseClass.Name)
+		require.Equal(t, "dataclass", cls.Decorators[0].Name)
+		require.Len(t, cls.Body, 4)
+		require.Equal(t, "x", cls.Body[0].(*ast.AnnAssign).Target.Name)
+		require.Equal(t, "y", cls.Body[1].(*ast.AnnAssign).Target.Name)
+		init := cls.Body[2].(*ast.Function)
+		require.Equal(t, "__init__", init.Name.Name)
+		require.Equal(t, "self", init.Params[0].Name.Name)
+		assign := init.Body[0].(*ast.Assign)
+		require.Equal(t, "x", assign.Target.(*ast.Attribute).Name)
+	})
+
 	t.Run("yield statements and Iterator annotation", func(t *testing.T) {
 		mod, err := parse(`def ints() -> Iterator[int]:
     yield 1
@@ -287,6 +313,8 @@ func TestParseErrors(t *testing.T) {
 		"else:\n    pass\n":      token.SyntaxError,
 		"def f(x) -> int:\n p\n": token.MissingAnnotation,
 		"@pkg.decorator\ndef f() -> None:\n pass\n":      token.UnsupportedFeature,
+		"@other\nclass C:\n    pass\n":                   token.UnsupportedFeature,
+		"class C(A, B):\n    pass\n":                     token.UnsupportedFeature,
 		"def f() -> Iterator[int]:\n    yield from xs\n": token.UnsupportedFeature,
 	}
 	for src, code := range cases {

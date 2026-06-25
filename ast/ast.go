@@ -1,5 +1,5 @@
 // Package ast defines the minipy abstract syntax tree: a module of statements
-// over scalar expressions, M1 control flow, and M2 functions
+// over scalar expressions, control flow, and functions
 // (docs/spec/03-grammar.md). Every node carries the source position of its
 // first token.
 package ast
@@ -86,9 +86,8 @@ type While struct {
 	Orelse []Stmt
 }
 
-// For is `for Target in Iter: Body [else: Orelse]`. In M1 Iter must be a
-// range(...) call; Orelse runs only when the loop exits without a break. M3
-// allows a flat tuple target.
+// For is `for Target in Iter: Body [else: Orelse]`. Orelse runs only when the
+// loop exits without a break. Flat tuple targets are allowed.
 type For struct {
 	Base
 	Target Expr
@@ -110,6 +109,15 @@ type Function struct {
 	Name       *Name
 	Params     []*Param
 	Returns    Expr
+	Decorators []*Name
+	Body       []Stmt
+}
+
+// Class is `class Name[(Base)]: Body`.
+type Class struct {
+	Base
+	Name       *Name
+	BaseClass  *Name
 	Decorators []*Name
 	Body       []Stmt
 }
@@ -338,6 +346,7 @@ func (*If) stmtNode()        {}
 func (*While) stmtNode()     {}
 func (*For) stmtNode()       {}
 func (*Function) stmtNode()  {}
+func (*Class) stmtNode()     {}
 func (*Global) stmtNode()    {}
 func (*Nonlocal) stmtNode()  {}
 func (*Return) stmtNode()    {}

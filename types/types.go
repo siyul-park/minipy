@@ -44,6 +44,16 @@ type Tuple struct {
 	Elems []Type
 }
 
+type Field struct {
+	Name string
+	Type Type
+}
+
+type Class struct {
+	Name   string
+	Fields []Field
+}
+
 type Iterator struct {
 	Elem Type
 }
@@ -67,6 +77,7 @@ func (*List) sealed()     {}
 func (*Dict) sealed()     {}
 func (*Set) sealed()      {}
 func (*Tuple) sealed()    {}
+func (*Class) sealed()    {}
 func (*Iterator) sealed() {}
 func (*Callable) sealed() {}
 
@@ -177,6 +188,28 @@ func (t *Tuple) Equal(o Type) bool {
 	return true
 }
 
+func (t *Class) String() string {
+	if t == nil || t.Name == "" {
+		return "<class>"
+	}
+	return t.Name
+}
+func (*Class) IsNumeric() bool { return false }
+func (t *Class) VM() vmtypes.Type {
+	if t == nil {
+		return nil
+	}
+	fields := make([]vmtypes.StructField, len(t.Fields))
+	for i, field := range t.Fields {
+		fields[i] = vmtypes.NewStructField(field.Type.VM())
+	}
+	return vmtypes.NewStructType(fields...)
+}
+func (t *Class) Equal(o Type) bool {
+	other, ok := o.(*Class)
+	return ok && t.Name == other.Name
+}
+
 func (t *Iterator) String() string {
 	if t == nil || t.Elem == nil {
 		return "Iterator[<invalid>]"
@@ -255,6 +288,11 @@ func TupleOf(elems ...Type) Type {
 	return &Tuple{Elems: cp}
 }
 
+func ClassOf(name string, fields []Field) *Class {
+	cp := append([]Field(nil), fields...)
+	return &Class{Name: name, Fields: cp}
+}
+
 func IteratorOf(elem Type) Type {
 	return &Iterator{Elem: elem}
 }
@@ -272,7 +310,7 @@ func Equal(a, b Type) bool {
 }
 
 // AssignableTo reports whether a value of type src may be stored where dst is
-// expected. M3 still has no implicit coercion, so structural equality is enough.
+// expected. There is no implicit coercion, so structural equality is enough.
 func AssignableTo(src, dst Type) bool {
 	return src != nil && dst != nil && src != Invalid && dst != Invalid && Equal(src, dst)
 }

@@ -13,7 +13,7 @@ import (
 	vmtypes "github.com/siyul-park/minivm/types"
 )
 
-// hostFuncs holds the minivm host functions backing the M0 builtins. print
+// hostFuncs holds the minivm host functions backing builtins. print
 // writes to the configured sink; the rest are helpers for conversions and the
 // operators with no single opcode.
 //

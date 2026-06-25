@@ -43,6 +43,24 @@ type fn struct {
 	nonlocal  map[string]bool
 }
 
+type classField struct {
+	name  string
+	typ   types.Type
+	index int
+	value ast.Expr
+	pos   token.Pos
+}
+
+type classInfo struct {
+	name       string
+	typ        *types.Class
+	fields     []classField
+	fieldIndex map[string]int
+	methods    map[string]*fn
+	methodBody map[string][]ast.Stmt
+	dataclass  bool
+}
+
 type capture struct {
 	name  string
 	typ   types.Type
@@ -58,6 +76,7 @@ type checker struct {
 	types   map[ast.Expr]types.Type
 	globals map[string]*global
 	funcs   map[string]*fn
+	classes map[string]*classInfo
 	lambdas map[*ast.LambdaExpr]*fn
 	order   []string
 	loops   int // enclosing-loop depth, for break/continue validation
@@ -69,12 +88,14 @@ func newChecker() *checker {
 		types:   map[ast.Expr]types.Type{},
 		globals: map[string]*global{},
 		funcs:   map[string]*fn{},
+		classes: map[string]*classInfo{},
 		lambdas: map[*ast.LambdaExpr]*fn{},
 	}
 }
 
 // check walks every top-level statement, accumulating diagnostics.
 func (c *checker) check(mod *ast.Module) {
+	c.declareClasses(mod.Body)
 	c.declareFuncs(mod.Body)
 	c.checkBlock(mod.Body)
 }
@@ -104,6 +125,8 @@ func (c *checker) stmt(s ast.Stmt) {
 		c.forStmt(n)
 	case *ast.Function:
 		c.function(n)
+	case *ast.Class:
+		c.classStmt(n)
 	case *ast.Global:
 		if c.fn == nil {
 			c.errs.Add(n.Pos(), token.SyntaxError, "'global' outside function")
@@ -337,6 +360,13 @@ func (c *checker) assignTarget(target ast.Expr, value ast.Expr, pos token.Pos) {
 		if elem != types.Invalid && vt != types.Invalid && !types.AssignableTo(vt, elem) {
 			c.errs.Add(value.Pos(), token.TypeMismatch, "cannot assign %s to indexed %s", vt, elem)
 		}
+	case *ast.Attribute:
+		rt := c.expr(t.X)
+		ft := c.fieldType(t, rt)
+		vt := c.expr(value)
+		if ft != types.Invalid && vt != types.Invalid && !types.AssignableTo(vt, ft) {
+			c.errs.Add(value.Pos(), token.TypeMismatch, "cannot assign %s to field %s", vt, ft)
+		}
 	case *ast.TupleLit:
 		vt := c.expr(value)
 		c.unpackAssign(t, vt, value.Pos())
@@ -400,6 +430,19 @@ func (c *checker) unpackAssign(target *ast.TupleLit, vt types.Type, pos token.Po
 func (c *checker) augAssign(n *ast.AugAssign) {
 	name, ok := n.Target.(*ast.Name)
 	if !ok {
+		attr, ok := n.Target.(*ast.Attribute)
+		if !ok {
+			c.errs.Add(n.Pos(), token.UnsupportedFeature, "augmented assignment target is not supported")
+			c.expr(n.Value)
+			return
+		}
+		rt := c.expr(attr.X)
+		ft := c.fieldType(attr, rt)
+		vt := c.expr(n.Value)
+		rt2 := c.binaryType(ft, n.Op, vt, n.Pos())
+		if rt2 != types.Invalid && ft != types.Invalid && !types.AssignableTo(rt2, ft) {
+			c.errs.Add(n.Pos(), token.TypeMismatch, "result %s is not assignable to field %s", rt2, ft)
+		}
 		return
 	}
 	if c.fn != nil {
@@ -467,10 +510,17 @@ func (c *checker) declare(name string, t types.Type, pos token.Pos) *global {
 			c.errs.Add(pos, token.TypeMismatch, "cannot redeclare function %q", name)
 			return g
 		}
+		if _, isClass := c.classes[name]; isClass && t != types.Invalid {
+			c.errs.Add(pos, token.TypeMismatch, "cannot redeclare class %q", name)
+			return g
+		}
 		if t != types.Invalid && g.typ != types.Invalid && !types.Equal(g.typ, t) {
 			c.errs.Add(pos, token.TypeMismatch, "cannot redeclare %q from %s to %s", name, g.typ, t)
 		}
 		return g
+	}
+	if _, isClass := c.classes[name]; isClass && t != types.Invalid {
+		c.errs.Add(pos, token.TypeMismatch, "cannot redeclare class %q", name)
 	}
 	g := &global{typ: t, index: len(c.order)}
 	c.globals[name] = g
@@ -508,6 +558,10 @@ func (c *checker) declareFuncs(body []ast.Stmt) {
 			c.errs.Add(f.Name.Pos(), token.TypeMismatch, "cannot redeclare function %q", f.Name.Name)
 			continue
 		}
+		if _, exists := c.classes[f.Name.Name]; exists {
+			c.errs.Add(f.Name.Pos(), token.TypeMismatch, "cannot redeclare class %q as a function", f.Name.Name)
+			continue
+		}
 		if _, exists := c.globals[f.Name.Name]; exists {
 			c.errs.Add(f.Name.Pos(), token.TypeMismatch, "cannot redeclare %q as a function", f.Name.Name)
 			continue
@@ -529,6 +583,164 @@ func (c *checker) declareFuncs(body []ast.Stmt) {
 		info.slot = c.declare(f.Name.Name, types.Invalid, f.Pos())
 		c.funcs[f.Name.Name] = info
 	}
+}
+
+func (c *checker) declareClasses(body []ast.Stmt) {
+	for _, s := range body {
+		cls, ok := s.(*ast.Class)
+		if !ok {
+			continue
+		}
+		name := cls.Name.Name
+		if _, exists := c.classes[name]; exists {
+			c.errs.Add(cls.Name.Pos(), token.TypeMismatch, "cannot redeclare class %q", name)
+			continue
+		}
+		if _, exists := c.globals[name]; exists {
+			c.errs.Add(cls.Name.Pos(), token.TypeMismatch, "cannot redeclare %q as a class", name)
+			continue
+		}
+		if _, exists := c.funcs[name]; exists {
+			c.errs.Add(cls.Name.Pos(), token.TypeMismatch, "cannot redeclare function %q as a class", name)
+			continue
+		}
+		c.classes[name] = &classInfo{
+			name:       name,
+			typ:        types.ClassOf(name, nil),
+			fieldIndex: map[string]int{},
+			methods:    map[string]*fn{},
+			methodBody: map[string][]ast.Stmt{},
+		}
+	}
+}
+
+func (c *checker) classStmt(n *ast.Class) {
+	info := c.classes[n.Name.Name]
+	if info == nil {
+		return
+	}
+	for _, dec := range n.Decorators {
+		if dec.Name == "dataclass" {
+			info.dataclass = true
+			continue
+		}
+		c.errs.Add(dec.Pos(), token.UnsupportedFeature, "class decorator @%s is not supported", dec.Name)
+	}
+	if n.BaseClass != nil {
+		base := c.classes[n.BaseClass.Name]
+		if base == nil {
+			c.errs.Add(n.BaseClass.Pos(), token.UnsupportedType, "unknown base class %q", n.BaseClass.Name)
+		} else if base == info {
+			c.errs.Add(n.BaseClass.Pos(), token.TypeMismatch, "class %q cannot inherit from itself", info.name)
+		} else {
+			info.fields = append(info.fields, base.fields...)
+			for name, idx := range base.fieldIndex {
+				info.fieldIndex[name] = idx
+			}
+		}
+	}
+	for _, s := range n.Body {
+		switch member := s.(type) {
+		case *ast.AnnAssign:
+			c.classField(info, member)
+		case *ast.Function:
+			c.classMethod(info, member)
+		case *ast.Pass:
+			// no-op
+		default:
+			c.errs.Add(member.Pos(), token.SyntaxError, "class body supports only fields and methods")
+		}
+	}
+	c.checkDataclassDefaults(info)
+	info.typ.Fields = classTypeFields(info.fields)
+	for _, s := range n.Body {
+		if f, ok := s.(*ast.Function); ok {
+			if method := info.methods[f.Name.Name]; method != nil {
+				c.checkFunctionBody(f.Body, f.Params, method, f.Pos())
+			}
+		}
+	}
+}
+
+func (c *checker) classField(info *classInfo, n *ast.AnnAssign) {
+	name := n.Target.Name
+	if _, exists := info.fieldIndex[name]; exists {
+		c.errs.Add(n.Target.Pos(), token.TypeMismatch, "cannot redeclare field %q", name)
+	}
+	t := c.resolveType(n.Ann)
+	field := classField{name: name, typ: t, index: len(info.fields), value: n.Value, pos: n.Target.Pos()}
+	info.fieldIndex[name] = field.index
+	info.fields = append(info.fields, field)
+	if n.Value != nil {
+		vt := c.exprWithHint(n.Value, t)
+		if t != types.Invalid && vt != types.Invalid && !types.AssignableTo(vt, t) {
+			c.errs.Add(n.Value.Pos(), token.TypeMismatch, "cannot assign %s to field %s %q", vt, t, name)
+		}
+	}
+}
+
+func (c *checker) classMethod(info *classInfo, n *ast.Function) {
+	if _, exists := info.methods[n.Name.Name]; exists {
+		c.errs.Add(n.Name.Pos(), token.TypeMismatch, "cannot redeclare method %q", n.Name.Name)
+		return
+	}
+	if len(n.Params) == 0 || n.Params[0].Name.Name != "self" {
+		c.errs.Add(n.Pos(), token.MissingAnnotation, "method %q needs self parameter", n.Name.Name)
+		return
+	}
+	params := make([]param, 0, len(n.Params))
+	for i, p := range n.Params {
+		pt := types.Type(info.typ)
+		if i > 0 {
+			pt = c.resolveType(p.Ann)
+		} else if p.Ann != nil {
+			pt = c.resolveType(p.Ann)
+			if pt != types.Invalid && !types.Equal(pt, info.typ) {
+				c.errs.Add(p.Ann.Pos(), token.TypeMismatch, "self must be %s, got %s", info.typ, pt)
+			}
+		}
+		params = append(params, param{name: p.Name.Name, typ: pt})
+	}
+	ret := c.resolveType(n.Returns)
+	if n.Name.Name == "__init__" && ret != types.Invalid && !types.Equal(ret, types.None) {
+		c.errs.Add(n.Returns.Pos(), token.TypeMismatch, "__init__ must return None, got %s", ret)
+	}
+	info.methods[n.Name.Name] = &fn{
+		name:      info.name + "." + n.Name.Name,
+		params:    params,
+		ret:       ret,
+		generator: containsYield(n.Body),
+		locals:    map[string]*local{},
+		children:  map[string]*fn{},
+		captures:  map[string]*capture{},
+		globals:   map[string]bool{},
+		nonlocal:  map[string]bool{},
+	}
+	info.methodBody[n.Name.Name] = n.Body
+}
+
+func (c *checker) checkDataclassDefaults(info *classInfo) {
+	if !info.dataclass {
+		return
+	}
+	seenDefault := false
+	for _, field := range info.fields {
+		if field.value != nil {
+			seenDefault = true
+			continue
+		}
+		if seenDefault {
+			c.errs.Add(field.pos, token.TypeMismatch, "non-default field %q follows default field", field.name)
+		}
+	}
+}
+
+func classTypeFields(fields []classField) []types.Field {
+	out := make([]types.Field, len(fields))
+	for i, f := range fields {
+		out[i] = types.Field{Name: f.name, Type: f.typ}
+	}
+	return out
 }
 
 func (c *checker) nestedFuncs(info *fn, body []ast.Stmt) {
@@ -572,6 +784,9 @@ func (c *checker) resolveType(e ast.Expr) types.Type {
 	if name, ok := e.(*ast.Name); ok {
 		if resolved, known := types.Resolve(name.Name); known {
 			return resolved
+		}
+		if cls, known := c.classes[name.Name]; known {
+			return cls.typ
 		}
 		c.errs.Add(e.Pos(), token.UnsupportedType, "unknown type %q", name.Name)
 		return types.Invalid
@@ -845,9 +1060,7 @@ func (c *checker) typeOf(e ast.Expr, hint types.Type) types.Type {
 		it := c.expr(n.Index)
 		return c.indexResultType(n, ct, it)
 	case *ast.Attribute:
-		c.expr(n.X)
-		c.errs.Add(n.Pos(), token.UnsupportedFeature, "attribute value access is M5; M3 supports method calls only")
-		return types.Invalid
+		return c.fieldType(n, c.expr(n.X))
 	case *ast.FString:
 		c.fstring(n)
 		return types.Str
@@ -944,6 +1157,26 @@ func (c *checker) indexResultType(n *ast.Subscript, ct, it types.Type) types.Typ
 	}
 }
 
+func (c *checker) fieldType(n *ast.Attribute, recv types.Type) types.Type {
+	cls, ok := recv.(*types.Class)
+	if !ok {
+		if recv != types.Invalid {
+			c.errs.Add(n.Pos(), token.UnsupportedFeature, "attribute %s on %s is not supported", n.Name, recv)
+		}
+		return types.Invalid
+	}
+	info := c.classes[cls.Name]
+	if info == nil {
+		return types.Invalid
+	}
+	idx, ok := info.fieldIndex[n.Name]
+	if !ok {
+		c.errs.Add(n.Pos(), token.UndefinedName, "field %q is not defined on %s", n.Name, cls.Name)
+		return types.Invalid
+	}
+	return info.fields[idx].typ
+}
+
 func constTupleIndex(e ast.Expr) (int, bool) {
 	if lit, ok := e.(*ast.IntLit); ok {
 		return int(lit.Value), true
@@ -1005,6 +1238,10 @@ func (c *checker) nameType(n *ast.Name) types.Type {
 			c.errs.Add(n.Pos(), token.UseBeforeDefinition, "function %q used before definition", n.Name)
 		}
 		return types.CallableOf(srcTypes(fn.params), fn.ret)
+	}
+	if _, ok := c.classes[n.Name]; ok {
+		c.errs.Add(n.Pos(), token.UnsupportedFeature, "class value %q is not supported", n.Name)
+		return types.Invalid
 	}
 global:
 	g, ok := c.globals[n.Name]
@@ -1296,7 +1533,7 @@ func (c *checker) checkComparable(op token.Type, lt, rt types.Type, pos token.Po
 		return // already reported as UnsupportedFeature by the parser
 	}
 	if types.Equal(lt, types.None) || types.Equal(rt, types.None) {
-		c.errs.Add(pos, token.UnsupportedFeature, "comparing to None uses 'is' (M7)")
+		c.errs.Add(pos, token.UnsupportedFeature, "comparing to None uses 'is'")
 		return
 	}
 	if !types.Equal(lt, rt) {
@@ -1332,6 +1569,9 @@ func (c *checker) callType(n *ast.CallExpr) types.Type {
 		argTypes[i] = c.expr(a)
 	}
 
+	if cls, ok := c.classes[name.Name]; ok {
+		return c.constructorCallType(n, cls, argTypes)
+	}
 	if fn, ok := c.funcs[name.Name]; ok {
 		if c.fn == nil && !fn.slot.init {
 			c.errs.Add(name.Pos(), token.UseBeforeDefinition, "function %q used before definition", name.Name)
@@ -1383,6 +1623,43 @@ func (c *checker) callType(n *ast.CallExpr) types.Type {
 	return rt
 }
 
+func (c *checker) constructorCallType(n *ast.CallExpr, cls *classInfo, argTypes []types.Type) types.Type {
+	params, minArgs := constructorParams(cls)
+	if len(argTypes) < minArgs || len(argTypes) > len(params) {
+		c.errs.Add(n.Pos(), token.ArityMismatch, "%s() takes %d to %d arguments (%d given)", cls.name, minArgs, len(params), len(argTypes))
+		return types.Invalid
+	}
+	for i, at := range argTypes {
+		pt := params[i]
+		if at != types.Invalid && pt != types.Invalid && !types.AssignableTo(at, pt) {
+			c.errs.Add(n.Args[i].Pos(), token.TypeMismatch, "%s() argument %d must be %s, got %s", cls.name, i+1, pt, at)
+		}
+	}
+	return cls.typ
+}
+
+func constructorParams(cls *classInfo) ([]types.Type, int) {
+	if init := cls.methods["__init__"]; init != nil {
+		params := srcTypes(init.params)
+		if len(params) == 0 {
+			return nil, 0
+		}
+		return params[1:], len(params) - 1
+	}
+	if !cls.dataclass {
+		return nil, 0
+	}
+	params := make([]types.Type, len(cls.fields))
+	minArgs := len(cls.fields)
+	for i, field := range cls.fields {
+		params[i] = field.typ
+		if field.value != nil && i < minArgs {
+			minArgs = i
+		}
+	}
+	return params, minArgs
+}
+
 func (c *checker) callableCallType(n *ast.CallExpr, fnType types.Type) types.Type {
 	callable, ok := fnType.(*types.Callable)
 	if !ok {
@@ -1427,6 +1704,30 @@ func (c *checker) methodCallType(n *ast.CallExpr, attr *ast.Attribute) types.Typ
 		args[i] = c.expr(a)
 	}
 	switch t := recv.(type) {
+	case *types.Class:
+		info := c.classes[t.Name]
+		if info == nil {
+			return types.Invalid
+		}
+		method := info.methods[attr.Name]
+		if method == nil {
+			c.errs.Add(n.Pos(), token.UnsupportedFeature, "method %s on %s is not supported", attr.Name, recv)
+			return types.Invalid
+		}
+		params := srcTypes(method.params)
+		if len(params) > 0 {
+			params = params[1:]
+		}
+		if len(args) != len(params) {
+			c.errs.Add(n.Pos(), token.ArityMismatch, "%s.%s() takes exactly %d arguments (%d given)", info.name, attr.Name, len(params), len(args))
+			return types.Invalid
+		}
+		for i, at := range args {
+			if at != types.Invalid && params[i] != types.Invalid && !types.AssignableTo(at, params[i]) {
+				c.errs.Add(n.Args[i].Pos(), token.TypeMismatch, "%s.%s() argument %d must be %s, got %s", info.name, attr.Name, i+1, params[i], at)
+			}
+		}
+		return method.ret
 	case *types.List:
 		switch attr.Name {
 		case "append":
@@ -1492,7 +1793,7 @@ func (c *checker) methodCallType(n *ast.CallExpr, attr *ast.Attribute) types.Typ
 }
 
 // isConstIntLiteral reports whether e is an int literal, optionally with a unary
-// +/- sign; M6 uses this only to catch range(..., 0) statically when possible.
+// +/- sign; this catches range(..., 0) statically when possible.
 func isConstIntLiteral(e ast.Expr) bool {
 	switch x := e.(type) {
 	case *ast.IntLit:

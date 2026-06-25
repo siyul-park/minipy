@@ -1,6 +1,6 @@
 // Package compiler turns minipy source into a runnable minivm program for the
-// M0–M2 subset (docs/spec): it parses, type-checks, and lowers a module of
-// scalar statements, M1 control flow, and M2 functions. Compile returns a
+// supported subset (docs/spec): it parses, type-checks, and lowers a module of
+// scalar statements, control flow, and functions. Compile returns a
 // *program.Program; run it with minivm's interp.New(prog).Run(ctx).
 package compiler
 
@@ -44,6 +44,7 @@ type Compiler struct {
 	types   map[ast.Expr]types.Type
 	globals map[string]*global
 	funcs   map[string]*fn
+	classes map[string]*classInfo
 	lambdas map[*ast.LambdaExpr]*fn
 	locals  map[string]*local
 	fn      *fn
@@ -124,12 +125,13 @@ func defaultConfig() config {
 
 // init resets per-compile lowering state. Compiler is reusable; each
 // Compile call gets a fresh builder, symbol tables, loop stack, and host cache.
-func (c *Compiler) init(b *program.Builder, types map[ast.Expr]types.Type, globals map[string]*global, funcs map[string]*fn, lambdas map[*ast.LambdaExpr]*fn, host *hostFuncs) {
+func (c *Compiler) init(b *program.Builder, types map[ast.Expr]types.Type, globals map[string]*global, funcs map[string]*fn, classes map[string]*classInfo, lambdas map[*ast.LambdaExpr]*fn, host *hostFuncs) {
 	c.prog = b
 	c.code = mainTarget(b)
 	c.types = types
 	c.globals = globals
 	c.funcs = funcs
+	c.classes = classes
 	c.lambdas = lambdas
 	c.locals = nil
 	c.fn = nil
@@ -200,7 +202,7 @@ func (c *Compiler) Compile() (*program.Program, error) {
 
 	host := newHostFuncs(c.cfg.out)
 	b := program.NewBuilder()
-	c.init(b, chk.types, chk.globals, chk.funcs, chk.lambdas, host)
+	c.init(b, chk.types, chk.globals, chk.funcs, chk.classes, chk.lambdas, host)
 	c.module(mod)
 
 	prog, err := b.Build()
@@ -254,12 +256,15 @@ func (c *Compiler) stmt(s ast.Stmt) {
 			c.assignTarget(n.Target, n.Value)
 		}
 	case *ast.AugAssign:
-		name := n.Target.(*ast.Name)
-		t := c.typ(name.Name)
-		c.emitBinary(n.Op, t, c.types[n.Value],
-			func() { c.get(name.Name) },
-			func() { c.expr(n.Value) })
-		c.set(name.Name)
+		if name, ok := n.Target.(*ast.Name); ok {
+			t := c.typ(name.Name)
+			c.emitBinary(n.Op, t, c.types[n.Value],
+				func() { c.get(name.Name) },
+				func() { c.expr(n.Value) })
+			c.set(name.Name)
+		} else {
+			c.augAssignAttribute(n)
+		}
 	case *ast.ExprStmt:
 		c.expr(n.X)
 		c.emit(instr.DROP)
@@ -271,6 +276,8 @@ func (c *Compiler) stmt(s ast.Stmt) {
 		c.emitFor(n)
 	case *ast.Function:
 		c.function(n)
+	case *ast.Class:
+		c.classStmt(n)
 	case *ast.Global, *ast.Nonlocal:
 		// scope declarations affect checking only
 	case *ast.Return:
@@ -305,9 +312,30 @@ func (c *Compiler) assignTarget(target ast.Expr, value ast.Expr) {
 		}
 	case *ast.TupleLit:
 		c.unpackAssign(t, value)
+	case *ast.Attribute:
+		c.expr(t.X)
+		c.emit(instr.I32_CONST, uint64(c.fieldIndex(t)))
+		c.expr(value)
+		c.emit(instr.STRUCT_SET)
 	default:
 		panic("unsupported assignment target")
 	}
+}
+
+func (c *Compiler) augAssignAttribute(n *ast.AugAssign) {
+	attr := n.Target.(*ast.Attribute)
+	c.emitBinary(n.Op, c.types[attr], c.types[n.Value],
+		func() { c.attribute(attr) },
+		func() { c.expr(n.Value) })
+	c.expr(attr.X)
+	c.emit(instr.SWAP)
+	c.emit(instr.I32_CONST, uint64(c.fieldIndex(attr)))
+	c.emit(instr.SWAP)
+	c.emit(instr.STRUCT_SET)
+}
+
+func (c *Compiler) classStmt(*ast.Class) {
+	// Classes are compile-time metadata; instances are structs.
 }
 
 func (c *Compiler) unpackAssign(target *ast.TupleLit, value ast.Expr) {
@@ -455,7 +483,7 @@ func (c *Compiler) emitWhile(n *ast.While) {
 	c.bind(end)
 }
 
-// emitFor lowers array-backed iterables with indexed loops and M6 Iterator[T]
+// emitFor lowers array-backed iterables with indexed loops and Iterator[T]
 // values with the minivm coroutine/iterator protocol. continue → increment or
 // resume, break → past the else block.
 func (c *Compiler) emitFor(n *ast.For) {
@@ -748,6 +776,8 @@ func (c *Compiler) expr(n ast.Expr) {
 		c.tupleLit(x)
 	case *ast.Subscript:
 		c.subscript(x)
+	case *ast.Attribute:
+		c.attribute(x)
 	case *ast.FString:
 		c.fstring(x)
 	}
@@ -969,6 +999,17 @@ func (c *Compiler) callStringIndex(x *ast.Subscript) {
 	c.callHost(c.host.strIndex)
 }
 
+func (c *Compiler) attribute(x *ast.Attribute) {
+	c.expr(x.X)
+	c.emit(instr.I32_CONST, uint64(c.fieldIndex(x)))
+	c.emit(instr.STRUCT_GET)
+}
+
+func (c *Compiler) fieldIndex(x *ast.Attribute) int {
+	cls := c.types[x.X].(*types.Class)
+	return c.classes[cls.Name].fieldIndex[x.Name]
+}
+
 func (c *Compiler) fstring(x *ast.FString) {
 	c.constGet(vmtypes.String(""))
 	for _, part := range x.Parts {
@@ -1130,7 +1171,7 @@ func (c *Compiler) boolOp(x *ast.BoolOp) {
 }
 
 // compare lowers a (possibly chained) comparison to an i32 result. Operands are
-// pure scalars in M0, so a chain `a < b < c` re-evaluates the middle operand
+// pure scalars, so a chain `a < b < c` re-evaluates the middle operand
 // rather than threading a temporary.
 func (c *Compiler) compare(x *ast.Compare) {
 	c.emitCmp(x.X, x.Ops[0], x.Comparators[0])
@@ -1188,6 +1229,10 @@ func (c *Compiler) call(x *ast.CallExpr) {
 	}
 	name, isName := x.Fn.(*ast.Name)
 	if isName {
+		if cls, ok := c.classes[name.Name]; ok {
+			c.construct(x, cls)
+			return
+		}
 		if fn, ok := c.funcs[name.Name]; ok {
 			for _, arg := range x.Args {
 				c.expr(arg)
@@ -1300,6 +1345,39 @@ func (c *Compiler) call(x *ast.CallExpr) {
 	}
 }
 
+func (c *Compiler) construct(x *ast.CallExpr, cls *classInfo) {
+	c.emit(instr.STRUCT_NEW_DEFAULT, c.typeIndex(cls.typ))
+	c.applyFieldDefaults(cls)
+	if init := cls.methods["__init__"]; init != nil {
+		c.emit(instr.DUP)
+		for _, arg := range x.Args {
+			c.expr(arg)
+		}
+		c.funcValue(init, cls.methodBody["__init__"])
+		c.emit(instr.CALL)
+		c.emit(instr.DROP)
+		return
+	}
+	for i, arg := range x.Args {
+		c.emit(instr.DUP)
+		c.emit(instr.I32_CONST, uint64(cls.fields[i].index))
+		c.expr(arg)
+		c.emit(instr.STRUCT_SET)
+	}
+}
+
+func (c *Compiler) applyFieldDefaults(cls *classInfo) {
+	for _, field := range cls.fields {
+		if field.value == nil {
+			continue
+		}
+		c.emit(instr.DUP)
+		c.emit(instr.I32_CONST, uint64(field.index))
+		c.expr(field.value)
+		c.emit(instr.STRUCT_SET)
+	}
+}
+
 func (c *Compiler) rangeCall(x *ast.CallExpr) {
 	switch len(x.Args) {
 	case 1:
@@ -1362,6 +1440,16 @@ func (c *Compiler) nextCall(arg ast.Expr) {
 
 func (c *Compiler) methodCall(x *ast.CallExpr, attr *ast.Attribute) {
 	recvType := c.types[attr.X]
+	if cls, ok := recvType.(*types.Class); ok {
+		info := c.classes[cls.Name]
+		c.expr(attr.X)
+		for _, arg := range x.Args {
+			c.expr(arg)
+		}
+		c.funcValue(info.methods[attr.Name], info.methodBody[attr.Name])
+		c.emit(instr.CALL)
+		return
+	}
 	c.expr(attr.X)
 	for _, arg := range x.Args {
 		c.expr(arg)
