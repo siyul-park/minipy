@@ -918,6 +918,31 @@ func (c *Compiler) set(name string) {
 	c.emit(instr.GLOBAL_SET, uint64(c.globals[name].index))
 }
 
+// narrowCast unboxes a ref-backed binding (union/Any) to the concrete type the
+// checker narrowed this use to. Flow-proven narrowing (isinstance / is-None)
+// recorded a concrete type on the use node while the slot stays a ref, so a
+// checked REF_CAST recovers the unboxed value. No cast is emitted when the use
+// itself is still dynamic or None.
+func (c *Compiler) narrowCast(x *ast.Name) {
+	use := c.types[x]
+	if use == nil || refDynamic(use) || types.Equal(use, types.None) {
+		return
+	}
+	if !refDynamic(c.typ(x.Name)) {
+		return
+	}
+	c.emit(instr.REF_CAST, c.typeIndex(use))
+}
+
+// refDynamic reports whether a type is represented as minivm's dynamic ref —
+// a union or Any — whose members are recovered with REF_TEST / REF_CAST.
+func refDynamic(t types.Type) bool {
+	if _, ok := t.(*types.Union); ok {
+		return true
+	}
+	return types.IsAny(t)
+}
+
 func (c *Compiler) typ(name string) types.Type {
 	if _, ok := c.temps[name]; ok {
 		return types.Int
@@ -1242,6 +1267,7 @@ func (c *Compiler) expr(n ast.Expr) {
 		c.constGet(vmtypes.String(x.Value))
 	case *ast.Name:
 		c.get(x.Name)
+		c.narrowCast(x)
 	case *ast.UnaryExpr:
 		c.unary(x)
 	case *ast.BinaryExpr:
@@ -1736,6 +1762,15 @@ func (c *Compiler) call(x *ast.CallExpr) {
 		return
 	}
 	name, isName := x.Fn.(*ast.Name)
+	if isName && name.Name == "isinstance" && len(x.Args) == 2 {
+		// isinstance(value, T) → REF_TEST recovers the runtime tag as i32; the
+		// trailing I32_NE normalizes it to a minipy bool (i1).
+		c.expr(x.Args[0])
+		c.emit(instr.REF_TEST, c.typeIndex(c.types[x.Args[1]]))
+		c.emit(instr.I32_CONST, 0)
+		c.emit(instr.I32_NE)
+		return
+	}
 	if isName {
 		if cls, ok := c.classes[name.Name]; ok {
 			c.construct(x, cls)

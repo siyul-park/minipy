@@ -55,6 +55,41 @@ func checkOnly(t *testing.T, src string) token.ErrorList {
 	return append(errs, chk.errs...)
 }
 
+func TestCompileUnions(t *testing.T) {
+	t.Run("isinstance dispatch on a union runs", func(t *testing.T) {
+		src := "def describe(x: int | str) -> str:\n" +
+			"    if isinstance(x, int):\n" +
+			"        return \"int:\" + str(x)\n" +
+			"    return \"str:\" + x\n" +
+			"print(describe(3))\n" +
+			"print(describe(\"hi\"))\n"
+		require.Equal(t, "int:3\nstr:hi\n", run(t, src))
+	})
+
+	t.Run("Optional narrowing with is not None runs", func(t *testing.T) {
+		src := "def f(x: int | None) -> int:\n" +
+			"    if x is not None:\n" +
+			"        return x + 1\n" +
+			"    return 0\n" +
+			"v: int | None = 41\n" +
+			"print(str(f(v)))\n" +
+			"w: int | None = None\n" +
+			"print(str(f(w)))\n"
+		require.Equal(t, "42\n0\n", run(t, src))
+	})
+
+	t.Run("isinstance lowers to REF_TEST and narrowing to REF_CAST", func(t *testing.T) {
+		src := "def describe(x: int | str) -> str:\n" +
+			"    if isinstance(x, int):\n" +
+			"        return str(x)\n" +
+			"    return x\n" +
+			"print(describe(1))\n"
+		prog, err := Compile(strings.NewReader(src), WithOutput(&bytes.Buffer{}))
+		require.NoError(t, err)
+		hasOps(t, prog.Constants, instr.REF_TEST, instr.REF_CAST)
+	})
+}
+
 func TestCheckUnions(t *testing.T) {
 	t.Run("union annotation and isinstance narrowing type-check", func(t *testing.T) {
 		errs := checkOnly(t, "def describe(x: int | str) -> str:\n"+
