@@ -317,8 +317,13 @@ func (p *Parser) parseFunction(decorators []*ast.Name, allowBareSelf bool) ast.S
 	p.expect(token.LPAREN)
 	params := p.parseParams(allowBareSelf)
 	p.expect(token.RPAREN)
-	p.expect(token.ARROW)
-	returns := p.parseType()
+	// The return annotation is optional: when omitted, whole-program inference
+	// determines the return type from the body.
+	var returns ast.Expr
+	if p.at(token.ARROW) {
+		p.advance()
+		returns = p.parseType()
+	}
 	body := p.parseBlock()
 	return &ast.Function{
 		Base:       ast.Base{Position: pos},
@@ -338,14 +343,10 @@ func (p *Parser) parseParams(allowBareSelf bool) []*ast.Param {
 	for {
 		nameTok := p.expect(token.NAME)
 		name := &ast.Name{Base: ast.Base{Position: nameTok.Pos}, Name: nameTok.Literal}
-		index := len(params)
 		var ann ast.Expr
-		if !p.at(token.COLON) {
-			if !(allowBareSelf && index == 0 && name.Name == "self") {
-				p.errs.Add(p.cur().Pos, token.MissingAnnotation, "parameter %q needs a type annotation", name.Name)
-				ann = p.parseType()
-			}
-		} else {
+		// Parameter annotations are optional: an unannotated parameter is solved
+		// by whole-program inference (and self never needs one).
+		if p.at(token.COLON) {
 			p.advance()
 			ann = p.parseType()
 		}

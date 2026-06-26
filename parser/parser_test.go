@@ -85,6 +85,14 @@ func TestParse(t *testing.T) {
 		require.IsType(t, &ast.UnionType{}, sub.Index)
 	})
 
+	t.Run("optional parameter and return annotations", func(t *testing.T) {
+		mod, err := parse("def identity(x):\n    return x\n")
+		require.NoError(t, err)
+		fn := mod.Body[0].(*ast.Function)
+		require.Nil(t, fn.Params[0].Ann)
+		require.Nil(t, fn.Returns)
+	})
+
 	t.Run("plain and augmented assignment", func(t *testing.T) {
 		mod, err := parse("x = 1\nx += 2\n")
 		require.NoError(t, err)
@@ -467,9 +475,8 @@ finally:
 
 func TestParseErrors(t *testing.T) {
 	cases := map[string]token.Code{
-		"1 = 2\n":                token.SyntaxError,
-		"else:\n    pass\n":      token.SyntaxError,
-		"def f(x) -> int:\n p\n": token.MissingAnnotation,
+		"1 = 2\n":           token.SyntaxError,
+		"else:\n    pass\n": token.SyntaxError,
 		"@pkg.decorator\ndef f() -> None:\n pass\n":      token.UnsupportedFeature,
 		"@other\nclass C:\n    pass\n":                   token.UnsupportedFeature,
 		"class C(A, B):\n    pass\n":                     token.UnsupportedFeature,

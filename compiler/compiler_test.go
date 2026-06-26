@@ -90,6 +90,34 @@ func TestCompileUnions(t *testing.T) {
 	})
 }
 
+func TestCompileInference(t *testing.T) {
+	t.Run("unannotated function compiles and runs via inference", func(t *testing.T) {
+		src := "def identity(x):\n" +
+			"    return x\n" +
+			"print(str(identity(3)))\n" +
+			"print(identity(\"hi\"))\n"
+		require.Equal(t, "3\nhi\n", run(t, src))
+	})
+
+	t.Run("inferred concrete return type", func(t *testing.T) {
+		src := "def two():\n" +
+			"    return 2\n" +
+			"x = two()\n" +
+			"print(str(x + 1))\n"
+		require.Equal(t, "3\n", run(t, src))
+	})
+
+	t.Run("unannotated parameter narrowed with isinstance", func(t *testing.T) {
+		src := "def kind(x):\n" +
+			"    if isinstance(x, int):\n" +
+			"        return \"int\"\n" +
+			"    return \"other\"\n" +
+			"print(kind(1))\n" +
+			"print(kind(\"s\"))\n"
+		require.Equal(t, "int\nother\n", run(t, src))
+	})
+}
+
 func TestCheckUnions(t *testing.T) {
 	t.Run("union annotation and isinstance narrowing type-check", func(t *testing.T) {
 		errs := checkOnly(t, "def describe(x: int | str) -> str:\n"+

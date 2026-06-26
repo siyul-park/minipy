@@ -30,6 +30,8 @@ type fn struct {
 	name      string
 	params    []param
 	ret       types.Type
+	inferRet  bool         // return type is inferred from the body (no annotation)
+	returns   []types.Type // return expression types collected while inferring
 	generator bool
 	slot      *global
 	local     *local
@@ -1065,7 +1067,6 @@ func (c *checker) declareFuncs(body []ast.Stmt) {
 		}
 		info := &fn{
 			name:      f.Name.Name,
-			ret:       c.resolveType(f.Returns),
 			generator: containsYield(f.Body),
 			locals:    map[string]*local{},
 			children:  map[string]*fn{},
@@ -1073,9 +1074,14 @@ func (c *checker) declareFuncs(body []ast.Stmt) {
 			globals:   map[string]bool{},
 			nonlocal:  map[string]bool{},
 		}
+		if f.Returns == nil {
+			info.inferRet = true
+			info.ret = types.None // refined from collected returns after the body
+		} else {
+			info.ret = c.resolveType(f.Returns)
+		}
 		for _, p := range f.Params {
-			pt := c.resolveType(p.Ann)
-			info.params = append(info.params, param{name: p.Name.Name, typ: pt})
+			info.params = append(info.params, param{name: p.Name.Name, typ: c.paramType(p)})
 		}
 		info.slot = c.declare(f.Name.Name, types.Invalid, f.Pos())
 		c.funcs[f.Name.Name] = info
@@ -1309,7 +1315,7 @@ func (c *checker) classMethod(info *classInfo, n *ast.Function) {
 	for i, p := range n.Params {
 		pt := types.Type(info.typ)
 		if i > 0 {
-			pt = c.resolveType(p.Ann)
+			pt = c.paramType(p)
 		} else if p.Ann != nil {
 			pt = c.resolveType(p.Ann)
 			if pt != types.Invalid && !types.Equal(pt, info.typ) {
@@ -1318,14 +1324,19 @@ func (c *checker) classMethod(info *classInfo, n *ast.Function) {
 		}
 		params = append(params, param{name: p.Name.Name, typ: pt})
 	}
-	ret := c.resolveType(n.Returns)
-	if n.Name.Name == "__init__" && ret != types.Invalid && !types.Equal(ret, types.None) {
-		c.errs.Add(n.Returns.Pos(), token.TypeMismatch, "__init__ must return None, got %s", ret)
+	inferRet := n.Returns == nil && n.Name.Name != "__init__"
+	ret := types.None
+	if n.Returns != nil {
+		ret = c.resolveType(n.Returns)
+		if n.Name.Name == "__init__" && ret != types.Invalid && !types.Equal(ret, types.None) {
+			c.errs.Add(n.Returns.Pos(), token.TypeMismatch, "__init__ must return None, got %s", ret)
+		}
 	}
 	info.methods[n.Name.Name] = &fn{
 		name:      info.name + "." + n.Name.Name,
 		params:    params,
 		ret:       ret,
+		inferRet:  inferRet,
 		generator: containsYield(n.Body),
 		locals:    map[string]*local{},
 		children:  map[string]*fn{},
@@ -1372,7 +1383,6 @@ func (c *checker) nestedFuncs(info *fn, body []ast.Stmt) {
 		}
 		child := &fn{
 			name:      f.Name.Name,
-			ret:       c.resolveType(f.Returns),
 			generator: containsYield(f.Body),
 			locals:    map[string]*local{},
 			parent:    info,
@@ -1381,8 +1391,14 @@ func (c *checker) nestedFuncs(info *fn, body []ast.Stmt) {
 			globals:   map[string]bool{},
 			nonlocal:  map[string]bool{},
 		}
+		if f.Returns == nil {
+			child.inferRet = true
+			child.ret = types.None
+		} else {
+			child.ret = c.resolveType(f.Returns)
+		}
 		for _, p := range f.Params {
-			child.params = append(child.params, param{name: p.Name.Name, typ: c.resolveType(p.Ann)})
+			child.params = append(child.params, param{name: p.Name.Name, typ: c.paramType(p)})
 		}
 		info.children[f.Name.Name] = child
 		c.declareFuncLocal(child, f.Pos())
@@ -1395,6 +1411,15 @@ func srcTypes(params []param) []types.Type {
 		out[i] = p.typ
 	}
 	return out
+}
+
+// paramType resolves a parameter's declared type, defaulting an unannotated
+// parameter to Any so whole-program inference can compile it as a dynamic slot.
+func (c *checker) paramType(p *ast.Param) types.Type {
+	if p.Ann == nil {
+		return types.Any
+	}
+	return c.resolveType(p.Ann)
 }
 
 func (c *checker) resolveType(e ast.Expr) types.Type {
@@ -1539,6 +1564,19 @@ func (c *checker) checkFunctionBody(body []ast.Stmt, params []*ast.Param, info *
 		}
 	}
 	c.checkBlock(body)
+	if info.inferRet {
+		// Infer the return type as the join of every return expression's type;
+		// a body with no value-returns is None.
+		if len(info.returns) == 0 {
+			info.ret = types.None
+		} else {
+			ret := info.returns[0]
+			for _, rt := range info.returns[1:] {
+				ret = types.Join(ret, rt)
+			}
+			info.ret = ret
+		}
+	}
 	if !info.generator && !types.Equal(info.ret, types.None) && !blockReturns(body) {
 		c.errs.Add(pos, token.TypeMismatch, "function %q may fall through without returning %s", info.name, info.ret)
 	}
@@ -1560,9 +1598,19 @@ func (c *checker) ret(n *ast.Return) {
 		}
 		return
 	}
-	rt := types.None
+	rt := types.Type(types.None)
 	if n.Value != nil {
-		rt = c.exprWithHint(n.Value, c.fn.ret)
+		if c.fn.inferRet {
+			rt = c.expr(n.Value)
+		} else {
+			rt = c.exprWithHint(n.Value, c.fn.ret)
+		}
+	}
+	if c.fn.inferRet {
+		// Return type is being inferred: collect this branch's type instead of
+		// checking against a fixed annotation.
+		c.fn.returns = append(c.fn.returns, rt)
+		return
 	}
 	if c.fn.ret != types.Invalid && rt != types.Invalid && !types.AssignableTo(rt, c.fn.ret) {
 		c.errs.Add(n.Pos(), token.TypeMismatch, "cannot return %s from function returning %s", rt, c.fn.ret)
