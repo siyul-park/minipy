@@ -25,6 +25,7 @@ const (
 	NotIterable          Code = "NotIterable"
 	NotIndexable         Code = "NotIndexable"
 	NoBindingForNonlocal Code = "NoBindingForNonlocal"
+	PatternError         Code = "PatternError"
 )
 
 // Error is a single diagnostic with its source position and catalogue code.
@@ -46,7 +47,7 @@ func (c Code) Python() string {
 		return "SyntaxError"
 	case IntOverflow:
 		return "ValueError"
-	case MissingAnnotation, TypeMismatch, ArityMismatch, NotComparable, NotIterable, NotIndexable:
+	case MissingAnnotation, TypeMismatch, ArityMismatch, NotComparable, NotIterable, NotIndexable, PatternError:
 		return "TypeError"
 	case UndefinedName, UseBeforeDefinition, NoBindingForNonlocal:
 		return "NameError"

@@ -161,6 +161,239 @@ func (c *checker) stmt(s ast.Stmt) {
 		}
 	case *ast.Pass:
 		// no-op
+	case *ast.Delete:
+		c.deleteStmt(n)
+	case *ast.Assert:
+		c.assertStmt(n)
+	case *ast.Match:
+		c.matchStmt(n)
+	}
+}
+
+// deleteStmt checks each `del` target. A deleted Name becomes
+// definitely-unassigned so a later read reuses UseBeforeDefinition; subscript and
+// attribute targets are checked as deletable lvalues.
+func (c *checker) deleteStmt(n *ast.Delete) {
+	for _, target := range n.Targets {
+		switch t := target.(type) {
+		case *ast.Name:
+			c.deleteName(t)
+		case *ast.Subscript:
+			ct := c.expr(t.X)
+			it := c.expr(t.Index)
+			switch ct.(type) {
+			case *types.List, *types.Dict:
+				c.indexResultType(t, ct, it)
+			default:
+				if ct != types.Invalid {
+					c.errs.Add(t.Pos(), token.UnsupportedFeature, "cannot delete an item from %s", ct)
+				}
+			}
+		case *ast.Attribute:
+			rt := c.expr(t.X)
+			c.fieldType(t, rt)
+		default:
+			c.errs.Add(target.Pos(), token.SyntaxError, "cannot delete this expression")
+		}
+	}
+}
+
+func (c *checker) deleteName(n *ast.Name) {
+	if c.fn != nil {
+		if c.fn.globals[n.Name] {
+			c.deleteGlobalName(n)
+			return
+		}
+		if l, ok := c.fn.locals[n.Name]; ok {
+			if !l.init {
+				c.errs.Add(n.Pos(), token.UseBeforeDefinition, "name %q used before assignment", n.Name)
+			}
+			l.init = false
+			c.types[n] = l.typ
+			return
+		}
+		if cap := c.capture(n); cap != nil {
+			c.errs.Add(n.Pos(), token.UnsupportedFeature, "cannot delete captured name %q", n.Name)
+			return
+		}
+	}
+	c.deleteGlobalName(n)
+}
+
+func (c *checker) deleteGlobalName(n *ast.Name) {
+	g, ok := c.globals[n.Name]
+	if !ok {
+		c.errs.Add(n.Pos(), token.UndefinedName, "name %q is not defined", n.Name)
+		return
+	}
+	if !g.init {
+		c.errs.Add(n.Pos(), token.UseBeforeDefinition, "name %q used before assignment", n.Name)
+	}
+	g.init = false
+	c.types[n] = g.typ
+}
+
+// assertStmt checks the test types as bool and the optional message is printable.
+func (c *checker) assertStmt(n *ast.Assert) {
+	c.condition(n.Test)
+	if n.Msg != nil {
+		mt := c.expr(n.Msg)
+		if mt != types.Invalid && !types.Printable(mt) {
+			c.errs.Add(n.Msg.Pos(), token.TypeMismatch, "assert message must be printable, got %s", mt)
+		}
+	}
+}
+
+// matchStmt checks the subject, then every case pattern (declaring captures),
+// guard, and body.
+func (c *checker) matchStmt(n *ast.Match) {
+	subjT := c.expr(n.Subject)
+	for _, cs := range n.Cases {
+		c.checkPattern(cs.Pattern, subjT)
+		if cs.Guard != nil {
+			c.condition(cs.Guard)
+		}
+		c.checkBlock(cs.Body)
+	}
+}
+
+// bindCapture declares a pattern capture variable in the current scope and marks
+// it initialized; re-binding the same name must keep a consistent type.
+func (c *checker) bindCapture(name string, t types.Type, pos token.Pos) {
+	if name == "" || name == "_" {
+		return
+	}
+	if c.fn != nil {
+		if l, ok := c.fn.locals[name]; ok {
+			if t != types.Invalid && l.typ != types.Invalid && !types.Equal(l.typ, t) {
+				c.errs.Add(pos, token.PatternError, "capture %q binds inconsistent types %s and %s", name, l.typ, t)
+			}
+			l.init = true
+			return
+		}
+		l := c.declareLocal(name, t, pos)
+		l.init = true
+		return
+	}
+	if g, ok := c.globals[name]; ok {
+		if t != types.Invalid && g.typ != types.Invalid && !types.Equal(g.typ, t) {
+			c.errs.Add(pos, token.PatternError, "capture %q binds inconsistent types %s and %s", name, g.typ, t)
+		}
+		g.init = true
+		return
+	}
+	g := c.declare(name, t, pos)
+	g.init = true
+}
+
+// checkPattern validates a pattern against the subject type and declares any
+// capture variables it introduces.
+func (c *checker) checkPattern(p ast.Pattern, subjT types.Type) {
+	switch pat := p.(type) {
+	case *ast.WildcardPattern:
+		// matches anything, binds nothing
+	case *ast.CapturePattern:
+		c.bindCapture(pat.Name, subjT, pat.Pos())
+	case *ast.StarPattern:
+		c.bindCapture(pat.Name, types.ListOf(subjT), pat.Pos())
+	case *ast.AsPattern:
+		c.checkPattern(pat.Pattern, subjT)
+		c.bindCapture(pat.Name, subjT, pat.Pos())
+	case *ast.OrPattern:
+		for _, alt := range pat.Alts {
+			c.checkPattern(alt, subjT)
+		}
+	case *ast.ValuePattern:
+		vt := c.expr(pat.Value)
+		if vt != types.Invalid && subjT != types.Invalid && !types.Equal(vt, subjT) {
+			c.errs.Add(pat.Pos(), token.PatternError, "pattern value %s is not comparable to subject %s", vt, subjT)
+		}
+	case *ast.SequencePattern:
+		c.checkSequencePattern(pat, subjT)
+	case *ast.MappingPattern:
+		c.checkMappingPattern(pat, subjT)
+	case *ast.ClassPattern:
+		c.checkClassPattern(pat, subjT)
+	}
+}
+
+func (c *checker) checkSequencePattern(pat *ast.SequencePattern, subjT types.Type) {
+	switch s := subjT.(type) {
+	case *types.List:
+		for _, e := range pat.Elems {
+			if star, ok := e.(*ast.StarPattern); ok {
+				c.bindCapture(star.Name, types.ListOf(s.Elem), star.Pos())
+				continue
+			}
+			c.checkPattern(e, s.Elem)
+		}
+	case *types.Tuple:
+		if pat.Star >= 0 {
+			c.errs.Add(pat.Pos(), token.UnsupportedFeature, "starred pattern on a tuple is not supported")
+			return
+		}
+		if len(pat.Elems) != len(s.Elems) {
+			c.errs.Add(pat.Pos(), token.PatternError, "sequence pattern expects %d elements, %s has %d", len(pat.Elems), subjT, len(s.Elems))
+			return
+		}
+		for i, e := range pat.Elems {
+			c.checkPattern(e, s.Elems[i])
+		}
+	default:
+		if subjT != types.Invalid {
+			c.errs.Add(pat.Pos(), token.PatternError, "sequence pattern requires a list or tuple subject, got %s", subjT)
+		}
+	}
+}
+
+func (c *checker) checkMappingPattern(pat *ast.MappingPattern, subjT types.Type) {
+	d, ok := subjT.(*types.Dict)
+	if !ok {
+		if subjT != types.Invalid {
+			c.errs.Add(pat.Pos(), token.PatternError, "mapping pattern requires a dict subject, got %s", subjT)
+		}
+		return
+	}
+	for i, key := range pat.Keys {
+		kt := c.expr(key)
+		if kt != types.Invalid && !types.AssignableTo(kt, d.Key) {
+			c.errs.Add(key.Pos(), token.PatternError, "mapping key %s does not match dict key %s", kt, d.Key)
+		}
+		c.checkPattern(pat.Values[i], d.Value)
+	}
+	if pat.Rest != "" {
+		c.bindCapture(pat.Rest, types.DictOf(d.Key, d.Value), pat.Pos())
+	}
+}
+
+func (c *checker) checkClassPattern(pat *ast.ClassPattern, subjT types.Type) {
+	name, ok := pat.Class.(*ast.Name)
+	if !ok {
+		c.errs.Add(pat.Pos(), token.UnsupportedFeature, "dotted class pattern is not supported")
+		return
+	}
+	info := c.classes[name.Name]
+	if info == nil {
+		c.errs.Add(pat.Pos(), token.UndefinedName, "class %q is not defined", name.Name)
+		return
+	}
+	if subjT != types.Invalid && !types.Equal(subjT, info.typ) {
+		c.errs.Add(pat.Pos(), token.PatternError, "class pattern %s does not match subject %s", name.Name, subjT)
+	}
+	for i, sub := range pat.Args {
+		if i < len(info.fields) {
+			c.checkPattern(sub, info.fields[i].typ)
+		} else {
+			c.errs.Add(sub.Pos(), token.PatternError, "class %s has no positional field %d", name.Name, i)
+		}
+	}
+	for i, kw := range pat.KwNames {
+		idx, ok := info.fieldIndex[kw]
+		if !ok {
+			c.errs.Add(pat.Kw[i].Pos(), token.UndefinedName, "field %q is not defined on %s", kw, name.Name)
+			continue
+		}
+		c.checkPattern(pat.Kw[i], info.fields[idx].typ)
 	}
 }
 

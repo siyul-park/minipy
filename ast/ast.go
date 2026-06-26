@@ -146,6 +146,36 @@ type Yield struct {
 	Value Expr
 }
 
+// Delete is `del target1, target2, ...`. Each target is a Name, Subscript, or
+// Attribute lvalue.
+type Delete struct {
+	Base
+	Targets []Expr
+}
+
+// Assert is `assert Test[, Msg]`. Msg is nil when absent.
+type Assert struct {
+	Base
+	Test Expr
+	Msg  Expr
+}
+
+// Match is `match Subject: case ...` structural pattern matching.
+type Match struct {
+	Base
+	Subject Expr
+	Cases   []*Case
+}
+
+// Case is one `case Pattern [if Guard]: Body` arm of a Match. Guard is nil when
+// absent.
+type Case struct {
+	Base
+	Pattern Pattern
+	Guard   Expr
+	Body    []Stmt
+}
+
 // Break is the `break` statement.
 type Break struct{ Base }
 
@@ -154,6 +184,75 @@ type Continue struct{ Base }
 
 // Pass is the `pass` no-op statement.
 type Pass struct{ Base }
+
+// Pattern is a `match` case pattern node.
+type Pattern interface {
+	Node
+	patternNode()
+}
+
+// WildcardPattern is `_`; it matches anything and binds nothing.
+type WildcardPattern struct{ Base }
+
+// CapturePattern is a bare name `x`; it matches anything and binds the subject.
+type CapturePattern struct {
+	Base
+	Name string
+}
+
+// ValuePattern matches by equality against a literal or dotted value expression
+// (e.g. `3`, `"s"`, `None`, `Color.RED`).
+type ValuePattern struct {
+	Base
+	Value Expr
+}
+
+// SequencePattern is `[p, ...]` or `(p, ...)`. Star is the index of the starred
+// element capturing the rest, or -1 when there is none.
+type SequencePattern struct {
+	Base
+	Elems []Pattern
+	Star  int
+}
+
+// StarPattern is `*rest` inside a SequencePattern; Name is "" for `*_`.
+type StarPattern struct {
+	Base
+	Name string
+}
+
+// MappingPattern is `{key: p, ..., **rest}`. Rest is "" when no `**` capture is
+// present.
+type MappingPattern struct {
+	Base
+	Keys   []Expr
+	Values []Pattern
+	Rest   string
+}
+
+// ClassPattern is `Class(pos..., name=kw...)`. Class is a Name or dotted
+// Attribute; KwNames pairs with Kw by index.
+type ClassPattern struct {
+	Base
+	Class   Expr
+	Args    []Pattern
+	KwNames []string
+	Kw      []Pattern
+}
+
+// OrPattern is `p1 | p2 | ...`; it matches when any alternative matches.
+type OrPattern struct {
+	Base
+	Alts []Pattern
+}
+
+// AsPattern is `Pattern as Name`; it matches Pattern then binds the subject to
+// Name.
+type AsPattern struct {
+	Base
+	Pattern Pattern
+	Name    string
+}
 
 // IfExp is the conditional expression `Body if Cond else Orelse`.
 type IfExp struct {
@@ -354,6 +453,19 @@ func (*Yield) stmtNode()     {}
 func (*Break) stmtNode()     {}
 func (*Continue) stmtNode()  {}
 func (*Pass) stmtNode()      {}
+func (*Delete) stmtNode()    {}
+func (*Assert) stmtNode()    {}
+func (*Match) stmtNode()     {}
+
+func (*WildcardPattern) patternNode() {}
+func (*CapturePattern) patternNode()  {}
+func (*ValuePattern) patternNode()    {}
+func (*SequencePattern) patternNode() {}
+func (*StarPattern) patternNode()     {}
+func (*MappingPattern) patternNode()  {}
+func (*ClassPattern) patternNode()    {}
+func (*OrPattern) patternNode()       {}
+func (*AsPattern) patternNode()       {}
 
 func (*Name) exprNode()       {}
 func (*LambdaExpr) exprNode() {}

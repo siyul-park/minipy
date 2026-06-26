@@ -307,6 +307,75 @@ class Point(Base):
 	})
 }
 
+func TestParseM9(t *testing.T) {
+	t.Run("del with name, subscript, attribute targets", func(t *testing.T) {
+		mod, err := parse("del a, b[k], c.x\n")
+		require.NoError(t, err)
+		d := mod.Body[0].(*ast.Delete)
+		require.Len(t, d.Targets, 3)
+		require.IsType(t, &ast.Name{}, d.Targets[0])
+		require.IsType(t, &ast.Subscript{}, d.Targets[1])
+		require.IsType(t, &ast.Attribute{}, d.Targets[2])
+	})
+
+	t.Run("assert with and without message", func(t *testing.T) {
+		mod, err := parse("assert x\nassert x, \"boom\"\n")
+		require.NoError(t, err)
+		a0 := mod.Body[0].(*ast.Assert)
+		require.Nil(t, a0.Msg)
+		a1 := mod.Body[1].(*ast.Assert)
+		require.Equal(t, "boom", a1.Msg.(*ast.StrLit).Value)
+	})
+
+	t.Run("match as a name is not a match statement", func(t *testing.T) {
+		mod, err := parse("match = 1\nprint(match)\nmatch(x)\nmatch.y\n")
+		require.NoError(t, err)
+		require.IsType(t, &ast.Assign{}, mod.Body[0])
+		require.IsType(t, &ast.ExprStmt{}, mod.Body[1])
+		require.IsType(t, &ast.ExprStmt{}, mod.Body[2])
+		require.IsType(t, &ast.ExprStmt{}, mod.Body[3])
+	})
+
+	t.Run("match statement with varied patterns", func(t *testing.T) {
+		src := "match p:\n" +
+			"    case 200:\n        pass\n" +
+			"    case [1, *rest]:\n        pass\n" +
+			"    case {\"k\": v, **others}:\n        pass\n" +
+			"    case Point(x, y=0):\n        pass\n" +
+			"    case 1 | 2 | 3:\n        pass\n" +
+			"    case (a, b) as pair if a < b:\n        pass\n" +
+			"    case _:\n        pass\n"
+		mod, err := parse(src)
+		require.NoError(t, err)
+		m := mod.Body[0].(*ast.Match)
+		require.IsType(t, &ast.Name{}, m.Subject)
+		require.Len(t, m.Cases, 7)
+
+		require.IsType(t, &ast.ValuePattern{}, m.Cases[0].Pattern)
+
+		seq := m.Cases[1].Pattern.(*ast.SequencePattern)
+		require.Equal(t, 1, seq.Star)
+		require.IsType(t, &ast.StarPattern{}, seq.Elems[1])
+
+		mp := m.Cases[2].Pattern.(*ast.MappingPattern)
+		require.Equal(t, "others", mp.Rest)
+		require.Len(t, mp.Keys, 1)
+
+		cp := m.Cases[3].Pattern.(*ast.ClassPattern)
+		require.Len(t, cp.Args, 1)
+		require.Equal(t, []string{"y"}, cp.KwNames)
+
+		require.IsType(t, &ast.OrPattern{}, m.Cases[4].Pattern)
+
+		as := m.Cases[5].Pattern.(*ast.AsPattern)
+		require.Equal(t, "pair", as.Name)
+		require.IsType(t, &ast.SequencePattern{}, as.Pattern)
+		require.NotNil(t, m.Cases[5].Guard)
+
+		require.IsType(t, &ast.WildcardPattern{}, m.Cases[6].Pattern)
+	})
+}
+
 func TestParseErrors(t *testing.T) {
 	cases := map[string]token.Code{
 		"1 = 2\n":                token.SyntaxError,

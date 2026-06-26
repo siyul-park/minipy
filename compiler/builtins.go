@@ -210,6 +210,87 @@ func (h *hostFuncs) listPop(recv, ret types.Type) *interp.HostFunction {
 	)
 }
 
+// listSlice returns a new list holding recv[start:end), clamped to bounds. It
+// backs starred sequence-pattern captures (`case [a, *rest]`).
+func (h *hostFuncs) listSlice(recv types.Type) *interp.HostFunction {
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: []vmtypes.Type{recv.VM(), vmtypes.TypeI32, vmtypes.TypeI32}, Returns: []vmtypes.Type{recv.VM()}},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			arrType, elems := arrayElems(i, params[0])
+			start := int(params[1].I32())
+			end := int(params[2].I32())
+			if start < 0 {
+				start = 0
+			}
+			if end > len(elems) {
+				end = len(elems)
+			}
+			if start > end {
+				start = end
+			}
+			return allocArray(i, arrType, append([]vmtypes.Boxed(nil), elems[start:end]...))
+		},
+	)
+}
+
+// dictRest returns a new dict holding recv minus the keys in the second
+// argument. It backs mapping-pattern `**rest` captures.
+func (h *hostFuncs) dictRest(recv types.Type) *interp.HostFunction {
+	keys := types.ListOf(recv.(*types.Dict).Key)
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: []vmtypes.Type{recv.VM(), keys.VM()}, Returns: []vmtypes.Type{recv.VM()}},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			src, err := i.Load(params[0].Ref())
+			if err != nil {
+				return nil, err
+			}
+			mt, ok := src.Type().(*vmtypes.MapType)
+			if !ok {
+				return nil, fmt.Errorf("dict rest on non-map value")
+			}
+			ks, vs := mapEntries(i, params[0])
+			_, exclude := arrayElems(i, params[1])
+			out := vmtypes.NewMapForType(mt, len(ks))
+			for idx, k := range ks {
+				skip := false
+				for _, ex := range exclude {
+					if boxedEqual(i, k, ex) {
+						skip = true
+						break
+					}
+				}
+				if !skip {
+					mapSet(out, k, vs[idx])
+				}
+			}
+			addr, err := i.Alloc(out)
+			if err != nil {
+				return nil, err
+			}
+			return []vmtypes.Boxed{vmtypes.BoxRef(addr)}, nil
+		},
+	)
+}
+
+// mapSet inserts (key, value) into a map value, dispatching on its concrete
+// representation (mirrors mapGet).
+func mapSet(m vmtypes.Value, key, val vmtypes.Boxed) {
+	switch mm := m.(type) {
+	case *vmtypes.TypedMap[bool]:
+		mm.Set(key.Bool(), val)
+	case *vmtypes.TypedMap[int32]:
+		mm.Set(key.I32(), val)
+	case *vmtypes.TypedMap[int64]:
+		mm.Set(key.I64(), val)
+	case *vmtypes.TypedMap[float32]:
+		mm.Set(key.F32(), val)
+	case *vmtypes.TypedMap[float64]:
+		mm.Set(key.F64(), val)
+	case *vmtypes.Map:
+		mm.Set(mapKey(key), vmtypes.MapEntry{Key: key, Value: val})
+	}
+}
+
 func (h *hostFuncs) listContains(elem, recv types.Type) *interp.HostFunction {
 	return interp.NewHostFunction(
 		&vmtypes.FunctionType{Params: []vmtypes.Type{recv.VM(), elem.VM()}, Returns: []vmtypes.Type{vmtypes.TypeI32}},
