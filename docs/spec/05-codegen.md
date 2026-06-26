@@ -35,7 +35,11 @@ Stack effect notation: `a b → c` means pops `a` then `b`, pushes `c`.
 | read | `LOCAL_GET i` | `GLOBAL_GET i` | `UPVAL_GET i` |
 | write | `LOCAL_SET i` | `GLOBAL_SET i` | `UPVAL_SET i` |
 | write-and-keep | `LOCAL_TEE i` | `GLOBAL_TEE i` | — |
-| delete (M9) | `LOCAL_DELETE i` | `GLOBAL_DELETE i` | — |
+| delete (M9) | store `Zero(kind)` then `LOCAL_SET i` | store `Zero(kind)` then `GLOBAL_SET i` | — |
+
+minivm has no slot-delete opcode, so `del NAME` stores the slot's minivm
+uninitialized value (`types.Zero(kind)`: `REF_NULL` for ref kinds, the typed zero
+const for scalars) — see [`del`](#del).
 
 A mutable captured variable is boxed: `REF_NEW` at definition, `REF_GET`/`REF_SET`
 through the upvalue cell (see [closures](#closures-m4)).
@@ -240,12 +244,15 @@ handler-table and `THROW` path with a parallel sentinel-return unwinder.
 
 ### `del`
 
-`del NAME` resolves the name to its storage class and emits the planned minivm
-opcode `LOCAL_DELETE` or `GLOBAL_DELETE`. A later read follows normal
-definite-assignment rules and becomes `UseBeforeDefinition` statically when
-provable, or a runtime name error when a dynamic path deletes a still-declared
-slot. `del obj.attr` and `del obj[key]` use the relevant class/container support
-available by M9; maps use `MAP_DELETE`.
+`del NAME` resolves the name to its storage class and stores the slot's minivm
+uninitialized value — `types.Zero(kind)`, i.e. `REF_NULL` for ref-kind slots and
+the typed zero const for scalars (minivm has no `LOCAL_DELETE`/`GLOBAL_DELETE`).
+The checker marks the binding definitely-unassigned, so a later read follows
+normal definite-assignment rules and becomes `UseBeforeDefinition` statically when
+provable; the stored zero is only the runtime state on paths the checker cannot
+prove unreachable. `del obj.attr` zeroes the struct field in place (`STRUCT_SET`);
+`del d[key]` on a dict uses `MAP_DELETE`; `del lst[i]` on a list reuses the
+`list.pop(i)` host (remove + left-shift) and drops the result.
 
 ### `assert`
 
@@ -272,8 +279,14 @@ Pattern matching lowers to a decision tree:
 - captures bind with `LOCAL_SET`/`GLOBAL_SET` in the selected case arm only;
 - guards run after a pattern succeeds and must leave an i32 bool for `BR_IF`.
 
-Dense scalar literal cases may use `BR_TABLE`; sparse or structured patterns use
-ordered `BR_IF` chains matching Python case order.
+The subject is evaluated once into a temp slot; sub-values are extracted into
+fresh temp slots for recursive tests. Starred sequence captures (`[a, *rest]`)
+reuse a `listSlice` host and mapping `**rest` reuses a `dictRest` host. Class
+patterns need no runtime `isinstance` — the static subject type already fixes the
+class — so they only destructure fields. Current restrictions: starred patterns on
+a (heterogeneous) tuple subject and dotted class names (`mod.Class(...)`) are
+rejected as `UnsupportedFeature`. Lowering uses ordered `BR_IF` chains in Python
+case order; `BR_TABLE` for dense scalar cases is a future optimization.
 
 ## Unions, `Any` & specialization (M10)
 

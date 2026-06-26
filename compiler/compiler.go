@@ -290,6 +290,249 @@ func (c *Compiler) stmt(s ast.Stmt) {
 		c.br(c.loops[len(c.loops)-1].cont)
 	case *ast.Pass:
 		// no-op
+	case *ast.Delete:
+		c.deleteStmt(n)
+	case *ast.Assert:
+		c.assertStmt(n)
+	case *ast.Match:
+		c.emitMatch(n)
+	}
+}
+
+// deleteStmt lowers `del`. A deleted name is overwritten with minivm's
+// uninitialized slot value (REF_NULL for ref kinds, the typed zero for scalars);
+// dict items use MAP_DELETE, list items reuse the listPop host (remove + shift),
+// and attributes are zeroed in place.
+func (c *Compiler) deleteStmt(n *ast.Delete) {
+	for _, target := range n.Targets {
+		switch t := target.(type) {
+		case *ast.Name:
+			c.emitZeroValue(c.typ(t.Name))
+			c.set(t.Name)
+		case *ast.Subscript:
+			switch ct := c.types[t.X].(type) {
+			case *types.Dict:
+				c.expr(t.X)
+				c.expr(t.Index)
+				c.emit(instr.MAP_DELETE)
+			case *types.List:
+				c.expr(t.X)
+				c.expr(t.Index)
+				c.callHost(c.host.listPop(ct, ct.Elem))
+				c.emit(instr.DROP)
+			}
+		case *ast.Attribute:
+			cls := c.types[t.X].(*types.Class)
+			info := c.classes[cls.Name]
+			idx := info.fieldIndex[t.Name]
+			c.expr(t.X)
+			c.emit(instr.I32_CONST, uint64(idx))
+			c.emitZeroValue(info.fields[idx].typ)
+			c.emit(instr.STRUCT_SET)
+		}
+	}
+}
+
+// assertStmt lowers `assert test[, msg]`: on a false test it builds an error
+// payload and throws it, which unwinds to an uncaught runtime exception.
+func (c *Compiler) assertStmt(n *ast.Assert) {
+	c.expr(n.Test)
+	ok := c.label()
+	c.brIf(ok)
+	if n.Msg != nil {
+		c.expr(n.Msg)
+	} else {
+		c.constGet(vmtypes.String("AssertionError"))
+	}
+	c.emit(instr.ERROR_NEW)
+	c.emit(instr.THROW)
+	c.bind(ok)
+}
+
+// emitMatch lowers `match`/`case` into a linear decision tree: the subject is
+// evaluated once into a temp slot, then each case's pattern test branches to the
+// next case on mismatch and falls through to the body on a full match.
+func (c *Compiler) emitMatch(n *ast.Match) {
+	subjSlot := c.tmp()
+	c.expr(n.Subject)
+	c.emit(instr.GLOBAL_SET, uint64(subjSlot))
+	subjT := c.types[n.Subject]
+	end := c.label()
+	for _, cs := range n.Cases {
+		next := c.label()
+		c.emitPatternTest(cs.Pattern, subjSlot, subjT, next)
+		if cs.Guard != nil {
+			c.expr(cs.Guard)
+			c.emit(instr.I32_EQZ)
+			c.brIf(next)
+		}
+		c.block(cs.Body)
+		c.br(end)
+		c.bind(next)
+	}
+	c.bind(end)
+}
+
+// emitPatternTest tests the value in global slot `slot` (static type typ) against
+// p, binding captures as it goes, and branches to next on mismatch.
+func (c *Compiler) emitPatternTest(p ast.Pattern, slot int, typ types.Type, next instr.Label) {
+	switch pat := p.(type) {
+	case *ast.WildcardPattern:
+		// always matches
+	case *ast.CapturePattern:
+		c.bindSlot(pat.Name, slot)
+	case *ast.StarPattern:
+		c.bindSlot(pat.Name, slot)
+	case *ast.AsPattern:
+		c.emitPatternTest(pat.Pattern, slot, typ, next)
+		c.bindSlot(pat.Name, slot)
+	case *ast.OrPattern:
+		succ := c.label()
+		for _, alt := range pat.Alts {
+			altNext := c.label()
+			c.emitPatternTest(alt, slot, typ, altNext)
+			c.br(succ)
+			c.bind(altNext)
+		}
+		c.br(next)
+		c.bind(succ)
+	case *ast.ValuePattern:
+		c.emit(instr.GLOBAL_GET, uint64(slot))
+		c.expr(pat.Value)
+		c.emit(cmpOpcode(token.EQ, typ))
+		c.emit(instr.I32_EQZ)
+		c.brIf(next)
+	case *ast.SequencePattern:
+		c.emitSequenceTest(pat, slot, typ, next)
+	case *ast.MappingPattern:
+		c.emitMappingTest(pat, slot, typ, next)
+	case *ast.ClassPattern:
+		c.emitClassTest(pat, slot, typ, next)
+	}
+}
+
+// bindSlot stores the value in global slot into the named capture variable.
+func (c *Compiler) bindSlot(name string, slot int) {
+	if name == "" || name == "_" {
+		return
+	}
+	c.emit(instr.GLOBAL_GET, uint64(slot))
+	c.set(name)
+}
+
+// childSlot extracts a sub-value of the slot value at the given index (a
+// list/tuple/struct element) into a fresh temp slot and returns it.
+func (c *Compiler) childSlot(parent int, index int, op instr.Opcode) int {
+	child := c.tmp()
+	c.emit(instr.GLOBAL_GET, uint64(parent))
+	c.emit(instr.I32_CONST, uint64(index))
+	c.emit(op)
+	c.emit(instr.GLOBAL_SET, uint64(child))
+	return child
+}
+
+func (c *Compiler) emitSequenceTest(pat *ast.SequencePattern, slot int, typ types.Type, next instr.Label) {
+	switch s := typ.(type) {
+	case *types.Tuple:
+		for i, e := range pat.Elems {
+			child := c.childSlot(slot, i, instr.STRUCT_GET)
+			c.emitPatternTest(e, child, s.Elems[i], next)
+		}
+	case *types.List:
+		if pat.Star < 0 {
+			c.emit(instr.GLOBAL_GET, uint64(slot))
+			c.emit(instr.ARRAY_LEN)
+			c.emit(instr.I32_CONST, uint64(len(pat.Elems)))
+			c.emit(instr.I32_EQ)
+			c.emit(instr.I32_EQZ)
+			c.brIf(next)
+			for i, e := range pat.Elems {
+				child := c.childSlot(slot, i, instr.ARRAY_GET)
+				c.emitPatternTest(e, child, s.Elem, next)
+			}
+			return
+		}
+		prefix := pat.Star
+		suffix := len(pat.Elems) - pat.Star - 1
+		c.emit(instr.GLOBAL_GET, uint64(slot))
+		c.emit(instr.ARRAY_LEN)
+		c.emit(instr.I32_CONST, uint64(prefix+suffix))
+		c.emit(instr.I32_LT_S)
+		c.brIf(next)
+		for i := 0; i < prefix; i++ {
+			child := c.childSlot(slot, i, instr.ARRAY_GET)
+			c.emitPatternTest(pat.Elems[i], child, s.Elem, next)
+		}
+		for j := 0; j < suffix; j++ {
+			child := c.tmp()
+			c.emit(instr.GLOBAL_GET, uint64(slot))
+			c.emit(instr.GLOBAL_GET, uint64(slot))
+			c.emit(instr.ARRAY_LEN)
+			c.emit(instr.I32_CONST, uint64(suffix-j))
+			c.emit(instr.I32_SUB)
+			c.emit(instr.ARRAY_GET)
+			c.emit(instr.GLOBAL_SET, uint64(child))
+			c.emitPatternTest(pat.Elems[prefix+1+j], child, s.Elem, next)
+		}
+		star := pat.Elems[prefix].(*ast.StarPattern)
+		if star.Name != "" && star.Name != "_" {
+			c.emit(instr.GLOBAL_GET, uint64(slot))
+			c.emit(instr.I32_CONST, uint64(prefix))
+			c.emit(instr.GLOBAL_GET, uint64(slot))
+			c.emit(instr.ARRAY_LEN)
+			c.emit(instr.I32_CONST, uint64(suffix))
+			c.emit(instr.I32_SUB)
+			c.callHost(c.host.listSlice(s))
+			c.set(star.Name)
+		}
+	}
+}
+
+func (c *Compiler) emitMappingTest(pat *ast.MappingPattern, slot int, typ types.Type, next instr.Label) {
+	d := typ.(*types.Dict)
+	for i, keyExpr := range pat.Keys {
+		child := c.tmp()
+		c.emit(instr.GLOBAL_GET, uint64(slot))
+		c.expr(keyExpr)
+		c.emit(instr.MAP_LOOKUP)
+		// MAP_LOOKUP leaves [value, present]; bring value to the top to capture it,
+		// leaving the presence flag to branch on.
+		c.emit(instr.SWAP)
+		c.emit(instr.GLOBAL_SET, uint64(child))
+		c.emit(instr.I32_EQZ)
+		c.brIf(next)
+		c.emitPatternTest(pat.Values[i], child, d.Value, next)
+	}
+	if pat.Rest != "" && pat.Rest != "_" {
+		keysT := types.ListOf(d.Key)
+		c.emit(instr.I32_CONST, uint64(len(pat.Keys)))
+		c.emit(instr.ARRAY_NEW_DEFAULT, c.typeIndex(keysT))
+		for i, keyExpr := range pat.Keys {
+			c.emit(instr.DUP)
+			c.emit(instr.I32_CONST, uint64(i))
+			c.expr(keyExpr)
+			c.emit(instr.ARRAY_SET)
+		}
+		keysSlot := c.tmp()
+		c.emit(instr.GLOBAL_SET, uint64(keysSlot))
+		c.emit(instr.GLOBAL_GET, uint64(slot))
+		c.emit(instr.GLOBAL_GET, uint64(keysSlot))
+		c.callHost(c.host.dictRest(d))
+		c.set(pat.Rest)
+	}
+}
+
+func (c *Compiler) emitClassTest(pat *ast.ClassPattern, slot int, typ types.Type, next instr.Label) {
+	cls := typ.(*types.Class)
+	info := c.classes[cls.Name]
+	for i, sub := range pat.Args {
+		child := c.childSlot(slot, i, instr.STRUCT_GET)
+		c.emitPatternTest(sub, child, info.fields[i].typ, next)
+	}
+	for i, kw := range pat.KwNames {
+		idx := info.fieldIndex[kw]
+		child := c.childSlot(slot, idx, instr.STRUCT_GET)
+		c.emitPatternTest(pat.Kw[i], child, info.fields[idx].typ, next)
 	}
 }
 

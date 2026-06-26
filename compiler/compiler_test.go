@@ -656,12 +656,105 @@ func TestCompileErrors(t *testing.T) {
 		"@dataclass\nclass Point:\n    x: int\np: Point = Point(1)\nprint(p.y)\n":              token.UndefinedName,
 		"@dataclass\nclass Point:\n    x: int\np: Point = Point(1)\nprint(p.missing())\n":      token.UnsupportedFeature,
 		"class Point:\n    x: int\n    def __init__(self, x: int) -> int:\n        return x\n": token.TypeMismatch,
+		// M9: del, assert, match
+		"n: int = 1\ndel n\nprint(str(n))\n": token.UseBeforeDefinition,
+		"assert 1\n":                         token.TypeMismatch,
+		"x: int = 1\nmatch x:\n    case 1 if 2:\n        pass\n":                               token.TypeMismatch,
+		"v: tuple[int, str] = (1, \"a\")\nmatch v:\n    case (x, _) | (_, x):\n        pass\n": token.PatternError,
+		"s: str = \"a\"\nmatch s:\n    case 1:\n        pass\n":                                token.PatternError,
 	}
 	for src, code := range cases {
 		_, err := Compile(strings.NewReader(src), WithOutput(&bytes.Buffer{}))
 		require.Errorf(t, err, "src=%q", src)
 		hasCode(t, err, code)
 	}
+}
+
+func TestCompileM9(t *testing.T) {
+	t.Run("del dict key and list item", func(t *testing.T) {
+		require.Equal(t, "1\n", run(t, "d: dict[str, int] = {\"a\": 1, \"b\": 2}\ndel d[\"a\"]\nprint(str(len(d)))\n"))
+		require.Equal(t, "2\n3\n", run(t, "xs: list[int] = [1, 2, 3]\ndel xs[1]\nprint(str(len(xs)))\nprint(str(xs[1]))\n"))
+	})
+
+	t.Run("del attribute zeroes the field", func(t *testing.T) {
+		src := "@dataclass\nclass P:\n    x: int\n    y: int\np: P = P(1, 2)\ndel p.x\nprint(str(p.x))\n"
+		require.Equal(t, "0\n", run(t, src))
+	})
+
+	t.Run("del then reassign", func(t *testing.T) {
+		require.Equal(t, "9\n", run(t, "n: int = 5\ndel n\nn = 9\nprint(str(n))\n"))
+	})
+
+	t.Run("assert passes silently", func(t *testing.T) {
+		require.Equal(t, "ok\n", run(t, "assert True\nprint(\"ok\")\n"))
+	})
+
+	t.Run("assert false raises uncaught", func(t *testing.T) {
+		prog, err := Compile(strings.NewReader("assert False, \"boom\"\n"), WithOutput(&bytes.Buffer{}))
+		require.NoError(t, err)
+		vm := interp.New(prog)
+		defer vm.Close()
+		require.Error(t, vm.Run(context.Background()))
+	})
+
+	t.Run("match literals and or-pattern", func(t *testing.T) {
+		src := `def kind(n: int) -> str:
+    match n:
+        case 0:
+            return "zero"
+        case 1 | 2 | 3:
+            return "small"
+    return "big"
+print(kind(0))
+print(kind(2))
+print(kind(9))
+`
+		require.Equal(t, "zero\nsmall\nbig\n", run(t, src))
+	})
+
+	t.Run("match tuple, guard, and as", func(t *testing.T) {
+		src := `pt: tuple[int, int] = (1, 5)
+match pt:
+    case (a, b) as whole if a < b:
+        print(str(a))
+        print(str(b))
+`
+		require.Equal(t, "1\n5\n", run(t, src))
+	})
+
+	t.Run("match list with star capture", func(t *testing.T) {
+		src := `xs: list[int] = [1, 2, 3, 4]
+match xs:
+    case [first, *rest]:
+        print(str(first))
+        print(str(len(rest)))
+        print(str(rest[0]))
+`
+		require.Equal(t, "1\n3\n2\n", run(t, src))
+	})
+
+	t.Run("match mapping with rest capture", func(t *testing.T) {
+		src := `d: dict[str, int] = {"a": 1, "b": 2, "c": 3}
+match d:
+    case {"a": x, **rest}:
+        print(str(x))
+        print(str(len(rest)))
+`
+		require.Equal(t, "1\n2\n", run(t, src))
+	})
+
+	t.Run("match class pattern with positional and keyword", func(t *testing.T) {
+		src := `@dataclass
+class Point:
+    x: int
+    y: int
+p: Point = Point(3, 4)
+match p:
+    case Point(x, y=4):
+        print(str(x))
+`
+		require.Equal(t, "3\n", run(t, src))
+	})
 }
 
 func TestCompileOptionDefaults(t *testing.T) {

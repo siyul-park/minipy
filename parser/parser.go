@@ -51,8 +51,6 @@ var simpleKeywordStmt = map[token.Type]string{
 	token.RAISE:  "'raise' exceptions",
 	token.IMPORT: "'import' modules",
 	token.FROM:   "'from' modules",
-	token.DEL:    "'del' (out of scope)",
-	token.ASSERT: "'assert' (out of scope)",
 }
 
 // New returns a Parser over source read from r. No input is read until Parse
@@ -123,6 +121,9 @@ func (p *Parser) parseStatement() []ast.Stmt {
 		p.skipLine()
 		p.skipBlock()
 		return nil
+	}
+	if p.cur().Type == token.NAME && p.cur().Literal == "match" && p.isMatchHeader() {
+		return []ast.Stmt{p.parseMatch()}
 	}
 	return p.parseSimpleLine()
 }
@@ -454,6 +455,10 @@ func (p *Parser) parseSimpleStmt() ast.Stmt {
 		t := p.cur()
 		p.advance()
 		return &ast.Nonlocal{Base: ast.Base{Position: t.Pos}, Names: p.parseNameList()}
+	case token.DEL:
+		return p.parseDelete()
+	case token.ASSERT:
+		return p.parseAssert()
 	}
 
 	if msg, ok := simpleKeywordStmt[p.cur().Type]; ok {
@@ -509,6 +514,338 @@ func (p *Parser) parseAnnAssign() ast.Stmt {
 		value = p.parseExpression()
 	}
 	return &ast.AnnAssign{Base: ast.Base{Position: nameTok.Pos}, Target: name, Ann: ann, Value: value}
+}
+
+// parseDelete parses `del target, ...` where each target is a Name, Subscript,
+// or Attribute lvalue.
+func (p *Parser) parseDelete() ast.Stmt {
+	t := p.cur()
+	p.advance() // 'del'
+	var targets []ast.Expr
+	for {
+		target := p.parseExpression()
+		switch target.(type) {
+		case *ast.Name, *ast.Subscript, *ast.Attribute:
+		default:
+			p.errs.Add(target.Pos(), token.SyntaxError, "cannot delete this expression")
+		}
+		targets = append(targets, target)
+		if !p.at(token.COMMA) {
+			break
+		}
+		p.advance()
+		if p.at(token.NEWLINE) || p.at(token.SEMICOLON) || p.at(token.EOF) {
+			break
+		}
+	}
+	return &ast.Delete{Base: ast.Base{Position: t.Pos}, Targets: targets}
+}
+
+// parseAssert parses `assert test[, msg]`.
+func (p *Parser) parseAssert() ast.Stmt {
+	t := p.cur()
+	p.advance() // 'assert'
+	test := p.parseExpression()
+	var msg ast.Expr
+	if p.at(token.COMMA) {
+		p.advance()
+		msg = p.parseExpression()
+	}
+	return &ast.Assert{Base: ast.Base{Position: t.Pos}, Test: test, Msg: msg}
+}
+
+// isMatchHeader decides whether a line beginning with the soft keyword `match`
+// is a match statement rather than an ordinary use of `match` as a name. It is a
+// statement only when the logical line ends in a bracket-depth-0 ':' immediately
+// followed by a NEWLINE (an indented case block). `match = x`, `match: T`, and
+// `match(x)` therefore stay expressions/assignments.
+func (p *Parser) isMatchHeader() bool {
+	switch p.peek(1).Type {
+	case token.ASSIGN, token.COLON, token.NEWLINE, token.SEMICOLON, token.EOF:
+		return false
+	}
+	if augAssign[p.peek(1).Type] != token.ILLEGAL {
+		return false
+	}
+	depth := 0
+	for i := 1; ; i++ {
+		switch p.peek(i).Type {
+		case token.LPAREN, token.LBRACKET, token.LBRACE:
+			depth++
+		case token.RPAREN, token.RBRACKET, token.RBRACE:
+			depth--
+		case token.NEWLINE, token.EOF:
+			return false
+		case token.COLON:
+			if depth == 0 {
+				return p.peek(i+1).Type == token.NEWLINE
+			}
+		}
+	}
+}
+
+// parseMatch parses `match subject: NEWLINE INDENT (case ...)+ DEDENT`.
+func (p *Parser) parseMatch() ast.Stmt {
+	pos := p.cur().Pos
+	p.advance() // 'match'
+	subject := p.parseMatchSubject()
+	p.expect(token.COLON)
+	if !p.at(token.NEWLINE) {
+		p.errs.Add(p.cur().Pos, token.SyntaxError, "expected an indented block of 'case' clauses")
+		p.skipLine()
+		return &ast.Match{Base: ast.Base{Position: pos}, Subject: subject}
+	}
+	p.advance() // NEWLINE
+	if !p.at(token.INDENT) {
+		p.errs.Add(p.cur().Pos, token.SyntaxError, "expected an indented block of 'case' clauses")
+		return &ast.Match{Base: ast.Base{Position: pos}, Subject: subject}
+	}
+	p.advance() // INDENT
+	var cases []*ast.Case
+	for !p.at(token.DEDENT) && !p.at(token.EOF) {
+		if p.at(token.NEWLINE) {
+			p.advance()
+			continue
+		}
+		if !(p.cur().Type == token.NAME && p.cur().Literal == "case") {
+			p.errs.Add(p.cur().Pos, token.SyntaxError, "expected 'case'")
+			p.skipLine()
+			p.skipBlock()
+			continue
+		}
+		cases = append(cases, p.parseCase())
+	}
+	p.expect(token.DEDENT)
+	return &ast.Match{Base: ast.Base{Position: pos}, Subject: subject, Cases: cases}
+}
+
+// parseMatchSubject parses a match subject; a top-level comma makes it a tuple.
+func (p *Parser) parseMatchSubject() ast.Expr {
+	pos := p.cur().Pos
+	first := p.parseExpression()
+	if !p.at(token.COMMA) {
+		return first
+	}
+	elems := []ast.Expr{first}
+	for p.at(token.COMMA) {
+		p.advance()
+		if p.at(token.COLON) || p.at(token.EOF) {
+			break
+		}
+		elems = append(elems, p.parseExpression())
+	}
+	return &ast.TupleLit{Base: ast.Base{Position: pos}, Elems: elems}
+}
+
+// parseCase parses `case patterns [if guard]: block`.
+func (p *Parser) parseCase() *ast.Case {
+	pos := p.cur().Pos
+	p.advance() // 'case'
+	pattern := p.parsePatterns()
+	var guard ast.Expr
+	if p.at(token.IF) {
+		p.advance()
+		guard = p.parseExpression()
+	}
+	body := p.parseBlock()
+	return &ast.Case{Base: ast.Base{Position: pos}, Pattern: pattern, Guard: guard, Body: body}
+}
+
+// parsePatterns parses one case pattern; a top-level comma makes it an open
+// sequence pattern (`case a, b:`).
+func (p *Parser) parsePatterns() ast.Pattern {
+	pos := p.cur().Pos
+	first := p.parseSeqElem()
+	if !p.at(token.COMMA) {
+		return first
+	}
+	elems := []ast.Pattern{first}
+	star := -1
+	if _, ok := first.(*ast.StarPattern); ok {
+		star = 0
+	}
+	for p.at(token.COMMA) {
+		p.advance()
+		if p.at(token.COLON) || p.at(token.IF) || p.at(token.EOF) {
+			break
+		}
+		e := p.parseSeqElem()
+		if _, ok := e.(*ast.StarPattern); ok && star < 0 {
+			star = len(elems)
+		}
+		elems = append(elems, e)
+	}
+	return &ast.SequencePattern{Base: ast.Base{Position: pos}, Elems: elems, Star: star}
+}
+
+// parseSeqElem parses a sequence element: a starred rest `*name` or an
+// or-pattern.
+func (p *Parser) parseSeqElem() ast.Pattern {
+	if p.at(token.STAR) {
+		pos := p.cur().Pos
+		p.advance()
+		name := ""
+		if p.at(token.NAME) {
+			name = p.cur().Literal
+			p.advance()
+		}
+		return &ast.StarPattern{Base: ast.Base{Position: pos}, Name: name}
+	}
+	return p.parseOrPattern()
+}
+
+// parseOrPattern parses `closed ('|' closed)* ['as' NAME]`; `as` binds looser
+// than `|`.
+func (p *Parser) parseOrPattern() ast.Pattern {
+	pos := p.cur().Pos
+	alts := []ast.Pattern{p.parseClosedPattern()}
+	for p.at(token.PIPE) {
+		p.advance()
+		alts = append(alts, p.parseClosedPattern())
+	}
+	var pat ast.Pattern
+	if len(alts) == 1 {
+		pat = alts[0]
+	} else {
+		pat = &ast.OrPattern{Base: ast.Base{Position: pos}, Alts: alts}
+	}
+	if p.at(token.AS) {
+		p.advance()
+		name := p.expect(token.NAME).Literal
+		pat = &ast.AsPattern{Base: ast.Base{Position: pos}, Pattern: pat, Name: name}
+	}
+	return pat
+}
+
+// parseClosedPattern parses a single non-or pattern.
+func (p *Parser) parseClosedPattern() ast.Pattern {
+	t := p.cur()
+	switch t.Type {
+	case token.LBRACKET:
+		return p.parseSequencePattern(token.LBRACKET, token.RBRACKET)
+	case token.LPAREN:
+		return p.parseSequencePattern(token.LPAREN, token.RPAREN)
+	case token.LBRACE:
+		return p.parseMappingPattern()
+	case token.NONE, token.TRUE, token.FALSE, token.INT, token.FLOAT, token.STRING, token.FSTRING:
+		return &ast.ValuePattern{Base: ast.Base{Position: t.Pos}, Value: p.parseAtom()}
+	case token.MINUS, token.PLUS:
+		p.advance()
+		num := p.parseAtom()
+		return &ast.ValuePattern{Base: ast.Base{Position: t.Pos}, Value: &ast.UnaryExpr{Base: ast.Base{Position: t.Pos}, Op: t.Type, X: num}}
+	case token.NAME:
+		return p.parseNamePattern()
+	default:
+		p.errs.Add(t.Pos, token.SyntaxError, "invalid pattern: unexpected %s", t.Type)
+		if !p.at(token.EOF) {
+			p.advance()
+		}
+		return &ast.WildcardPattern{Base: ast.Base{Position: t.Pos}}
+	}
+}
+
+// parseNamePattern parses `_` (wildcard), a bare name (capture), a dotted value,
+// or a class pattern when followed by `(`.
+func (p *Parser) parseNamePattern() ast.Pattern {
+	t := p.cur()
+	pos := t.Pos
+	if t.Literal == "_" {
+		p.advance()
+		return &ast.WildcardPattern{Base: ast.Base{Position: pos}}
+	}
+	var expr ast.Expr = &ast.Name{Base: ast.Base{Position: pos}, Name: t.Literal}
+	p.advance()
+	dotted := false
+	for p.at(token.DOT) {
+		p.advance()
+		nameTok := p.expect(token.NAME)
+		expr = &ast.Attribute{Base: ast.Base{Position: pos}, X: expr, Name: nameTok.Literal}
+		dotted = true
+	}
+	if p.at(token.LPAREN) {
+		return p.parseClassPattern(expr, pos)
+	}
+	if dotted {
+		return &ast.ValuePattern{Base: ast.Base{Position: pos}, Value: expr}
+	}
+	return &ast.CapturePattern{Base: ast.Base{Position: pos}, Name: t.Literal}
+}
+
+// parseClassPattern parses `Class(pos..., name=kw...)` after the class name.
+func (p *Parser) parseClassPattern(class ast.Expr, pos token.Pos) ast.Pattern {
+	p.expect(token.LPAREN)
+	cp := &ast.ClassPattern{Base: ast.Base{Position: pos}, Class: class}
+	for !p.at(token.RPAREN) && !p.at(token.EOF) {
+		if p.cur().Type == token.NAME && p.peek(1).Type == token.ASSIGN {
+			name := p.cur().Literal
+			p.advance() // NAME
+			p.advance() // '='
+			cp.KwNames = append(cp.KwNames, name)
+			cp.Kw = append(cp.Kw, p.parseOrPattern())
+		} else {
+			cp.Args = append(cp.Args, p.parseOrPattern())
+		}
+		if !p.at(token.COMMA) {
+			break
+		}
+		p.advance()
+	}
+	p.expect(token.RPAREN)
+	return cp
+}
+
+// parseSequencePattern parses a bracketed/parenthesized sequence pattern. A
+// single parenthesized pattern with no comma is a group, returned directly.
+func (p *Parser) parseSequencePattern(open, closing token.Type) ast.Pattern {
+	pos := p.cur().Pos
+	p.advance() // open
+	var elems []ast.Pattern
+	star := -1
+	sawComma := false
+	for !p.at(closing) && !p.at(token.EOF) {
+		e := p.parseSeqElem()
+		if _, ok := e.(*ast.StarPattern); ok && star < 0 {
+			star = len(elems)
+		}
+		elems = append(elems, e)
+		if !p.at(token.COMMA) {
+			break
+		}
+		sawComma = true
+		p.advance()
+	}
+	p.expect(closing)
+	if open == token.LPAREN && len(elems) == 1 && !sawComma {
+		return elems[0]
+	}
+	return &ast.SequencePattern{Base: ast.Base{Position: pos}, Elems: elems, Star: star}
+}
+
+// parseMappingPattern parses `{key: pattern, ..., **rest}`.
+func (p *Parser) parseMappingPattern() ast.Pattern {
+	pos := p.cur().Pos
+	p.advance() // '{'
+	mp := &ast.MappingPattern{Base: ast.Base{Position: pos}}
+	for !p.at(token.RBRACE) && !p.at(token.EOF) {
+		if p.at(token.DOUBLESTAR) {
+			p.advance()
+			mp.Rest = p.expect(token.NAME).Literal
+			if p.at(token.COMMA) {
+				p.advance()
+			}
+			break
+		}
+		key := p.parseExpression()
+		p.expect(token.COLON)
+		mp.Keys = append(mp.Keys, key)
+		mp.Values = append(mp.Values, p.parseOrPattern())
+		if !p.at(token.COMMA) {
+			break
+		}
+		p.advance()
+	}
+	p.expect(token.RBRACE)
+	return mp
 }
 
 func (p *Parser) parseFlatTupleTarget() ast.Expr {

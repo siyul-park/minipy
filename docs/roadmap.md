@@ -204,11 +204,13 @@ low-priority inference layer remains last.
   `bool`. `assert` messages may be any printable scalar.
 - **Lowering:** `assert test[, msg]` evaluates `test`; false path builds an
   `AssertionError` payload with minivm `ERROR_NEW` and raises it with `THROW`.
-  `match` lowers to a decision tree with `BR_IF`/`BR_TABLE` where profitable and
-  reuses existing comparison/container/class opcodes. `del NAME` emits
-  `GLOBAL_DELETE` or `LOCAL_DELETE` according to resolved storage. Container key
-  deletion uses `MAP_DELETE`; attribute/index deletion uses the relevant
-  container/class delete/store semantics available by then.
+  `match` lowers to a decision tree with `BR_IF` (and `BR_TABLE` where profitable)
+  reusing existing comparison/container/class opcodes. minivm has no slot-delete
+  opcode, so `del NAME` stores the slot's uninitialized value (`types.Zero(kind)`:
+  `REF_NULL` for refs, a typed zero const for scalars) and the checker marks the
+  binding definitely-unassigned. Container key deletion uses `MAP_DELETE`; list
+  item deletion reuses the `list.pop(i)` host; attribute deletion zeroes the field
+  with `STRUCT_SET`.
 - **Sample:**
   ```python
   status: int = 200
