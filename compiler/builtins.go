@@ -597,7 +597,8 @@ func newHostFuncs(out io.Writer) *hostFuncs {
 // formatScalar renders a boxed scalar the way Python's str()/print() would.
 func formatScalar(i *interp.Interpreter, v vmtypes.Boxed) string {
 	switch v.Kind() {
-	case vmtypes.KindI32:
+	// bool lowers to i1; literals still arrive as i32 (shared representation).
+	case vmtypes.KindI1, vmtypes.KindI32:
 		if v.I32() != 0 {
 			return "True"
 		}
@@ -743,6 +744,8 @@ func mapGet(i *interp.Interpreter, ref vmtypes.Boxed, key vmtypes.Boxed) (vmtype
 		return 0, false
 	}
 	switch m := val.(type) {
+	case *vmtypes.TypedMap[bool]:
+		return m.Get(key.Bool())
 	case *vmtypes.TypedMap[int32]:
 		return m.Get(key.I32())
 	case *vmtypes.TypedMap[int64]:
@@ -766,6 +769,11 @@ func mapEntries(i *interp.Interpreter, ref vmtypes.Boxed) ([]vmtypes.Boxed, []vm
 	}
 	var keys, vals []vmtypes.Boxed
 	switch m := val.(type) {
+	case *vmtypes.TypedMap[bool]:
+		m.Range(func(k bool, v vmtypes.Boxed) {
+			keys = append(keys, vmtypes.BoxI1(k))
+			vals = append(vals, v)
+		})
 	case *vmtypes.TypedMap[int32]:
 		m.Range(func(k int32, v vmtypes.Boxed) {
 			keys = append(keys, vmtypes.BoxI32(k))
@@ -797,7 +805,9 @@ func mapEntries(i *interp.Interpreter, ref vmtypes.Boxed) ([]vmtypes.Boxed, []vm
 
 func mapKey(v vmtypes.Boxed) vmtypes.MapKey {
 	switch v.Kind() {
-	case vmtypes.KindI32:
+	// bool keys may arrive as i1 (comparisons) or i32 (literals); canonicalize
+	// to one i32 key so the two representations hash and compare alike.
+	case vmtypes.KindI1, vmtypes.KindI32:
 		return vmtypes.MapKey{Kind: vmtypes.KindI32, Bits: uint64(uint32(v.I32()))}
 	case vmtypes.KindI64:
 		return vmtypes.MapKey{Kind: vmtypes.KindI64, Bits: uint64(v.I64())}

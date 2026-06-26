@@ -67,7 +67,7 @@ var (
 	Invalid Type = primitive{name: "<invalid>"}
 	Int     Type = primitive{name: "int", vm: vmtypes.TypeI64, num: true}
 	Float   Type = primitive{name: "float", vm: vmtypes.TypeF64, num: true}
-	Bool    Type = primitive{name: "bool", vm: vmtypes.TypeI32}
+	Bool    Type = primitive{name: "bool", vm: vmtypes.TypeI1}
 	Str     Type = primitive{name: "str", vm: vmtypes.TypeString}
 	None    Type = primitive{name: "None", vm: vmtypes.TypeRef}
 )
@@ -140,7 +140,7 @@ func (t *Set) VM() vmtypes.Type {
 	if t == nil || t.Elem == nil {
 		return nil
 	}
-	return vmtypes.NewMapType(t.Elem.VM(), vmtypes.TypeI32)
+	return vmtypes.NewMapType(t.Elem.VM(), vmtypes.TypeI1)
 }
 func (t *Set) Equal(o Type) bool {
 	other, ok := o.(*Set)

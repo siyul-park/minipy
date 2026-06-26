@@ -8,6 +8,8 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/siyul-park/minivm/optimize"
 )
 
 func TestRunFile(t *testing.T) {
@@ -16,7 +18,7 @@ func TestRunFile(t *testing.T) {
 	require.NoError(t, os.WriteFile(path, []byte("x: int = 6\ny: int = 7\nprint(str(x * y))\n"), 0o644))
 
 	var out bytes.Buffer
-	require.NoError(t, runFile(path, &out))
+	require.NoError(t, runFile(path, &out, optimize.O0))
 	require.Equal(t, "42\n", out.String())
 }
 
@@ -26,7 +28,7 @@ func TestRunFile_CompileError(t *testing.T) {
 	require.NoError(t, os.WriteFile(path, []byte("x = 5\n"), 0o644))
 
 	var out bytes.Buffer
-	err := runFile(path, &out)
+	err := runFile(path, &out, optimize.O0)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "TypeError")
 }
@@ -35,7 +37,7 @@ func TestRepl(t *testing.T) {
 	t.Run("persists state and echoes bare expressions", func(t *testing.T) {
 		in := strings.NewReader("x: int = 6\nprint(str(x * 7))\nx * 7\n")
 		var out bytes.Buffer
-		require.NoError(t, repl(in, &out))
+		require.NoError(t, repl(in, &out, optimize.O0))
 
 		// once from the explicit print, once from the auto-echo.
 		require.Equal(t, 2, strings.Count(out.String(), "42"))
@@ -44,20 +46,20 @@ func TestRepl(t *testing.T) {
 	t.Run("reports errors without crashing", func(t *testing.T) {
 		in := strings.NewReader("y\n")
 		var out bytes.Buffer
-		require.NoError(t, repl(in, &out))
+		require.NoError(t, repl(in, &out, optimize.O0))
 		require.Contains(t, out.String(), "NameError")
 	})
 
 	t.Run("runtime divide by zero maps to ZeroDivisionError", func(t *testing.T) {
 		in := strings.NewReader("1 // 0\n")
 		var out bytes.Buffer
-		require.NoError(t, repl(in, &out))
+		require.NoError(t, repl(in, &out, optimize.O0))
 		require.Contains(t, out.String(), "ZeroDivisionError")
 	})
 }
 
 func TestRunFile_NotFound(t *testing.T) {
-	require.Error(t, runFile(filepath.Join(t.TempDir(), "missing.py"), &bytes.Buffer{}))
+	require.Error(t, runFile(filepath.Join(t.TempDir(), "missing.py"), &bytes.Buffer{}, optimize.O0))
 }
 
 func TestRootCmd(t *testing.T) {

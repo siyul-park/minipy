@@ -14,17 +14,18 @@ import (
 	"github.com/siyul-park/minipy/parser"
 
 	"github.com/siyul-park/minivm/interp"
+	"github.com/siyul-park/minivm/optimize"
 )
 
 // runFile compiles and runs a minipy source file, writing program output to out.
-func runFile(path string, out io.Writer) error {
+func runFile(path string, out io.Writer, level optimize.Level) error {
 	f, err := os.Open(path)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
 
-	prog, err := compiler.Compile(f, compiler.WithOutput(out))
+	prog, err := compiler.Compile(f, compiler.WithOutput(out), compiler.WithOptimizationLevel(level))
 	if err != nil {
 		return err
 	}
@@ -37,7 +38,7 @@ func runFile(path string, out io.Writer) error {
 // session state, and runs bare expressions and print(...) lines transiently —
 // re-running the accumulated state each time so prior side effects do not
 // repeat. A bare printable expression is auto-echoed via str()+print.
-func repl(in io.Reader, out io.Writer) error {
+func repl(in io.Reader, out io.Writer, level optimize.Level) error {
 	fmt.Fprintln(out, "minipy REPL — type Ctrl-D to exit")
 	scanner := bufio.NewScanner(in)
 	var state strings.Builder
@@ -51,13 +52,13 @@ func repl(in io.Reader, out io.Writer) error {
 		if strings.TrimSpace(line) == "" {
 			continue
 		}
-		evalLine(&state, line, out)
+		evalLine(&state, line, out, level)
 	}
 }
 
 // evalLine classifies one REPL entry and either extends the session state or
 // runs a transient program.
-func evalLine(state *strings.Builder, line string, out io.Writer) {
+func evalLine(state *strings.Builder, line string, out io.Writer, level optimize.Level) {
 	mod, err := parser.Parse(strings.NewReader(line))
 	if err != nil {
 		fmt.Fprintln(out, pyError(err))
@@ -76,13 +77,13 @@ func evalLine(state *strings.Builder, line string, out io.Writer) {
 		}
 		state.WriteString(line + "\n")
 	case *ast.ExprStmt:
-		runTransient(state.String(), line, stmt.X, out)
+		runTransient(state.String(), line, stmt.X, out, level)
 	}
 }
 
 // runTransient compiles and runs `state + line`, auto-wrapping a bare expression
 // in str()+print so its value is echoed.
-func runTransient(state, line string, x ast.Expr, out io.Writer) {
+func runTransient(state, line string, x ast.Expr, out io.Writer, level optimize.Level) {
 	src := state
 	if isPrintCall(x) {
 		src += line + "\n"
@@ -90,7 +91,7 @@ func runTransient(state, line string, x ast.Expr, out io.Writer) {
 		src += "print(str(" + strings.TrimSpace(line) + "))\n"
 	}
 
-	prog, err := compiler.Compile(strings.NewReader(src), compiler.WithOutput(out))
+	prog, err := compiler.Compile(strings.NewReader(src), compiler.WithOutput(out), compiler.WithOptimizationLevel(level))
 	if err != nil {
 		fmt.Fprintln(out, pyError(err))
 		return

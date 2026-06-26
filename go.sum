@@ -6,10 +6,8 @@ github.com/inconshreveable/mousetrap v1.1.0/go.mod h1:vpF70FUmC8bwa3OWnCshd2FqLf
 github.com/pmezard/go-difflib v1.0.0 h1:4DBwDE0NGyQoBHbLQYPwSUPoCMWR5BEzIk/f1lZbAQM=
 github.com/pmezard/go-difflib v1.0.0/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZNVY4sRDYZ/4=
 github.com/russross/blackfriday/v2 v2.1.0/go.mod h1:+Rmxgy9KzJVeS9/2gXHxylqXiyQDYRxCVz55jmeOWTM=
-github.com/siyul-park/minivm v0.0.0-20260623125046-d16069352af4 h1:9nz+9ojHEZxWHOJEo3i8GlKUdBUklTv2wFgXLqTgyx4=
-github.com/siyul-park/minivm v0.0.0-20260623125046-d16069352af4/go.mod h1:40B694d8gujEPfYjCFpCCcTh0OsEWt3nUBeenxAC/c0=
-github.com/siyul-park/minivm v0.0.0-20260624095034-9c2010d9a22e h1:IqvvfFznr0sCFsHY5m/gfKc7pWQfMZgZJLy5+D911Dk=
-github.com/siyul-park/minivm v0.0.0-20260624095034-9c2010d9a22e/go.mod h1:40B694d8gujEPfYjCFpCCcTh0OsEWt3nUBeenxAC/c0=
+github.com/siyul-park/minivm v0.0.0-20260626001426-6ecd07ec70f7 h1:jy4+IKLDhN8vt2FS5lvZvBhv0x90dEXV35Lj+uerddU=
+github.com/siyul-park/minivm v0.0.0-20260626001426-6ecd07ec70f7/go.mod h1:40B694d8gujEPfYjCFpCCcTh0OsEWt3nUBeenxAC/c0=
 github.com/spf13/cobra v1.10.2 h1:DMTTonx5m65Ic0GOoRY2c16WCbHxOOw6xxezuLaBpcU=
 github.com/spf13/cobra v1.10.2/go.mod h1:7C1pvHqHw5A4vrJfjNwvOdzYu0Gml16OCs2GRiTUUS4=
 github.com/spf13/pflag v1.0.9 h1:9exaQaMOCwffKiiiYk6/BndUBv+iRViNW+4lEMi0PvY=

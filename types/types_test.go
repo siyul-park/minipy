@@ -28,7 +28,7 @@ func TestType_IsNumeric(t *testing.T) {
 func TestType_VM(t *testing.T) {
 	require.Equal(t, vmtypes.TypeI64, Int.VM())
 	require.Equal(t, vmtypes.TypeF64, Float.VM())
-	require.Equal(t, vmtypes.TypeI32, Bool.VM())
+	require.Equal(t, vmtypes.TypeI1, Bool.VM())
 	require.Equal(t, vmtypes.TypeString, Str.VM())
 	require.Equal(t, vmtypes.TypeRef, None.VM())
 	require.Equal(t, vmtypes.TypeRef, IteratorOf(Int).VM())

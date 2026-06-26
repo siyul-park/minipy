@@ -733,11 +733,17 @@ func (c *Compiler) expr(n ast.Expr) {
 	case *ast.FloatLit:
 		c.emit(instr.F64_CONST, math.Float64bits(x.Value))
 	case *ast.BoolLit:
+		// bool lowers to i1. There is no i1 const opcode, so push the value as
+		// i32 and normalize to i1 via `!= 0` so the result carries KindI1 — this
+		// keeps bool literals interchangeable with comparison results (e.g. as
+		// map keys, where the verifier matches key kinds exactly).
 		if x.Value {
 			c.emit(instr.I32_CONST, 1)
 		} else {
 			c.emit(instr.I32_CONST, 0)
 		}
+		c.emit(instr.I32_CONST, 0)
+		c.emit(instr.I32_NE)
 	case *ast.NoneLit:
 		c.emit(instr.REF_NULL)
 	case *ast.StrLit:
