@@ -225,15 +225,32 @@ low-priority inference layer remains last.
 
 ---
 
-## M10 — Whole-program inference, unions & specialization — LOW PRIORITY
+## M10 — Whole-program inference, unions & specialization
 
-An **opt-in** gradual layer on top of the static core. It adds three things the
-core deliberately omits — **union types**, **whole-program type inference** (so
-unannotated code still compiles to concrete types), and **specialization**
-(monomorphizing polymorphic functions like generics). It does **not** change the
-static default, is not a dependency of M0–M9, and is scheduled last; it may be
-deferred indefinitely. minivm's `ref` ("any") type backs only the *residual*
-dynamic slots that inference cannot pin down.
+Status: complete (with one deferral, noted below).
+
+A gradual layer on top of the static core. It adds three things the core
+deliberately omits — **union types**, **whole-program type inference** (so
+unannotated code still compiles), and **specialization** (compiling polymorphic
+functions). minivm's `ref` ("any") type backs only the *residual* dynamic slots
+that inference cannot pin down.
+
+**As shipped (deviations from the original opt-in design, per project decision):**
+
+- **Always on, no flag.** Whole-program inference is the default, not opt-in:
+  unannotated globals are inferred from their first assignment, and unannotated
+  parameters/returns are solved from the body. `MissingAnnotation` now fires only
+  where inference cannot constrain a binding (e.g. a lambda with no Callable
+  context), not merely because an annotation is absent.
+- **Specialization is the union-typed-body fallback, not per-type
+  monomorphization.** An unannotated parameter resolves to `Any` (the lattice
+  top) and the function is compiled **once** with a dynamic `ref` body, reusing
+  the union + `isinstance`/`REF_CAST` machinery. Emitting a separate `*Function`
+  per concrete instantiation (`f$int`, `f$str`, …) — the spec's monomorphization
+  optimization — is **deferred**; the single union-typed body is the documented
+  cap fallback and produces identical results.
+- **Inferred recursion** needs an explicit return annotation (a self-call sees
+  the return type before the body finishes inferring it).
 
 ### Goals
 
@@ -276,15 +293,15 @@ Concrete (specialized) code is exactly as fast as the static core. Only the
 residual union/`Any` slots are boxed, tag-guarded, and may miss the JIT — and the
 minimization pass keeps those to the few places real dynamism survives.
 
-### Open questions
+### Open questions / remaining work
 
-- Specialization blow-up: cap instantiations per function, fall back to a
-  union/`Any` body past the cap.
-- Whole-program vs separate compilation: inference needs all call sites, so either
-  compile modules together or require annotations at module edges as inference
-  anchors.
-- Polymorphic recursion, operator/attribute dispatch on bare unions, and whether
-  inference mode is ever the default or stays strictly opt-in.
+- Per-type monomorphization (one `*Function` per concrete instantiation) as an
+  optimization over the current single union/`Any`-typed body, with an
+  instantiation cap and union-body fallback past it.
+- Inferred polymorphic recursion (a self-call currently sees the return type
+  before the body finishes inferring it; annotate the return to recurse).
+- Reassignment-driven widening of an inferred global to a union, and richer
+  operator/attribute dispatch on bare unions.
 
 ### Samples
 

@@ -5,25 +5,25 @@ How minipy type-checks and resolves names before codegen. Input: the AST from
 carries a resolved type ([`02-types.md`](02-types.md)) and every name carries a
 resolved storage slot.
 
-## Annotation requirements (the "type hints required" rule)
+## Annotation requirements
 
-Static compilation happens **only where boundaries are annotated**:
+Annotations are **optional everywhere** (M10, always on): unannotated boundaries
+are solved by whole-program inference rather than rejected. Annotations, where
+present, seed the solver and stay fixed.
 
 | Site | Annotation | If missing |
 |---|---|---|
-| function parameter | required | `MissingAnnotation` |
-| function return | required (`-> T`) | `MissingAnnotation` |
+| function parameter | optional | inferred (defaults to `Any`) |
+| function return | optional (`-> T`) | inferred from the body's returns |
 | class field | required | `MissingAnnotation` |
-| module-level global | required (`NAME: T = …`) | `MissingAnnotation` |
+| module-level global | optional | inferred from first assignment |
 | local variable | optional (inferred) | inferred from initializer |
 | `lambda` params | optional (inferred from call site, M4) | inferred |
 
-A module containing a function with any unannotated parameter or missing return
-type **does not compile**. There is no implicit `Any` fallback in the static core.
-The opt-in **M10 inference mode** instead relaxes this rule by solving for
-unannotated boundary types across the **whole program** (from call sites and
-bodies) and minimizing each to its narrowest type, rather than defaulting them to
-`Any` - see [`../roadmap.md`](../roadmap.md) M10.
+`MissingAnnotation` now fires only where inference cannot constrain a binding —
+e.g. a `lambda` used without a Callable context, or a class field with neither
+annotation nor default. See [`../roadmap.md`](../roadmap.md) M10 for the inference
+model and its current deferrals.
 
 ## Local type inference
 
@@ -70,20 +70,21 @@ limited. See [`03-grammar.md`](03-grammar.md).)
 
 ### Whole-program inference & specialization (M10)
 
-The opt-in M10 layer adds two checker capabilities, both **off** in the static
-core (full design in [`../roadmap.md`](../roadmap.md) M10):
+The M10 layer is **always on** (full design in [`../roadmap.md`](../roadmap.md)
+M10):
 
 1. **Whole-program inference.** With `MissingAnnotation` relaxed, the checker
-   collects type constraints from every call site and body across the program and
-   solves for the **narrowest** type of each unannotated binding in the lattice
-   `concrete < closed-union < Any`. Annotated boundaries are fixed seeds. A binding
-   used at incompatible types gets the smallest covering **union**; only a value
-   with no bounded union (e.g. fed by external/dynamic input) falls back to `Any`.
-2. **Narrowing & specialization.** `isinstance(x, T)` and `x is None` narrow a
-   union to a member inside the guarded branch, generalizing the `Optional` rule;
-   a use proven concrete needs no runtime check. A function inferred polymorphic is
-   **monomorphized** — one specialization per concrete instantiation, like a
-   generic, and each call site bound to its specialization. The lowering is in
+   infers each unannotated binding in the lattice `concrete < closed-union < Any`.
+   Annotated boundaries are fixed seeds. An unannotated global takes its
+   first-assignment type; an unannotated function return is the **join** of the
+   body's return expressions; an unannotated parameter defaults to `Any` (the
+   top), recovered to a concrete member by narrowing where needed.
+2. **Narrowing & specialization.** `isinstance(x, T)` and `x is`/`is not None`
+   narrow a union to a member inside the guarded branch (and across the rest of a
+   block after a returning `if`), generalizing the `Optional` rule; a use proven
+   concrete needs no runtime check. An inferred-polymorphic function compiles as a
+   single union/`Any`-typed body (per-type monomorphization is a deferred
+   optimization). The lowering is in
    [`05-codegen.md`](05-codegen.md#unions-any--specialization-m10).
 
 ## Expression typing (rules summary)
@@ -155,8 +156,9 @@ Rules:
 
 | Error | When |
 |---|---|
-| `MissingAnnotation` | unannotated param/return/field/global |
-| `TypeMismatch` | assignment/operator/argument type conflict |
+| `MissingAnnotation` | binding inference cannot constrain (e.g. lambda without Callable context) |
+| `TypeMismatch` | assignment/operator/argument type conflict (incl. operating on an un-narrowed union) |
+| `InvalidUnionMember` | a union annotation member is not a valid type |
 | `UndefinedName` | name not resolvable in any scope |
 | `UseBeforeDefinition` | local read before assignment on some path |
 | `PossiblyNone` | use of `Optional[T]` without a `None` guard |

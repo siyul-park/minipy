@@ -24,11 +24,11 @@ of CPython 3.13 syntax.
 ## Non-goals
 
 - **No arbitrary-precision `int`.** `int` is **int64** (see below).
-- **No full dynamic typing** in the core. A low-priority opt-in layer (M10) adds
-  union types, whole-program type inference for unannotated code, and
-  generic-style specialization — with minivm's `ref` type backing only the
-  residual dynamic (`Any`) slots inference cannot pin down. It is explicitly not
-  the default and not a milestone the core depends on.
+- **Gradual typing via M10.** The M10 layer (always on) adds union types,
+  whole-program type inference for unannotated code, and `isinstance`/`None`
+  narrowing — with minivm's `ref` type backing only the residual dynamic (`Any`)
+  slots inference cannot pin down. Fully-annotated code still compiles to the same
+  concrete, unboxed fast path; only inferred-dynamic slots are boxed.
 - No C extension API, `eval`/`exec`/`compile`, metaclasses, monkey-patching,
   `__getattr__` interception, `__slots__` games, descriptors beyond methods,
   multiple inheritance/MRO, or `complex` numbers.

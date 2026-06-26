@@ -307,8 +307,10 @@ stayed a union or `Any`.
   slot is a minivm `ref` holding a value boxed with its runtime tag (self-describing
   `Boxed` values; see
   [value-representation](https://github.com/siyul-park/minivm/blob/main/docs/value-representation.md#dynamic-any-values)).
-- **Widen `T → A|B` / `T → Any`.** Box the value (if not already a `ref`); the tag
-  is carried for free. No check emitted.
+- **Widen `T → A|B` / `T → Any`.** No opcode is emitted: a `ref` slot stores any
+  self-describing `Boxed` verbatim, so a concrete value flows into a union/`Any`
+  slot (or a `ref` parameter) directly. (`REF_NEW` is reserved for mutable
+  closure cells and is *not* used here.)
 - **Narrow `A|B → T` / `Any → T`.** Emit `REF_CAST <T>` — a checked cast that traps
   `TypeError` at runtime — **unless** flow analysis already proved the type, in
   which case nothing is emitted. A slot inference resolved to concrete never reaches
@@ -319,12 +321,15 @@ stayed a union or `Any`.
   `REF_TEST` chain (or jump table) selecting the per-member lowering, each arm
   operating on the unboxed member. `Optional[T]` is the two-arm case
   (`REF_IS_NULL` → null arm / `T` arm).
-- **Specialization (monomorphization).** A polymorphic function is emitted once per
-  concrete instantiation as a separate `*Function` constant (`f$int`, `f$str`, …).
-  Each monomorphic call site links directly to its specialization with a normal
-  `CALL`/`RETURN_CALL` — no dispatch. Only a call whose argument is itself a union
-  goes through a tag switch that picks the matching specialization, or invokes a
-  single union-typed body when instantiations were capped.
+- **Specialization.** An unannotated parameter resolves to `Any` and the function
+  is compiled **once** with a dynamic `ref` body; concrete arguments widen into
+  the `ref` parameter for free at the call site, and the body recovers concrete
+  members with `isinstance`/`REF_CAST`. This is the union-typed-body form.
+
+  > Per-type monomorphization — emitting a separate `*Function` constant
+  > (`f$int`, `f$str`, …) so each monomorphic call site links directly with no
+  > boxing — is a **deferred** optimization. It would reduce `ref` traffic on hot
+  > paths but produces the same results as the single union-typed body above.
 
 ```text
 # describe(x: int | str): isinstance dispatch
