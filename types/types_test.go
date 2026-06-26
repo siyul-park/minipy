@@ -13,8 +13,8 @@ func TestType_String(t *testing.T) {
 	require.Equal(t, "bool", Bool.String())
 	require.Equal(t, "str", Str.String())
 	require.Equal(t, "None", None.String())
-	require.Equal(t, "Point", ClassOf("Point", []Field{{Name: "x", Type: Int}}).String())
-	require.Equal(t, "Iterator[int]", IteratorOf(Int).String())
+	require.Equal(t, "Point", NewClass("Point", []Field{{Name: "x", Type: Int}}).String())
+	require.Equal(t, "Iterator[int]", NewIterator(Int).String())
 	require.Equal(t, "<invalid>", Invalid.String())
 }
 
@@ -31,19 +31,19 @@ func TestType_VM(t *testing.T) {
 	require.Equal(t, vmtypes.TypeI1, Bool.VM())
 	require.Equal(t, vmtypes.TypeString, Str.VM())
 	require.Equal(t, vmtypes.TypeRef, None.VM())
-	require.Equal(t, vmtypes.TypeRef, IteratorOf(Int).VM())
-	require.IsType(t, &vmtypes.StructType{}, ClassOf("Point", []Field{{Name: "x", Type: Int}}).VM())
+	require.Equal(t, vmtypes.TypeRef, NewIterator(Int).VM())
+	require.IsType(t, &vmtypes.StructType{}, NewClass("Point", []Field{{Name: "x", Type: Int}}).VM())
 	require.Nil(t, Invalid.VM())
 }
 
 func TestAssignable(t *testing.T) {
 	require.True(t, AssignableTo(Int, Int))
-	require.True(t, AssignableTo(IteratorOf(Int), IteratorOf(Int)))
-	require.True(t, AssignableTo(ClassOf("Point", nil), ClassOf("Point", []Field{{Name: "x", Type: Int}})))
+	require.True(t, AssignableTo(NewIterator(Int), NewIterator(Int)))
+	require.True(t, AssignableTo(NewClass("Point", nil), NewClass("Point", []Field{{Name: "x", Type: Int}})))
 	require.False(t, AssignableTo(Bool, Int))  // bool is not int
 	require.False(t, AssignableTo(Int, Float)) // no implicit widening
-	require.False(t, AssignableTo(IteratorOf(Int), IteratorOf(Str)))
-	require.False(t, AssignableTo(ClassOf("Point", nil), ClassOf("Other", nil)))
+	require.False(t, AssignableTo(NewIterator(Int), NewIterator(Str)))
+	require.False(t, AssignableTo(NewClass("Point", nil), NewClass("Other", nil)))
 	require.False(t, AssignableTo(Invalid, Invalid))
 }
 

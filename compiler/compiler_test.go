@@ -288,6 +288,30 @@ print(t[1])
 		require.Contains(t, out, "7\nx\n")
 	})
 
+	t.Run("container membership indexing and mutable fields", func(t *testing.T) {
+		src := `@dataclass
+class Box:
+    n: int
+box: Box = Box(1)
+box.n += 4
+pair: tuple[int, str] = (box.n, "z")
+a: int
+b: str
+a, b = pair
+xs: list[int] = [a, 9]
+d: dict[str, int] = {"x": a}
+print(str(9 in xs))
+print(str("x" in d))
+print(str("e" in "hello"))
+print("hello"[1])
+print(str(len(d.values())))
+print(str(bool(xs)))
+print(str(a))
+print(b)
+`
+		require.Equal(t, "True\nTrue\nTrue\ne\n1\nTrue\n5\nz\n", run(t, src))
+	})
+
 	t.Run("str methods enumerate zip and f-string", func(t *testing.T) {
 		src := `print("A,B".lower())
 print("a,b".split(",")[1])
@@ -578,99 +602,7 @@ print(str(p.total()))
 `
 		require.Equal(t, "3\n15\n", run(t, src))
 	})
-}
 
-func hasOps(t *testing.T, constants []vmtypes.Value, ops ...instr.Opcode) {
-	t.Helper()
-	seen := map[instr.Opcode]bool{}
-	for _, constant := range constants {
-		fn, ok := constant.(*vmtypes.Function)
-		if !ok {
-			continue
-		}
-		for _, ins := range instr.Unmarshal(fn.Code) {
-			seen[ins.Opcode()] = true
-		}
-	}
-	for _, op := range ops {
-		require.Truef(t, seen[op], "expected function constant to contain %s", op)
-	}
-}
-
-func TestCompileErrors(t *testing.T) {
-	cases := map[string]token.Code{
-		"x = 5\n":                             token.MissingAnnotation,
-		"x: int = 1.5\n":                      token.TypeMismatch,
-		"print(str(1 + 1.5))\n":               token.TypeMismatch,
-		"x: int = 99999999999999999999999\n":  token.IntOverflow,
-		"print(str(y))\n":                     token.UndefinedName,
-		"print()\n":                           token.ArityMismatch,
-		"print(1, 2)\n":                       token.ArityMismatch,
-		"x: int = True\n":                     token.TypeMismatch,
-		"print(str(True + 1))\n":              token.TypeMismatch,
-		"x: int\nprint(str(x))\n":             token.UseBeforeDefinition,
-		"x: int = 1\nx: str = \"a\"\n":        token.TypeMismatch,
-		"print(str(not 1))\n":                 token.TypeMismatch,
-		"print(str(1.5 & 2))\n":               token.TypeMismatch,
-		"x: int = 1\nprint(str(x == None))\n": token.UnsupportedFeature,
-		"print(str(True and 1))\n":            token.TypeMismatch,
-		"print(str(1 < \"a\"))\n":             token.NotComparable,
-		"z += 1\n":                            token.UndefinedName,
-		// control flow
-		"x: int = 1\nif x:\n    pass\n":        token.TypeMismatch,
-		"for i in 5:\n    pass\n":              token.NotIterable,
-		"break\n":                              token.SyntaxError,
-		"continue\n":                           token.SyntaxError,
-		"for i in range(1.5):\n    pass\n":     token.TypeMismatch,
-		"for i in range():\n    pass\n":        token.ArityMismatch,
-		"for i in range(0, 9, 0):\n    pass\n": token.SyntaxError,
-		"x: int = 1 if True else \"a\"\n":      token.TypeMismatch,
-		// functions
-		"return 1\n": token.SyntaxError,
-		"def f(x: int) -> int:\n    return \"x\"\n":              token.TypeMismatch,
-		"def f(x: int) -> int:\n    return x\nprint(f())\n":      token.ArityMismatch,
-		"def f(x: int) -> int:\n    return x\nprint(f(\"x\"))\n": token.TypeMismatch,
-		"def f(x: int) -> int:\n    pass\n":                      token.TypeMismatch,
-		// containers
-		"xs: list[int] = []\nprint(xs[\"0\"])\n":                 token.TypeMismatch,
-		"xs: list[int] = [1]\nxs[0] += 1\n":                      token.UnsupportedFeature,
-		"xs = []\n":                                              token.UnsupportedType,
-		"xs: list[int] = [1, \"x\"]\n":                           token.TypeMismatch,
-		"t: tuple[int, int] = (1, 2)\ni: int = 0\nprint(t[i])\n": token.UnsupportedFeature,
-		"d: dict[list[int], int] = {}\n":                         token.UnsupportedType,
-		// Closures and comprehensions
-		"f = lambda x: x\n":                                   token.MissingAnnotation,
-		"def f() -> None:\n    nonlocal x\n":                  token.NoBindingForNonlocal,
-		"xs: list[int] = [i for i in range(3) if i]\n":        token.TypeMismatch,
-		"s: set[list[int]] = {[1] for i in range(1)}\n":       token.UnsupportedType,
-		"f: Callable[[int], int] = lambda x: x\nprint(f())\n": token.ArityMismatch,
-		// generators and iterators
-		"yield 1\n":                                                token.SyntaxError,
-		"def g() -> int:\n    yield 1\n":                           token.TypeMismatch,
-		"def g() -> Iterator[int]:\n    yield \"x\"\n":             token.TypeMismatch,
-		"def g() -> Iterator[int]:\n    return 1\n":                token.TypeMismatch,
-		"def g() -> Iterator[int]:\n    yield 1\nprint(next(1))\n": token.TypeMismatch,
-		// classes
-		"@dataclass\nclass Point:\n    x: int\nprint(Point(\"x\"))\n":                          token.TypeMismatch,
-		"@dataclass\nclass Point:\n    x: int\np: Point = Point(1)\np.x = \"x\"\n":             token.TypeMismatch,
-		"@dataclass\nclass Point:\n    x: int\np: Point = Point(1)\nprint(p.y)\n":              token.UndefinedName,
-		"@dataclass\nclass Point:\n    x: int\np: Point = Point(1)\nprint(p.missing())\n":      token.UnsupportedFeature,
-		"class Point:\n    x: int\n    def __init__(self, x: int) -> int:\n        return x\n": token.TypeMismatch,
-		// M9: del, assert, match
-		"n: int = 1\ndel n\nprint(str(n))\n": token.UseBeforeDefinition,
-		"assert 1\n":                         token.TypeMismatch,
-		"x: int = 1\nmatch x:\n    case 1 if 2:\n        pass\n":                               token.TypeMismatch,
-		"v: tuple[int, str] = (1, \"a\")\nmatch v:\n    case (x, _) | (_, x):\n        pass\n": token.PatternError,
-		"s: str = \"a\"\nmatch s:\n    case 1:\n        pass\n":                                token.PatternError,
-	}
-	for src, code := range cases {
-		_, err := Compile(strings.NewReader(src), WithOutput(&bytes.Buffer{}))
-		require.Errorf(t, err, "src=%q", src)
-		hasCode(t, err, code)
-	}
-}
-
-func TestCompileM9(t *testing.T) {
 	t.Run("del dict key and list item", func(t *testing.T) {
 		require.Equal(t, "1\n", run(t, "d: dict[str, int] = {\"a\": 1, \"b\": 2}\ndel d[\"a\"]\nprint(str(len(d)))\n"))
 		require.Equal(t, "2\n3\n", run(t, "xs: list[int] = [1, 2, 3]\ndel xs[1]\nprint(str(len(xs)))\nprint(str(xs[1]))\n"))
@@ -755,18 +687,281 @@ match p:
 `
 		require.Equal(t, "3\n", run(t, src))
 	})
+
+	t.Run("roadmap safe div catches vm trap", func(t *testing.T) {
+		src := `def safe_div(a: int, b: int) -> int:
+    try:
+        return a // b
+    except ZeroDivisionError:
+        return 0
+print(str(safe_div(1, 0)))
+print(str(safe_div(6, 2)))
+`
+		require.Equal(t, "0\n3\n", run(t, src))
+	})
+
+	t.Run("guest raise matches type and superclass", func(t *testing.T) {
+		src := `def f(n: int) -> str:
+    try:
+        if n == 0:
+            raise ValueError("bad")
+        raise KeyError("key")
+    except ValueError as e:
+        return "value"
+    except Exception:
+        return "exception"
+print(f(0))
+print(f(1))
+`
+		require.Equal(t, "value\nexception\n", run(t, src))
+	})
+
+	t.Run("custom exception subclass catches as base", func(t *testing.T) {
+		src := `class MyError(Exception):
+    pass
+try:
+    raise MyError("mine")
+except Exception:
+    print("caught")
+`
+		require.Equal(t, "caught\n", run(t, src))
+	})
+
+	t.Run("finally runs on normal exception and return", func(t *testing.T) {
+		src := `def normal() -> None:
+    try:
+        print("body")
+    finally:
+        print("finally-normal")
+def caught() -> None:
+    try:
+        raise ValueError("x")
+    except ValueError:
+        print("caught")
+    finally:
+        print("finally-exception")
+def ret() -> int:
+    try:
+        return 7
+    finally:
+        print("finally-return")
+normal()
+caught()
+print(str(ret()))
+`
+		require.Equal(t, "body\nfinally-normal\ncaught\nfinally-exception\nfinally-return\n7\n", run(t, src))
+	})
+
+	t.Run("with enter exit normal and exception", func(t *testing.T) {
+		src := `class Ctx:
+    def __enter__(self) -> int:
+        print("enter")
+        return 9
+    def __exit__(self) -> None:
+        print("exit")
+with Ctx() as value:
+    print(str(value))
+try:
+    with Ctx():
+        raise ValueError("boom")
+except ValueError:
+    print("caught")
+`
+		require.Equal(t, "enter\n9\nexit\nenter\nexit\ncaught\n", run(t, src))
+	})
+
+	t.Run("unmatched exception reraises", func(t *testing.T) {
+		prog, err := Compile(strings.NewReader(`try:
+    raise ValueError("x")
+except KeyError:
+    print("wrong")
+`), WithOutput(io.Discard))
+		require.NoError(t, err)
+		vm := interp.New(prog)
+		defer vm.Close()
+		require.Error(t, vm.Run(context.Background()))
+	})
+
+	t.Run("identity comparisons", func(t *testing.T) {
+		src := `x: None = None
+y: None = None
+print(str(x is None))
+print(str(x is not y))
+`
+		require.Equal(t, "True\nFalse\n", run(t, src))
+	})
+
+	t.Run("try else and bare reraises", func(t *testing.T) {
+		src := `try:
+    print("body")
+except ValueError:
+    print("except")
+else:
+    print("else")
+finally:
+    print("finally")
+try:
+    try:
+        raise ValueError("x")
+    except ValueError as e:
+        raise
+except ValueError:
+    print("reraised")
+`
+		require.Equal(t, "body\nelse\nfinally\nreraised\n", run(t, src))
+	})
+
+	t.Run("finally assignment is definitely initialized", func(t *testing.T) {
+		src := `x: int
+try:
+    pass
+finally:
+    x = 5
+print(str(x))
+`
+		require.Equal(t, "5\n", run(t, src))
+	})
+
+	t.Run("finally runs before loop break and continue", func(t *testing.T) {
+		src := `i: int = 0
+while i < 3:
+    i = i + 1
+    try:
+        if i == 1:
+            continue
+        if i == 2:
+            break
+    finally:
+        print("finally")
+print(str(i))
+`
+		require.Equal(t, "finally\nfinally\n2\n", run(t, src))
+	})
+
+	t.Run("with multiple context managers nests exits", func(t *testing.T) {
+		src := `class Ctx:
+    label: str
+    def __init__(self, label: str) -> None:
+        self.label = label
+    def __enter__(self) -> str:
+        print("enter " + self.label)
+        return self.label
+    def __exit__(self) -> None:
+        print("exit " + self.label)
+with Ctx("a") as a, Ctx("b") as b:
+    print(a + b)
+`
+		require.Equal(t, "enter a\nenter b\nab\nexit b\nexit a\n", run(t, src))
+	})
+
+	t.Run("compiler reused across multiple Compile calls with default optimization level", func(t *testing.T) {
+		c := New(strings.NewReader("print(\"x\")\n"))
+		require.NotNil(t, c)
+		first, err := c.Compile()
+		require.NoError(t, err)
+		require.NotNil(t, first)
+		second, err := c.Compile()
+		require.NoError(t, err)
+		require.NotNil(t, second)
+		prog, err := Compile(strings.NewReader("print(\"x\")\n"), WithOutput(io.Discard), WithOptimizationLevel(optimize.O2))
+		require.NoError(t, err)
+		require.NotNil(t, prog)
+	})
 }
 
-func TestCompileOptionDefaults(t *testing.T) {
-	c := New(strings.NewReader("print(\"x\")\n"))
-	require.NotNil(t, c)
-	first, err := c.Compile()
-	require.NoError(t, err)
-	require.NotNil(t, first)
-	second, err := c.Compile()
-	require.NoError(t, err)
-	require.NotNil(t, second)
-	prog, err := Compile(strings.NewReader("print(\"x\")\n"), WithOutput(io.Discard), WithOptimizationLevel(optimize.O2))
-	require.NoError(t, err)
-	require.NotNil(t, prog)
+func hasOps(t *testing.T, constants []vmtypes.Value, ops ...instr.Opcode) {
+	t.Helper()
+	seen := map[instr.Opcode]bool{}
+	for _, constant := range constants {
+		fn, ok := constant.(*vmtypes.Function)
+		if !ok {
+			continue
+		}
+		for _, ins := range instr.Unmarshal(fn.Code) {
+			seen[ins.Opcode()] = true
+		}
+	}
+	for _, op := range ops {
+		require.Truef(t, seen[op], "expected function constant to contain %s", op)
+	}
+}
+
+func TestCompileErrors(t *testing.T) {
+	cases := map[string]token.Code{
+		"x = 5\n":                             token.MissingAnnotation,
+		"x: int = 1.5\n":                      token.TypeMismatch,
+		"print(str(1 + 1.5))\n":               token.TypeMismatch,
+		"x: int = 99999999999999999999999\n":  token.IntOverflow,
+		"print(str(y))\n":                     token.UndefinedName,
+		"print()\n":                           token.ArityMismatch,
+		"print(1, 2)\n":                       token.ArityMismatch,
+		"x: int = True\n":                     token.TypeMismatch,
+		"print(str(True + 1))\n":              token.TypeMismatch,
+		"x: int\nprint(str(x))\n":             token.UseBeforeDefinition,
+		"x: int = 1\nx: str = \"a\"\n":        token.TypeMismatch,
+		"print(str(not 1))\n":                 token.TypeMismatch,
+		"print(str(1.5 & 2))\n":               token.TypeMismatch,
+		"x: int = 1\nprint(str(x == None))\n": token.UnsupportedFeature,
+		"print(str(True and 1))\n":            token.TypeMismatch,
+		"print(str(1 < \"a\"))\n":             token.NotComparable,
+		"z += 1\n":                            token.UndefinedName,
+		// control flow
+		"x: int = 1\nif x:\n    pass\n":        token.TypeMismatch,
+		"for i in 5:\n    pass\n":              token.NotIterable,
+		"break\n":                              token.SyntaxError,
+		"continue\n":                           token.SyntaxError,
+		"for i in range(1.5):\n    pass\n":     token.TypeMismatch,
+		"for i in range():\n    pass\n":        token.ArityMismatch,
+		"for i in range(0, 9, 0):\n    pass\n": token.SyntaxError,
+		"x: int = 1 if True else \"a\"\n":      token.TypeMismatch,
+		// functions
+		"return 1\n": token.SyntaxError,
+		"def f(x: int) -> int:\n    return \"x\"\n":              token.TypeMismatch,
+		"def f(x: int) -> int:\n    return x\nprint(f())\n":      token.ArityMismatch,
+		"def f(x: int) -> int:\n    return x\nprint(f(\"x\"))\n": token.TypeMismatch,
+		"def f(x: int) -> int:\n    pass\n":                      token.TypeMismatch,
+		// containers
+		"xs: list[int] = []\nprint(xs[\"0\"])\n":                 token.TypeMismatch,
+		"xs: list[int] = [1]\nxs[0] += 1\n":                      token.UnsupportedFeature,
+		"xs = []\n":                                              token.UnsupportedType,
+		"xs: list[int] = [1, \"x\"]\n":                           token.TypeMismatch,
+		"t: tuple[int, int] = (1, 2)\ni: int = 0\nprint(t[i])\n": token.UnsupportedFeature,
+		"d: dict[list[int], int] = {}\n":                         token.UnsupportedType,
+		// Closures and comprehensions
+		"f = lambda x: x\n":                                   token.MissingAnnotation,
+		"def f() -> None:\n    nonlocal x\n":                  token.NoBindingForNonlocal,
+		"xs: list[int] = [i for i in range(3) if i]\n":        token.TypeMismatch,
+		"s: set[list[int]] = {[1] for i in range(1)}\n":       token.UnsupportedType,
+		"f: Callable[[int], int] = lambda x: x\nprint(f())\n": token.ArityMismatch,
+		// generators and iterators
+		"yield 1\n":                                                token.SyntaxError,
+		"def g() -> int:\n    yield 1\n":                           token.TypeMismatch,
+		"def g() -> Iterator[int]:\n    yield \"x\"\n":             token.TypeMismatch,
+		"def g() -> Iterator[int]:\n    return 1\n":                token.TypeMismatch,
+		"def g() -> Iterator[int]:\n    yield 1\nprint(next(1))\n": token.TypeMismatch,
+		// classes
+		"@dataclass\nclass Point:\n    x: int\nprint(Point(\"x\"))\n":                          token.TypeMismatch,
+		"@dataclass\nclass Point:\n    x: int\np: Point = Point(1)\np.x = \"x\"\n":             token.TypeMismatch,
+		"@dataclass\nclass Point:\n    x: int\np: Point = Point(1)\nprint(p.y)\n":              token.UndefinedName,
+		"@dataclass\nclass Point:\n    x: int\np: Point = Point(1)\nprint(p.missing())\n":      token.UnsupportedFeature,
+		"class Point:\n    x: int\n    def __init__(self, x: int) -> int:\n        return x\n": token.TypeMismatch,
+		// M9: del, assert, match
+		"n: int = 1\ndel n\nprint(str(n))\n": token.UseBeforeDefinition,
+		"assert 1\n":                         token.TypeMismatch,
+		"x: int = 1\nmatch x:\n    case 1 if 2:\n        pass\n":                               token.TypeMismatch,
+		"v: tuple[int, str] = (1, \"a\")\nmatch v:\n    case (x, _) | (_, x):\n        pass\n": token.PatternError,
+		"s: str = \"a\"\nmatch s:\n    case 1:\n        pass\n":                                token.PatternError,
+		// Exceptions and context managers
+		"try:\n    pass\nexcept int:\n    pass\n": token.TypeMismatch,
+		"raise\n":   token.SyntaxError,
+		"raise 1\n": token.TypeMismatch,
+		"class C:\n    pass\nwith C():\n    pass\n":                 token.UnsupportedFeature,
+		"x: int = 1\nprint(str(x is 1))\n":                          token.TypeMismatch,
+		"try:\n    x = 1\nexcept ValueError:\n    pass\nprint(x)\n": token.UseBeforeDefinition,
+	}
+	for src, code := range cases {
+		_, err := Compile(strings.NewReader(src), WithOutput(&bytes.Buffer{}))
+		require.Errorf(t, err, "src=%q", src)
+		hasCode(t, err, code)
+	}
 }

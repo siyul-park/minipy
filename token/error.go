@@ -10,6 +10,17 @@ import (
 // compilation phase so diagnostics read uniformly.
 type Code string
 
+// Error is a single diagnostic with its source position and catalogue code.
+type Error struct {
+	Pos  Pos
+	Code Code
+	Msg  string
+}
+
+// ErrorList accumulates diagnostics so a phase can report every error it finds
+// rather than aborting on the first (docs/spec/04-static-semantics.md).
+type ErrorList []*Error
+
 const (
 	LexError             Code = "LexError"
 	SyntaxError          Code = "SyntaxError"
@@ -27,17 +38,6 @@ const (
 	NoBindingForNonlocal Code = "NoBindingForNonlocal"
 	PatternError         Code = "PatternError"
 )
-
-// Error is a single diagnostic with its source position and catalogue code.
-type Error struct {
-	Pos  Pos
-	Code Code
-	Msg  string
-}
-
-// ErrorList accumulates diagnostics so a phase can report every error it finds
-// rather than aborting on the first (docs/spec/04-static-semantics.md).
-type ErrorList []*Error
 
 // Python maps a catalogue code to the CPython exception name a user would see
 // for the same mistake, so minipy diagnostics read consistently with Python.

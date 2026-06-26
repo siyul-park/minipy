@@ -28,9 +28,6 @@ type Base struct {
 	Position token.Pos
 }
 
-// Pos returns the position of the node's first token.
-func (b Base) Pos() token.Pos { return b.Position }
-
 // Module is a whole compilation unit: an ordered list of top-level statements.
 type Module struct {
 	Base
@@ -165,6 +162,43 @@ type Match struct {
 	Base
 	Subject Expr
 	Cases   []*Case
+}
+
+// Try is `try: Body [except ...] [else: Orelse] [finally: Finalbody]`.
+type Try struct {
+	Base
+	Body      []Stmt
+	Handlers  []*ExceptHandler
+	Orelse    []Stmt
+	Finalbody []Stmt
+}
+
+// ExceptHandler is one `except [Type] [as Name]: Body` clause.
+type ExceptHandler struct {
+	Base
+	Type Expr
+	Name string
+	Body []Stmt
+}
+
+// Raise is `raise [Exc]`. Exc is nil for a bare re-raise.
+type Raise struct {
+	Base
+	Exc Expr
+}
+
+// With is `with Items: Body`.
+type With struct {
+	Base
+	Items []*WithItem
+	Body  []Stmt
+}
+
+// WithItem is one context manager item, optionally bound by `as`.
+type WithItem struct {
+	Base
+	Context      Expr
+	OptionalVars Expr
 }
 
 // Case is one `case Pattern [if Guard]: Body` arm of a Match. Guard is nil when
@@ -437,6 +471,9 @@ type FStringExpr struct {
 	Format     []FStringPart
 }
 
+// Pos returns the position of the node's first token.
+func (b Base) Pos() token.Pos { return b.Position }
+
 func (*AnnAssign) stmtNode() {}
 func (*Assign) stmtNode()    {}
 func (*AugAssign) stmtNode() {}
@@ -456,6 +493,9 @@ func (*Pass) stmtNode()      {}
 func (*Delete) stmtNode()    {}
 func (*Assert) stmtNode()    {}
 func (*Match) stmtNode()     {}
+func (*Try) stmtNode()       {}
+func (*Raise) stmtNode()     {}
+func (*With) stmtNode()      {}
 
 func (*WildcardPattern) patternNode() {}
 func (*CapturePattern) patternNode()  {}

@@ -72,14 +72,91 @@ var (
 	None    Type = primitive{name: "None", vm: vmtypes.TypeRef}
 )
 
-func (primitive) sealed() {}
-func (*List) sealed()     {}
-func (*Dict) sealed()     {}
-func (*Set) sealed()      {}
-func (*Tuple) sealed()    {}
-func (*Class) sealed()    {}
-func (*Iterator) sealed() {}
-func (*Callable) sealed() {}
+// NewList returns the list type with the given element type.
+func NewList(elem Type) Type {
+	return &List{Elem: elem}
+}
+
+// NewDict returns the dict type with the given key and value types.
+func NewDict(key, value Type) Type {
+	return &Dict{Key: key, Value: value}
+}
+
+// NewSet returns the set type with the given element type.
+func NewSet(elem Type) Type {
+	return &Set{Elem: elem}
+}
+
+// NewTuple returns the tuple type with the given element types.
+func NewTuple(elems ...Type) Type {
+	cp := append([]Type(nil), elems...)
+	return &Tuple{Elems: cp}
+}
+
+// NewClass returns the class type with the given name and fields.
+func NewClass(name string, fields []Field) *Class {
+	cp := append([]Field(nil), fields...)
+	return &Class{Name: name, Fields: cp}
+}
+
+// NewIterator returns the iterator type with the given element type.
+func NewIterator(elem Type) Type {
+	return &Iterator{Elem: elem}
+}
+
+// NewCallable returns the callable type with the given parameter and return types.
+func NewCallable(params []Type, ret Type) Type {
+	return &Callable{Params: append([]Type(nil), params...), Return: ret}
+}
+
+// Equal reports structural equality of two source types.
+func Equal(a, b Type) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return a.Equal(b)
+}
+
+// AssignableTo reports whether a value of type src may be stored where dst is
+// expected. There is no implicit coercion, so structural equality is enough.
+func AssignableTo(src, dst Type) bool {
+	return src != nil && dst != nil && src != Invalid && dst != Invalid && Equal(src, dst)
+}
+
+// Printable reports whether str()/print() accept t.
+func Printable(t Type) bool {
+	if t == nil || t == Invalid {
+		return false
+	}
+	if Equal(t, Int) || Equal(t, Float) || Equal(t, Bool) || Equal(t, Str) || Equal(t, None) {
+		return true
+	}
+	switch t.(type) {
+	case *List, *Dict, *Set, *Tuple:
+		return true
+	default:
+		return false
+	}
+}
+
+// Resolve maps a scalar annotation name to a source type. Container annotations
+// are parsed structurally by the checker.
+func Resolve(name string) (Type, bool) {
+	switch name {
+	case "int":
+		return Int, true
+	case "float":
+		return Float, true
+	case "bool":
+		return Bool, true
+	case "str":
+		return Str, true
+	case "None":
+		return None, true
+	default:
+		return Invalid, false
+	}
+}
 
 func (t primitive) String() string { return t.name }
 func (t primitive) IsNumeric() bool {
@@ -271,81 +348,12 @@ func (t *Callable) Equal(o Type) bool {
 	return true
 }
 
-func ListOf(elem Type) Type {
-	return &List{Elem: elem}
-}
-
-func DictOf(key, value Type) Type {
-	return &Dict{Key: key, Value: value}
-}
-
-func SetOf(elem Type) Type {
-	return &Set{Elem: elem}
-}
-
-func TupleOf(elems ...Type) Type {
-	cp := append([]Type(nil), elems...)
-	return &Tuple{Elems: cp}
-}
-
-func ClassOf(name string, fields []Field) *Class {
-	cp := append([]Field(nil), fields...)
-	return &Class{Name: name, Fields: cp}
-}
-
-func IteratorOf(elem Type) Type {
-	return &Iterator{Elem: elem}
-}
-
-func CallableOf(params []Type, ret Type) Type {
-	return &Callable{Params: append([]Type(nil), params...), Return: ret}
-}
-
-// Equal reports structural equality of two source types.
-func Equal(a, b Type) bool {
-	if a == nil || b == nil {
-		return a == b
-	}
-	return a.Equal(b)
-}
-
-// AssignableTo reports whether a value of type src may be stored where dst is
-// expected. There is no implicit coercion, so structural equality is enough.
-func AssignableTo(src, dst Type) bool {
-	return src != nil && dst != nil && src != Invalid && dst != Invalid && Equal(src, dst)
-}
-
-// Printable reports whether str()/print() accept t.
-func Printable(t Type) bool {
-	if t == nil || t == Invalid {
-		return false
-	}
-	if Equal(t, Int) || Equal(t, Float) || Equal(t, Bool) || Equal(t, Str) || Equal(t, None) {
-		return true
-	}
-	switch t.(type) {
-	case *List, *Dict, *Set, *Tuple:
-		return true
-	default:
-		return false
-	}
-}
-
-// Resolve maps a scalar annotation name to a source type. Container annotations
-// are parsed structurally by the checker.
-func Resolve(name string) (Type, bool) {
-	switch name {
-	case "int":
-		return Int, true
-	case "float":
-		return Float, true
-	case "bool":
-		return Bool, true
-	case "str":
-		return Str, true
-	case "None":
-		return None, true
-	default:
-		return Invalid, false
-	}
-}
+// sealed restricts Type implementations to this package.
+func (primitive) sealed() {}
+func (*List) sealed()     {}
+func (*Dict) sealed()     {}
+func (*Set) sealed()      {}
+func (*Tuple) sealed()    {}
+func (*Class) sealed()    {}
+func (*Iterator) sealed() {}
+func (*Callable) sealed() {}

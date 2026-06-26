@@ -221,24 +221,32 @@ L_end:
 (Exact handle lifetime follows minivm coroutine semantics; `RESUME` delivers the
 send-value, `CORO_DONE`/`CORO_VALUE` test/extract.)
 
-## Exceptions & with (M7)
+## Exceptions & context managers
 
 minipy uses minivm's built-in exception machinery: per-function handler tables
 declared with `program.Builder.Try(start, end, catch, depth)`, `THROW` for guest
 raises, and `ERROR_NEW` for error payload construction. Runtime traps and
 host-function Go errors are catchable through the same handler path.
 
-- `raise E(...)` constructs an exception value, wraps message payloads with
-  `ERROR_NEW` when needed, then emits `THROW`.
+- Exception instances are structs with `__classid: int` and `message: str` as the
+  leading fields. Built-in exception classes and user subclasses of `Exception`
+  receive class ids from a DFS interval over the inheritance tree, so
+  `except T` is two integer comparisons: `T.low <= classid <= T.high`.
+- `raise E(...)` constructs the exception struct, wraps it with `ERROR_NEW`, then
+  emits `THROW`. Bare `raise` inside an exception handler rethrows the active
+  `types.Error`.
 - `try/except/finally` lowers to minivm handler-table entries around protected
   regions. Catch blocks receive the thrown value on the operand stack at the
-  handler target. `finally` blocks are emitted on every exit edge (normal,
-  exception, return) and rethrow with `THROW` when required.
+  handler target. `ERROR_GET` yields the guest-raised struct payload; if the
+  payload is null, a single host function maps the VM trap to `ZeroDivisionError`,
+  `IndexError`, `TypeError`, or `RuntimeError` and creates the same struct shape.
+  Guest exception matching after that point is pure bytecode.
+- `finally` blocks are emitted on every exit edge (normal, exception, return,
+  break, continue) and rethrow with `THROW` when required.
 - `with x as y:` desugars to `y = x.__enter__(); try: <body> finally: x.__exit__()`.
 
-The compiler may still introduce a thin CFG/IR here, but only to compute protected
-regions, stack depths, and `finally` edges; it must not replace minivm's native
-handler-table and `THROW` path with a parallel sentinel-return unwinder.
+The compiler uses direct edge duplication for `finally` code and keeps minivm's
+native handler-table and `THROW` path as the only unwinding mechanism.
 
 ## Statement completeness & pattern matching (M9)
 
@@ -267,7 +275,7 @@ L_ok:
 
 `assert test, msg` evaluates `msg` only on failure. The false path uses minivm's
 exception path (`ERROR_NEW`; `THROW`) so it benefits from the same interpreter/JIT
-handling as M7 exceptions.
+handling as other exceptions.
 
 ### `match` / `case`
 

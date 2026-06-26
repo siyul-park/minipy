@@ -156,14 +156,16 @@ scalars.
 
 ## M7 — Exceptions & context managers
 
+Status: complete.
+
 - **Grammar:** `try/except/finally`, `raise`, `with … as …`, `is`/`is not`
   (None identity), built-in exception classes.
 - **Types:** exception type hierarchy (subset of classes); `with` target typing.
 - **Lowering:** minivm handler tables via `program.Builder.Try`, `THROW`, and
-  `ERROR_NEW`; `finally` on every exit edge; `with` -> `try/finally` desugar. (A
-  thin CFG/IR may be introduced here to compute protected regions and stack
-  depths, while still using minivm's built-in exception handling; see
-  [`spec/05-codegen.md`](spec/05-codegen.md#exceptions--with-m7).)
+  `ERROR_NEW`; `finally` on every exit edge; `with` -> `try/finally` desugar.
+  VM traps are bridged to exception instances with one host function; guest
+  exception matching stays in bytecode. See
+  [`spec/05-codegen.md`](spec/05-codegen.md#exceptions--context-managers).
 - **Sample:**
   ```python
   def safe_div(a: int, b: int) -> int:

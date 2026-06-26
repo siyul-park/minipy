@@ -52,6 +52,7 @@ const (
 	FOR
 	IN
 	NOTIN
+	ISNOT
 	BREAK
 	CONTINUE
 	PASS
@@ -150,6 +151,7 @@ var names = map[Type]string{
 	FOR:      "for",
 	IN:       "in",
 	NOTIN:    "not in",
+	ISNOT:    "is not",
 	BREAK:    "break",
 	CONTINUE: "continue",
 	PASS:     "pass",

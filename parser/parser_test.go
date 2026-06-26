@@ -305,9 +305,7 @@ class Point(Base):
 		require.IsType(t, &ast.SetComp{}, mod.Body[2].(*ast.AnnAssign).Value)
 		require.IsType(t, &ast.SetLit{}, mod.Body[3].(*ast.AnnAssign).Value)
 	})
-}
 
-func TestParseM9(t *testing.T) {
 	t.Run("del with name, subscript, attribute targets", func(t *testing.T) {
 		mod, err := parse("del a, b[k], c.x\n")
 		require.NoError(t, err)
@@ -373,6 +371,58 @@ func TestParseM9(t *testing.T) {
 		require.NotNil(t, m.Cases[5].Guard)
 
 		require.IsType(t, &ast.WildcardPattern{}, m.Cases[6].Pattern)
+	})
+
+	t.Run("try except else finally with as name", func(t *testing.T) {
+		mod, err := parse(`try:
+    x = 1
+except ValueError as e:
+    x = 2
+except:
+    x = 3
+else:
+    x = 4
+finally:
+    x = 5
+`)
+		require.NoError(t, err)
+		tr := mod.Body[0].(*ast.Try)
+		require.Len(t, tr.Body, 1)
+		require.Len(t, tr.Handlers, 2)
+		require.Equal(t, "ValueError", tr.Handlers[0].Type.(*ast.Name).Name)
+		require.Equal(t, "e", tr.Handlers[0].Name)
+		require.Nil(t, tr.Handlers[1].Type)
+		require.Len(t, tr.Orelse, 1)
+		require.Len(t, tr.Finalbody, 1)
+	})
+
+	t.Run("raise with expression and bare raise", func(t *testing.T) {
+		mod, err := parse("raise ValueError(\"x\")\nraise\n")
+		require.NoError(t, err)
+		require.IsType(t, &ast.CallExpr{}, mod.Body[0].(*ast.Raise).Exc)
+		require.Nil(t, mod.Body[1].(*ast.Raise).Exc)
+	})
+
+	t.Run("with one and multiple items", func(t *testing.T) {
+		mod, err := parse(`with a as x, b:
+    pass
+`)
+		require.NoError(t, err)
+		w := mod.Body[0].(*ast.With)
+		require.Len(t, w.Items, 2)
+		require.Equal(t, "a", w.Items[0].Context.(*ast.Name).Name)
+		require.Equal(t, "x", w.Items[0].OptionalVars.(*ast.Name).Name)
+		require.Equal(t, "b", w.Items[1].Context.(*ast.Name).Name)
+		require.Nil(t, w.Items[1].OptionalVars)
+	})
+
+	t.Run("is and is not comparisons", func(t *testing.T) {
+		mod, err := parse("x is None\nx is not y\n")
+		require.NoError(t, err)
+		first := mod.Body[0].(*ast.ExprStmt).X.(*ast.Compare)
+		require.Equal(t, []token.Type{token.IS}, first.Ops)
+		second := mod.Body[1].(*ast.ExprStmt).X.(*ast.Compare)
+		require.Equal(t, []token.Type{token.ISNOT}, second.Ops)
 	})
 }
 

@@ -1,6 +1,7 @@
 package compiler
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -37,6 +38,7 @@ type hostFuncs struct {
 	strJoin     *interp.HostFunction
 	strFind     *interp.HostFunction
 	strContains *interp.HostFunction
+	excInstance *interp.HostFunction
 }
 
 type rangeIterator struct {
@@ -236,7 +238,7 @@ func (h *hostFuncs) listSlice(recv types.Type) *interp.HostFunction {
 // dictRest returns a new dict holding recv minus the keys in the second
 // argument. It backs mapping-pattern `**rest` captures.
 func (h *hostFuncs) dictRest(recv types.Type) *interp.HostFunction {
-	keys := types.ListOf(recv.(*types.Dict).Key)
+	keys := types.NewList(recv.(*types.Dict).Key)
 	return interp.NewHostFunction(
 		&vmtypes.FunctionType{Params: []vmtypes.Type{recv.VM(), keys.VM()}, Returns: []vmtypes.Type{recv.VM()}},
 		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
@@ -310,7 +312,7 @@ func (h *hostFuncs) enumerate(ret types.Type) *interp.HostFunction {
 	list := ret.(*types.List)
 	tupleType := list.Elem.VM().(*vmtypes.StructType)
 	return interp.NewHostFunction(
-		&vmtypes.FunctionType{Params: []vmtypes.Type{types.ListOf(list.Elem.(*types.Tuple).Elems[1]).VM()}, Returns: []vmtypes.Type{ret.VM()}},
+		&vmtypes.FunctionType{Params: []vmtypes.Type{types.NewList(list.Elem.(*types.Tuple).Elems[1]).VM()}, Returns: []vmtypes.Type{ret.VM()}},
 		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
 			_, elems := arrayElems(i, params[0])
 			out := make([]vmtypes.Boxed, 0, len(elems))
@@ -331,7 +333,7 @@ func (h *hostFuncs) zip(ret types.Type) *interp.HostFunction {
 	tupleType := list.Elem.VM().(*vmtypes.StructType)
 	tuple := list.Elem.(*types.Tuple)
 	return interp.NewHostFunction(
-		&vmtypes.FunctionType{Params: []vmtypes.Type{types.ListOf(tuple.Elems[0]).VM(), types.ListOf(tuple.Elems[1]).VM()}, Returns: []vmtypes.Type{ret.VM()}},
+		&vmtypes.FunctionType{Params: []vmtypes.Type{types.NewList(tuple.Elems[0]).VM(), types.NewList(tuple.Elems[1]).VM()}, Returns: []vmtypes.Type{ret.VM()}},
 		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
 			_, a := arrayElems(i, params[0])
 			_, b := arrayElems(i, params[1])
@@ -469,7 +471,7 @@ func builtinReturn(name string, args []types.Type) (types.Type, bool) {
 			return types.Invalid, false
 		}
 		if list, ok := args[0].(*types.List); ok {
-			return types.ListOf(types.TupleOf(types.Int, list.Elem)), true
+			return types.NewList(types.NewTuple(types.Int, list.Elem)), true
 		}
 	case "zip":
 		if len(args) != 2 {
@@ -478,7 +480,7 @@ func builtinReturn(name string, args []types.Type) (types.Type, bool) {
 		a, aok := args[0].(*types.List)
 		b, bok := args[1].(*types.List)
 		if aok && bok {
-			return types.ListOf(types.TupleOf(a.Elem, b.Elem)), true
+			return types.NewList(types.NewTuple(a.Elem, b.Elem)), true
 		}
 	case "range":
 		if len(args) < 1 || len(args) > 3 {
@@ -489,14 +491,14 @@ func builtinReturn(name string, args []types.Type) (types.Type, bool) {
 				return types.Invalid, false
 			}
 		}
-		return types.IteratorOf(types.Int), true
+		return types.NewIterator(types.Int), true
 	case "iter":
 		if len(args) != 1 {
 			return types.Invalid, false
 		}
 		elem := iterableElem(args[0])
 		if elem != types.Invalid {
-			return types.IteratorOf(elem), true
+			return types.NewIterator(elem), true
 		}
 	case "next":
 		if len(args) != 1 {
@@ -523,7 +525,9 @@ func isContainer(t types.Type) bool {
 }
 
 // newHostFuncs builds the host-function set, binding print's output to out.
-func newHostFuncs(out io.Writer) *hostFuncs {
+func newHostFuncs(out io.Writer, classes map[string]*classInfo) *hostFuncs {
+	excType := classes["BaseException"].typ.VM().(*vmtypes.StructType)
+	classID := func(name string) int64 { return int64(classes[name].classID) }
 	return &hostFuncs{
 		print: interp.NewHostFunction(
 			&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeRef}, Returns: nil},
@@ -670,6 +674,37 @@ func newHostFuncs(out io.Writer) *hostFuncs {
 					parts[idx] = loadStr(i, elem)
 				}
 				return allocString(i, strings.Join(parts, loadStr(i, params[0])))
+			},
+		),
+		excInstance: interp.NewHostFunction(
+			&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeRef}, Returns: []vmtypes.Type{classes["BaseException"].typ.VM()}},
+			func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+				class := classID("RuntimeError")
+				message := ""
+				if params[0].Kind() == vmtypes.KindRef && params[0].Ref() != 0 {
+					if val, err := i.Load(params[0].Ref()); err == nil {
+						if exc, ok := val.(*vmtypes.Error); ok {
+							message = exc.Error()
+							switch {
+							case errors.Is(exc.Unwrap(), interp.ErrDivideByZero):
+								class = classID("ZeroDivisionError")
+							case errors.Is(exc.Unwrap(), interp.ErrIndexOutOfRange):
+								class = classID("IndexError")
+							case errors.Is(exc.Unwrap(), interp.ErrTypeMismatch):
+								class = classID("TypeError")
+							}
+						}
+					}
+				}
+				msg, err := allocString(i, message)
+				if err != nil {
+					return nil, err
+				}
+				addr, err := i.Alloc(vmtypes.NewStruct(excType, vmtypes.BoxI64(class), msg[0]))
+				if err != nil {
+					return nil, err
+				}
+				return []vmtypes.Boxed{vmtypes.BoxRef(addr)}, nil
 			},
 		),
 	}

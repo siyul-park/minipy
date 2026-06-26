@@ -58,6 +58,10 @@ type classInfo struct {
 	fieldIndex map[string]int
 	methods    map[string]*fn
 	methodBody map[string][]ast.Stmt
+	base       *classInfo
+	classID    int
+	low        int
+	high       int
 	dataclass  bool
 }
 
@@ -72,25 +76,29 @@ type capture struct {
 // checker resolves names and types for a module, producing a per-expression
 // type table and a global symbol table consumed by the compiler.
 type checker struct {
-	errs    token.ErrorList
-	types   map[ast.Expr]types.Type
-	globals map[string]*global
-	funcs   map[string]*fn
-	classes map[string]*classInfo
-	lambdas map[*ast.LambdaExpr]*fn
-	order   []string
-	loops   int // enclosing-loop depth, for break/continue validation
-	fn      *fn
+	errs       token.ErrorList
+	types      map[ast.Expr]types.Type
+	globals    map[string]*global
+	funcs      map[string]*fn
+	classes    map[string]*classInfo
+	lambdas    map[*ast.LambdaExpr]*fn
+	order      []string
+	classOrder []string
+	loops      int // enclosing-loop depth, for break/continue validation
+	excepts    int // enclosing-except depth, for bare raise validation
+	fn         *fn
 }
 
 func newChecker() *checker {
-	return &checker{
+	c := &checker{
 		types:   map[ast.Expr]types.Type{},
 		globals: map[string]*global{},
 		funcs:   map[string]*fn{},
 		classes: map[string]*classInfo{},
 		lambdas: map[*ast.LambdaExpr]*fn{},
 	}
+	c.declareBuiltinExceptions()
+	return c
 }
 
 // check walks every top-level statement, accumulating diagnostics.
@@ -98,6 +106,7 @@ func (c *checker) check(mod *ast.Module) {
 	c.declareClasses(mod.Body)
 	c.declareFuncs(mod.Body)
 	c.checkBlock(mod.Body)
+	c.computeClassIntervals()
 }
 
 // checkBlock checks a statement sequence (a module body or a compound block).
@@ -167,6 +176,123 @@ func (c *checker) stmt(s ast.Stmt) {
 		c.assertStmt(n)
 	case *ast.Match:
 		c.matchStmt(n)
+	case *ast.Try:
+		c.tryStmt(n)
+	case *ast.Raise:
+		c.raiseStmt(n)
+	case *ast.With:
+		c.withStmt(n)
+	}
+}
+
+func (c *checker) tryStmt(n *ast.Try) {
+	locals, globals := c.snapshotInits()
+	c.checkBlock(n.Body)
+	for _, h := range n.Handlers {
+		ht := c.handlerType(h)
+		if h.Name != "" {
+			c.bindCapture(h.Name, ht, h.Pos())
+		}
+		c.excepts++
+		c.checkBlock(h.Body)
+		c.excepts--
+	}
+	c.checkBlock(n.Orelse)
+	c.restoreInits(locals, globals)
+	c.checkBlock(n.Finalbody)
+}
+
+func (c *checker) handlerType(h *ast.ExceptHandler) types.Type {
+	if h.Type == nil {
+		return c.classes["BaseException"].typ
+	}
+	info := c.exceptionClass(h.Type)
+	if info == nil {
+		return types.Invalid
+	}
+	return info.typ
+}
+
+func (c *checker) raiseStmt(n *ast.Raise) {
+	if n.Exc == nil {
+		if c.excepts == 0 {
+			c.errs.Add(n.Pos(), token.SyntaxError, "bare raise outside except")
+		}
+		return
+	}
+	t := c.expr(n.Exc)
+	if t == types.Invalid {
+		return
+	}
+	cls, ok := t.(*types.Class)
+	if !ok || !c.isException(cls.Name) {
+		c.errs.Add(n.Pos(), token.TypeMismatch, "raise requires an Exception instance, got %s", t)
+	}
+}
+
+func (c *checker) withStmt(n *ast.With) {
+	for _, item := range n.Items {
+		ct := c.expr(item.Context)
+		cls, ok := ct.(*types.Class)
+		if !ok {
+			if ct != types.Invalid {
+				c.errs.Add(item.Pos(), token.UnsupportedFeature, "with requires a context manager, got %s", ct)
+			}
+			continue
+		}
+		info := c.classes[cls.Name]
+		enter := methodInfo(info, "__enter__")
+		exit := methodInfo(info, "__exit__")
+		if enter == nil || exit == nil {
+			c.errs.Add(item.Pos(), token.UnsupportedFeature, "%s is not a context manager", cls.Name)
+			continue
+		}
+		if len(enter.params) != 1 {
+			c.errs.Add(item.Pos(), token.ArityMismatch, "%s.__enter__() takes no arguments", cls.Name)
+		}
+		if len(exit.params) != 1 {
+			c.errs.Add(item.Pos(), token.ArityMismatch, "%s.__exit__() takes no arguments", cls.Name)
+		}
+		if item.OptionalVars != nil {
+			name, ok := item.OptionalVars.(*ast.Name)
+			if !ok {
+				c.errs.Add(item.OptionalVars.Pos(), token.SyntaxError, "with target must be a name")
+			} else if c.fn != nil {
+				l := c.declareLocal(name.Name, enter.ret, name.Pos())
+				l.init = true
+				c.types[name] = l.typ
+			} else {
+				g := c.declare(name.Name, enter.ret, name.Pos())
+				g.init = true
+				c.types[name] = g.typ
+			}
+		}
+	}
+	c.checkBlock(n.Body)
+}
+
+func (c *checker) snapshotInits() (map[string]bool, map[string]bool) {
+	locals := map[string]bool{}
+	if c.fn != nil {
+		for name, l := range c.fn.locals {
+			locals[name] = l.init
+		}
+	}
+	globals := map[string]bool{}
+	for name, g := range c.globals {
+		globals[name] = g.init
+	}
+	return locals, globals
+}
+
+func (c *checker) restoreInits(locals, globals map[string]bool) {
+	if c.fn != nil {
+		for name, l := range c.fn.locals {
+			l.init = locals[name]
+		}
+	}
+	for name, g := range c.globals {
+		g.init = globals[name]
 	}
 }
 
@@ -295,7 +421,7 @@ func (c *checker) checkPattern(p ast.Pattern, subjT types.Type) {
 	case *ast.CapturePattern:
 		c.bindCapture(pat.Name, subjT, pat.Pos())
 	case *ast.StarPattern:
-		c.bindCapture(pat.Name, types.ListOf(subjT), pat.Pos())
+		c.bindCapture(pat.Name, types.NewList(subjT), pat.Pos())
 	case *ast.AsPattern:
 		c.checkPattern(pat.Pattern, subjT)
 		c.bindCapture(pat.Name, subjT, pat.Pos())
@@ -322,7 +448,7 @@ func (c *checker) checkSequencePattern(pat *ast.SequencePattern, subjT types.Typ
 	case *types.List:
 		for _, e := range pat.Elems {
 			if star, ok := e.(*ast.StarPattern); ok {
-				c.bindCapture(star.Name, types.ListOf(s.Elem), star.Pos())
+				c.bindCapture(star.Name, types.NewList(s.Elem), star.Pos())
 				continue
 			}
 			c.checkPattern(e, s.Elem)
@@ -362,7 +488,7 @@ func (c *checker) checkMappingPattern(pat *ast.MappingPattern, subjT types.Type)
 		c.checkPattern(pat.Values[i], d.Value)
 	}
 	if pat.Rest != "" {
-		c.bindCapture(pat.Rest, types.DictOf(d.Key, d.Value), pat.Pos())
+		c.bindCapture(pat.Rest, types.NewDict(d.Key, d.Value), pat.Pos())
 	}
 }
 
@@ -778,7 +904,7 @@ func (c *checker) declareFuncLocal(info *fn, pos token.Pos) {
 	if info.local != nil {
 		return
 	}
-	info.local = c.declareLocal(info.name, types.CallableOf(srcTypes(info.params), info.ret), pos)
+	info.local = c.declareLocal(info.name, types.NewCallable(srcTypes(info.params), info.ret), pos)
 }
 
 func (c *checker) declareFuncs(body []ast.Stmt) {
@@ -839,11 +965,87 @@ func (c *checker) declareClasses(body []ast.Stmt) {
 		}
 		c.classes[name] = &classInfo{
 			name:       name,
-			typ:        types.ClassOf(name, nil),
+			typ:        types.NewClass(name, nil),
 			fieldIndex: map[string]int{},
 			methods:    map[string]*fn{},
 			methodBody: map[string][]ast.Stmt{},
 		}
+		c.classOrder = append(c.classOrder, name)
+	}
+}
+
+var builtinExceptionNames = []string{
+	"BaseException",
+	"Exception",
+	"ZeroDivisionError",
+	"ValueError",
+	"TypeError",
+	"IndexError",
+	"KeyError",
+	"RuntimeError",
+	"AssertionError",
+	"StopIteration",
+}
+
+var builtinExceptionBase = map[string]string{
+	"Exception":         "BaseException",
+	"ZeroDivisionError": "Exception",
+	"ValueError":        "Exception",
+	"TypeError":         "Exception",
+	"IndexError":        "Exception",
+	"KeyError":          "Exception",
+	"RuntimeError":      "Exception",
+	"AssertionError":    "Exception",
+	"StopIteration":     "Exception",
+}
+
+func (c *checker) declareBuiltinExceptions() {
+	fields := []classField{
+		{name: "__classid", typ: types.Int, index: 0},
+		{name: "message", typ: types.Str, index: 1},
+	}
+	for _, name := range builtinExceptionNames {
+		info := &classInfo{
+			name:       name,
+			typ:        types.NewClass(name, nil),
+			fields:     append([]classField(nil), fields...),
+			fieldIndex: map[string]int{"__classid": 0, "message": 1},
+			methods:    map[string]*fn{},
+			methodBody: map[string][]ast.Stmt{},
+		}
+		c.classes[name] = info
+		c.classOrder = append(c.classOrder, name)
+	}
+	for name, base := range builtinExceptionBase {
+		c.classes[name].base = c.classes[base]
+	}
+	for _, name := range builtinExceptionNames {
+		c.classes[name].typ.Fields = classTypeFields(c.classes[name].fields)
+	}
+}
+
+func (c *checker) computeClassIntervals() {
+	children := map[string][]*classInfo{}
+	for _, name := range c.classOrder {
+		info := c.classes[name]
+		if info == nil || info.base == nil {
+			continue
+		}
+		children[info.base.name] = append(children[info.base.name], info)
+	}
+	next := 1
+	var dfs func(*classInfo)
+	dfs = func(info *classInfo) {
+		info.classID = next
+		info.low = next
+		next++
+		for _, child := range children[info.name] {
+			dfs(child)
+		}
+		info.high = next - 1
+	}
+	if root := c.classes["BaseException"]; root != nil {
+		dfs(root)
 	}
 }
 
@@ -866,6 +1068,7 @@ func (c *checker) classStmt(n *ast.Class) {
 		} else if base == info {
 			c.errs.Add(n.BaseClass.Pos(), token.TypeMismatch, "class %q cannot inherit from itself", info.name)
 		} else {
+			info.base = base
 			info.fields = append(info.fields, base.fields...)
 			for name, idx := range base.fieldIndex {
 				info.fieldIndex[name] = idx
@@ -893,6 +1096,49 @@ func (c *checker) classStmt(n *ast.Class) {
 			}
 		}
 	}
+}
+
+func (c *checker) exceptionClass(e ast.Expr) *classInfo {
+	name, ok := e.(*ast.Name)
+	if !ok {
+		c.errs.Add(e.Pos(), token.UnsupportedFeature, "exception type must be a class name")
+		return nil
+	}
+	info := c.classes[name.Name]
+	if info == nil {
+		if _, ok := types.Resolve(name.Name); ok {
+			c.errs.Add(e.Pos(), token.TypeMismatch, "except type must inherit from Exception, got %s", name.Name)
+			return nil
+		}
+		c.errs.Add(e.Pos(), token.UndefinedName, "class %q is not defined", name.Name)
+		return nil
+	}
+	if !c.isException(info.name) {
+		c.errs.Add(e.Pos(), token.TypeMismatch, "except type must inherit from Exception, got %s", info.name)
+		return nil
+	}
+	return info
+}
+
+func (c *checker) isException(name string) bool {
+	info := c.classes[name]
+	for info != nil {
+		if info.name == "BaseException" {
+			return true
+		}
+		info = info.base
+	}
+	return false
+}
+
+func methodInfo(info *classInfo, name string) *fn {
+	for info != nil {
+		if method := info.methods[name]; method != nil {
+			return method
+		}
+		info = info.base
+	}
+	return nil
 }
 
 func (c *checker) classField(info *classInfo, n *ast.AnnAssign) {
@@ -1032,14 +1278,14 @@ func (c *checker) resolveType(e ast.Expr) types.Type {
 		}
 		switch base.Name {
 		case "list":
-			return types.ListOf(c.resolveType(sub.Index))
+			return types.NewList(c.resolveType(sub.Index))
 		case "set":
 			elem := c.resolveType(sub.Index)
 			if elem != types.Invalid && !hashableKey(elem) {
 				c.errs.Add(sub.Index.Pos(), token.UnsupportedType, "set element type %s is not supported", elem)
 				return types.Invalid
 			}
-			return types.SetOf(elem)
+			return types.NewSet(elem)
 		case "dict":
 			args, ok := sub.Index.(*ast.TupleLit)
 			if !ok || len(args.Elems) != 2 {
@@ -1051,18 +1297,18 @@ func (c *checker) resolveType(e ast.Expr) types.Type {
 				c.errs.Add(args.Elems[0].Pos(), token.UnsupportedType, "dict key type %s is not supported", key)
 				return types.Invalid
 			}
-			return types.DictOf(key, c.resolveType(args.Elems[1]))
+			return types.NewDict(key, c.resolveType(args.Elems[1]))
 		case "tuple":
 			if args, ok := sub.Index.(*ast.TupleLit); ok {
 				elems := make([]types.Type, len(args.Elems))
 				for i, elem := range args.Elems {
 					elems[i] = c.resolveType(elem)
 				}
-				return types.TupleOf(elems...)
+				return types.NewTuple(elems...)
 			}
-			return types.TupleOf(c.resolveType(sub.Index))
+			return types.NewTuple(c.resolveType(sub.Index))
 		case "Iterator":
-			return types.IteratorOf(c.resolveType(sub.Index))
+			return types.NewIterator(c.resolveType(sub.Index))
 		case "Callable":
 			args, ok := sub.Index.(*ast.TupleLit)
 			if !ok || len(args.Elems) != 2 {
@@ -1078,7 +1324,7 @@ func (c *checker) resolveType(e ast.Expr) types.Type {
 			for i, elem := range paramTuple.Elems {
 				params[i] = c.resolveType(elem)
 			}
-			return types.CallableOf(params, c.resolveType(args.Elems[1]))
+			return types.NewCallable(params, c.resolveType(args.Elems[1]))
 		default:
 			c.errs.Add(e.Pos(), token.UnsupportedType, "unknown generic type %q", base.Name)
 			return types.Invalid
@@ -1188,6 +1434,48 @@ func blockReturns(body []ast.Stmt) bool {
 			if len(n.Orelse) > 0 && blockReturns(n.Body) && blockReturns(n.Orelse) {
 				return true
 			}
+		case *ast.Try:
+			if blockReturns(n.Finalbody) {
+				return true
+			}
+			if blockReturns(n.Body) {
+				return true
+			}
+			if len(n.Handlers) > 0 && blockTerminates(n.Body) {
+				all := true
+				for _, h := range n.Handlers {
+					all = all && blockReturns(h.Body)
+				}
+				if all {
+					return true
+				}
+			}
+		case *ast.With:
+			if blockReturns(n.Body) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func blockTerminates(body []ast.Stmt) bool {
+	for _, s := range body {
+		switch n := s.(type) {
+		case *ast.Return, *ast.Raise:
+			return true
+		case *ast.If:
+			if len(n.Orelse) > 0 && blockTerminates(n.Body) && blockTerminates(n.Orelse) {
+				return true
+			}
+		case *ast.Try:
+			if blockReturns(n.Finalbody) || blockReturns(n.Body) {
+				return true
+			}
+		case *ast.With:
+			if blockTerminates(n.Body) {
+				return true
+			}
 		}
 	}
 	return false
@@ -1208,6 +1496,19 @@ func containsYield(body []ast.Stmt) bool {
 			}
 		case *ast.For:
 			if containsYield(n.Body) || containsYield(n.Orelse) {
+				return true
+			}
+		case *ast.Try:
+			if containsYield(n.Body) || containsYield(n.Orelse) || containsYield(n.Finalbody) {
+				return true
+			}
+			for _, h := range n.Handlers {
+				if containsYield(h.Body) {
+					return true
+				}
+			}
+		case *ast.With:
+			if containsYield(n.Body) {
 				return true
 			}
 		case *ast.Function:
@@ -1263,14 +1564,14 @@ func (c *checker) typeOf(e ast.Expr, hint types.Type) types.Type {
 		for i, elem := range n.Elems {
 			elems[i] = c.expr(elem)
 		}
-		return types.TupleOf(elems...)
+		return types.NewTuple(elems...)
 	case *ast.LambdaExpr:
 		return c.lambda(n, hint)
 	case *ast.SetLit:
 		return c.setType(n, hint)
 	case *ast.ListComp:
 		elem := c.compElem(n.Clauses, n.Elem)
-		return types.ListOf(elem)
+		return types.NewList(elem)
 	case *ast.DictComp:
 		cleanup := c.compClauses(n.Clauses)
 		defer cleanup()
@@ -1280,14 +1581,14 @@ func (c *checker) typeOf(e ast.Expr, hint types.Type) types.Type {
 			c.errs.Add(n.Key.Pos(), token.UnsupportedType, "dict key type %s is not supported", kt)
 			return types.Invalid
 		}
-		return types.DictOf(kt, vt)
+		return types.NewDict(kt, vt)
 	case *ast.SetComp:
 		elem := c.compElem(n.Clauses, n.Elem)
 		if !hashableKey(elem) {
 			c.errs.Add(n.Elem.Pos(), token.UnsupportedType, "set element type %s is not supported", elem)
 			return types.Invalid
 		}
-		return types.SetOf(elem)
+		return types.NewSet(elem)
 	case *ast.Subscript:
 		ct := c.expr(n.X)
 		it := c.expr(n.Index)
@@ -1318,7 +1619,7 @@ func (c *checker) listType(n *ast.ListLit, hint types.Type) types.Type {
 			return types.Invalid
 		}
 	}
-	return types.ListOf(elem)
+	return types.NewList(elem)
 }
 
 func (c *checker) dictType(n *ast.DictLit, hint types.Type) types.Type {
@@ -1347,7 +1648,7 @@ func (c *checker) dictType(n *ast.DictLit, hint types.Type) types.Type {
 		c.errs.Add(n.Keys[0].Pos(), token.UnsupportedType, "dict key type %s is not supported", kt)
 		return types.Invalid
 	}
-	return types.DictOf(kt, vt)
+	return types.NewDict(kt, vt)
 }
 
 func hashableKey(t types.Type) bool {
@@ -1470,7 +1771,7 @@ func (c *checker) nameType(n *ast.Name) types.Type {
 		if !fn.slot.init {
 			c.errs.Add(n.Pos(), token.UseBeforeDefinition, "function %q used before definition", n.Name)
 		}
-		return types.CallableOf(srcTypes(fn.params), fn.ret)
+		return types.NewCallable(srcTypes(fn.params), fn.ret)
 	}
 	if _, ok := c.classes[n.Name]; ok {
 		c.errs.Add(n.Pos(), token.UnsupportedFeature, "class value %q is not supported", n.Name)
@@ -1601,7 +1902,7 @@ func (c *checker) setType(n *ast.SetLit, hint types.Type) types.Type {
 		c.errs.Add(n.Elems[0].Pos(), token.UnsupportedType, "set element type %s is not supported", elem)
 		return types.Invalid
 	}
-	return types.SetOf(elem)
+	return types.NewSet(elem)
 }
 
 func (c *checker) compElem(clauses []*ast.Comprehension, elem ast.Expr) types.Type {
@@ -1687,7 +1988,7 @@ func (c *checker) binaryType(lt types.Type, op token.Type, rt types.Type, pos to
 			return types.Str
 		}
 		if ll, ok := lt.(*types.List); ok && types.AssignableTo(rt, lt) {
-			return types.ListOf(ll.Elem)
+			return types.NewList(ll.Elem)
 		}
 		return c.arith(lt, op, rt, pos)
 	case token.STAR:
@@ -1695,7 +1996,7 @@ func (c *checker) binaryType(lt types.Type, op token.Type, rt types.Type, pos to
 			return types.Str
 		}
 		if ll, ok := lt.(*types.List); ok && types.Equal(rt, types.Int) {
-			return types.ListOf(ll.Elem)
+			return types.NewList(ll.Elem)
 		}
 		return c.arith(lt, op, rt, pos)
 	case token.MINUS, token.DOUBLESLASH, token.PERCENT, token.DOUBLESTAR:
@@ -1756,14 +2057,17 @@ func (c *checker) checkComparable(op token.Type, lt, rt types.Type, pos token.Po
 	if lt == types.Invalid || rt == types.Invalid {
 		return
 	}
+	if op == token.IS || op == token.ISNOT {
+		if !identityComparable(lt) || !identityComparable(rt) {
+			c.errs.Add(pos, token.TypeMismatch, "'%s' requires reference operands, got %s and %s", op, lt, rt)
+		}
+		return
+	}
 	if op == token.IN || op == token.NOTIN {
 		if !containsType(lt, rt) {
 			c.errs.Add(pos, token.NotIterable, "'%s' requires container RHS, got %s in %s", op, lt, rt)
 		}
 		return
-	}
-	if op == token.IS {
-		return // already reported as UnsupportedFeature by the parser
 	}
 	if types.Equal(lt, types.None) || types.Equal(rt, types.None) {
 		c.errs.Add(pos, token.UnsupportedFeature, "comparing to None uses 'is'")
@@ -1771,6 +2075,18 @@ func (c *checker) checkComparable(op token.Type, lt, rt types.Type, pos token.Po
 	}
 	if !types.Equal(lt, rt) {
 		c.errs.Add(pos, token.NotComparable, "'%s' not supported between instances of %s and %s", op, lt, rt)
+	}
+}
+
+func identityComparable(t types.Type) bool {
+	if types.Equal(t, types.None) || types.Equal(t, types.Str) {
+		return true
+	}
+	switch t.(type) {
+	case *types.List, *types.Dict, *types.Set, *types.Tuple, *types.Class, *types.Iterator, *types.Callable:
+		return true
+	default:
+		return false
 	}
 }
 
@@ -1872,6 +2188,9 @@ func (c *checker) constructorCallType(n *ast.CallExpr, cls *classInfo, argTypes 
 }
 
 func constructorParams(cls *classInfo) ([]types.Type, int) {
+	if isExceptionInfo(cls) {
+		return []types.Type{types.Str}, 0
+	}
 	if init := cls.methods["__init__"]; init != nil {
 		params := srcTypes(init.params)
 		if len(params) == 0 {
@@ -1891,6 +2210,16 @@ func constructorParams(cls *classInfo) ([]types.Type, int) {
 		}
 	}
 	return params, minArgs
+}
+
+func isExceptionInfo(info *classInfo) bool {
+	for info != nil {
+		if info.name == "BaseException" {
+			return true
+		}
+		info = info.base
+	}
+	return false
 }
 
 func (c *checker) callableCallType(n *ast.CallExpr, fnType types.Type) types.Type {
@@ -1986,15 +2315,15 @@ func (c *checker) methodCallType(n *ast.CallExpr, attr *ast.Attribute) types.Typ
 			return t.Value
 		case "keys":
 			if len(args) == 0 {
-				return types.ListOf(t.Key)
+				return types.NewList(t.Key)
 			}
 		case "values":
 			if len(args) == 0 {
-				return types.ListOf(t.Value)
+				return types.NewList(t.Value)
 			}
 		case "items":
 			if len(args) == 0 {
-				return types.ListOf(types.TupleOf(t.Key, t.Value))
+				return types.NewList(types.NewTuple(t.Key, t.Value))
 			}
 		}
 	default:
@@ -2006,7 +2335,7 @@ func (c *checker) methodCallType(n *ast.CallExpr, attr *ast.Attribute) types.Typ
 				}
 			case "split":
 				if len(args) <= 1 && (len(args) == 0 || types.Equal(args[0], types.Str)) {
-					return types.ListOf(types.Str)
+					return types.NewList(types.Str)
 				}
 			case "join":
 				if len(args) == 1 {

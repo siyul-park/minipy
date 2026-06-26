@@ -41,14 +41,11 @@ var augAssign = map[token.Type]token.Type{
 }
 
 var compoundStmt = map[token.Type]string{
-	token.TRY:     "'try' exceptions",
 	token.EXCEPT:  "'except' exceptions",
 	token.FINALLY: "'finally' exceptions",
-	token.WITH:    "'with' context managers",
 }
 
 var simpleKeywordStmt = map[token.Type]string{
-	token.RAISE:  "'raise' exceptions",
 	token.IMPORT: "'import' modules",
 	token.FROM:   "'from' modules",
 }
@@ -104,6 +101,10 @@ func (p *Parser) parseStatement() []ast.Stmt {
 		return []ast.Stmt{p.parseWhile()}
 	case token.FOR:
 		return []ast.Stmt{p.parseFor()}
+	case token.TRY:
+		return []ast.Stmt{p.parseTry()}
+	case token.WITH:
+		return []ast.Stmt{p.parseWith()}
 	case token.DEF:
 		return []ast.Stmt{p.parseFunction(nil, false)}
 	case token.CLASS:
@@ -200,6 +201,71 @@ func (p *Parser) parseFor() ast.Stmt {
 		orelse = p.parseBlock()
 	}
 	return &ast.For{Base: ast.Base{Position: pos}, Target: target, Iter: iter, Body: body, Orelse: orelse}
+}
+
+// parseTry parses `try: block` followed by except/else/finally clauses.
+func (p *Parser) parseTry() ast.Stmt {
+	pos := p.cur().Pos
+	p.advance() // try
+	body := p.parseBlock()
+	var handlers []*ast.ExceptHandler
+	for p.at(token.EXCEPT) {
+		handlers = append(handlers, p.parseExceptHandler())
+	}
+	var orelse []ast.Stmt
+	if p.at(token.ELSE) {
+		p.advance()
+		orelse = p.parseBlock()
+	}
+	var finalbody []ast.Stmt
+	if p.at(token.FINALLY) {
+		p.advance()
+		finalbody = p.parseBlock()
+	}
+	if len(handlers) == 0 && len(finalbody) == 0 {
+		p.errs.Add(pos, token.SyntaxError, "'try' must have at least one except or finally clause")
+	}
+	return &ast.Try{Base: ast.Base{Position: pos}, Body: body, Handlers: handlers, Orelse: orelse, Finalbody: finalbody}
+}
+
+func (p *Parser) parseExceptHandler() *ast.ExceptHandler {
+	pos := p.cur().Pos
+	p.advance() // except
+	var typ ast.Expr
+	var name string
+	if !p.at(token.COLON) {
+		typ = p.parseExpression()
+		if p.at(token.AS) {
+			p.advance()
+			name = p.expect(token.NAME).Literal
+		}
+	}
+	body := p.parseBlock()
+	return &ast.ExceptHandler{Base: ast.Base{Position: pos}, Type: typ, Name: name, Body: body}
+}
+
+// parseWith parses `with item (, item)*: block`.
+func (p *Parser) parseWith() ast.Stmt {
+	pos := p.cur().Pos
+	p.advance() // with
+	var items []*ast.WithItem
+	for {
+		itemPos := p.cur().Pos
+		ctx := p.parseExpression()
+		var opt ast.Expr
+		if p.at(token.AS) {
+			p.advance()
+			t := p.expect(token.NAME)
+			opt = &ast.Name{Base: ast.Base{Position: t.Pos}, Name: t.Literal}
+		}
+		items = append(items, &ast.WithItem{Base: ast.Base{Position: itemPos}, Context: ctx, OptionalVars: opt})
+		if !p.at(token.COMMA) {
+			break
+		}
+		p.advance()
+	}
+	body := p.parseBlock()
+	return &ast.With{Base: ast.Base{Position: pos}, Items: items, Body: body}
 }
 
 // parseDecorated parses one or more bare-name decorators followed by a function
@@ -447,6 +513,8 @@ func (p *Parser) parseSimpleStmt() ast.Stmt {
 			value = p.parseExpression()
 		}
 		return &ast.Yield{Base: ast.Base{Position: t.Pos}, Value: value}
+	case token.RAISE:
+		return p.parseRaise()
 	case token.GLOBAL:
 		t := p.cur()
 		p.advance()
@@ -498,6 +566,17 @@ func (p *Parser) parseSimpleStmt() ast.Stmt {
 	default:
 		return &ast.ExprStmt{Base: ast.Base{Position: pos}, X: target}
 	}
+}
+
+// parseRaise parses `raise [expression]`.
+func (p *Parser) parseRaise() ast.Stmt {
+	t := p.cur()
+	p.advance()
+	var exc ast.Expr
+	if !p.at(token.SEMICOLON) && !p.at(token.NEWLINE) && !p.at(token.EOF) {
+		exc = p.parseExpression()
+	}
+	return &ast.Raise{Base: ast.Base{Position: t.Pos}, Exc: exc}
 }
 
 // parseAnnAssign parses `NAME ':' type ['=' expression]`.
@@ -1024,10 +1103,18 @@ func (p *Parser) parseComparison() ast.Expr {
 			p.advance()
 			ops = append(ops, op)
 			rest = append(rest, p.parseBinary(1))
-		case token.IN, token.IS:
-			p.errs.Add(p.cur().Pos, token.UnsupportedFeature, "'%s' comparison is not supported yet", op)
+		case token.IN:
 			p.advance()
 			ops = append(ops, op)
+			rest = append(rest, p.parseBinary(1))
+		case token.IS:
+			p.advance()
+			if p.at(token.NOT) {
+				p.advance()
+				ops = append(ops, token.ISNOT)
+			} else {
+				ops = append(ops, token.IS)
+			}
 			rest = append(rest, p.parseBinary(1))
 		case token.NOT:
 			if p.peek(1).Type != token.IN {

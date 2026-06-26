@@ -52,6 +52,8 @@ type Compiler struct {
 	host    *hostFuncs
 	consts  map[*interp.HostFunction]int
 	loops   []loopLabels // enclosing-loop branch targets, innermost last
+	finally []finallyFrame
+	excepts []int
 	next    int
 	boxed   map[*local]bool
 }
@@ -64,12 +66,17 @@ type loopLabels struct {
 	brk  instr.Label
 }
 
+type finallyFrame struct {
+	emit func()
+}
+
 type target struct {
 	emit  func(instr.Opcode, ...uint64)
 	label func() instr.Label
 	bind  func(instr.Label)
 	br    func(instr.Label)
 	brIf  func(instr.Label)
+	try   func(instr.Label, instr.Label, instr.Label, int)
 }
 
 func mainTarget(b *program.Builder) target {
@@ -79,6 +86,7 @@ func mainTarget(b *program.Builder) target {
 		bind:  func(l instr.Label) { b.Bind(l) },
 		br:    func(l instr.Label) { b.Br(l) },
 		brIf:  func(l instr.Label) { b.BrIf(l) },
+		try:   func(start, end, catch instr.Label, depth int) { b.Try(start, end, catch, depth) },
 	}
 }
 
@@ -89,6 +97,7 @@ func fnTarget(b *vmtypes.FunctionBuilder) target {
 		bind:  func(l instr.Label) { b.Bind(l) },
 		br:    func(l instr.Label) { b.Br(l) },
 		brIf:  func(l instr.Label) { b.BrIf(l) },
+		try:   func(start, end, catch instr.Label, depth int) { b.Try(start, end, catch, depth) },
 	}
 }
 
@@ -139,6 +148,8 @@ func (c *Compiler) init(b *program.Builder, types map[ast.Expr]types.Type, globa
 	c.host = host
 	c.consts = map[*interp.HostFunction]int{}
 	c.loops = nil
+	c.finally = nil
+	c.excepts = nil
 	c.next = len(globals)
 	c.boxed = map[*local]bool{}
 }
@@ -161,6 +172,10 @@ func (c *Compiler) br(l instr.Label) {
 
 func (c *Compiler) brIf(l instr.Label) {
 	c.code.brIf(l)
+}
+
+func (c *Compiler) tryRegion(start, end, catch instr.Label, depth int) {
+	c.code.try(start, end, catch, depth)
 }
 
 func (c *Compiler) constGet(v vmtypes.Value) {
@@ -200,7 +215,7 @@ func (c *Compiler) Compile() (*program.Program, error) {
 		return nil, err
 	}
 
-	host := newHostFuncs(c.cfg.out)
+	host := newHostFuncs(c.cfg.out, chk.classes)
 	b := program.NewBuilder()
 	c.init(b, chk.types, chk.globals, chk.funcs, chk.classes, chk.lambdas, host)
 	c.module(mod)
@@ -285,8 +300,10 @@ func (c *Compiler) stmt(s ast.Stmt) {
 	case *ast.Yield:
 		c.yield(n)
 	case *ast.Break:
+		c.inlineFinalizers()
 		c.br(c.loops[len(c.loops)-1].brk)
 	case *ast.Continue:
+		c.inlineFinalizers()
 		c.br(c.loops[len(c.loops)-1].cont)
 	case *ast.Pass:
 		// no-op
@@ -296,6 +313,12 @@ func (c *Compiler) stmt(s ast.Stmt) {
 		c.assertStmt(n)
 	case *ast.Match:
 		c.emitMatch(n)
+	case *ast.Try:
+		c.emitTry(n)
+	case *ast.Raise:
+		c.emitRaise(n)
+	case *ast.With:
+		c.emitWith(n)
 	}
 }
 
@@ -371,6 +394,229 @@ func (c *Compiler) emitMatch(n *ast.Match) {
 		c.bind(next)
 	}
 	c.bind(end)
+}
+
+func (c *Compiler) emitTry(n *ast.Try) {
+	finalizer := c.finalizer(n.Finalbody)
+	start := c.label()
+	end := c.label()
+	catch := c.label()
+	after := c.label()
+
+	c.bind(start)
+	if finalizer != nil {
+		c.finally = append(c.finally, finallyFrame{emit: finalizer})
+	}
+	c.block(n.Body)
+	c.emit(instr.NOP)
+	c.bind(end)
+	c.block(n.Orelse)
+	if finalizer != nil {
+		c.finally = c.finally[:len(c.finally)-1]
+		finalizer()
+	}
+	c.br(after)
+
+	c.bind(catch)
+	errSlot := c.tmp()
+	c.emit(instr.GLOBAL_SET, uint64(errSlot))
+	if len(n.Handlers) == 0 {
+		if finalizer != nil {
+			finalizer()
+		}
+		c.emit(instr.GLOBAL_GET, uint64(errSlot))
+		c.emit(instr.THROW)
+		c.bind(after)
+		c.tryRegion(start, end, catch, 0)
+		return
+	}
+	instSlot := c.tmp()
+	c.emitCaughtInstance(errSlot, instSlot)
+	for _, h := range n.Handlers {
+		next := c.label()
+		if h.Type != nil {
+			c.emitExceptionTest(instSlot, h.Type, next)
+		}
+		if h.Name != "" {
+			c.emit(instr.GLOBAL_GET, uint64(instSlot))
+			c.set(h.Name)
+		}
+		if finalizer != nil {
+			c.finally = append(c.finally, finallyFrame{emit: finalizer})
+		}
+		c.excepts = append(c.excepts, errSlot)
+		c.block(h.Body)
+		c.excepts = c.excepts[:len(c.excepts)-1]
+		if finalizer != nil {
+			c.finally = c.finally[:len(c.finally)-1]
+			finalizer()
+		}
+		c.br(after)
+		c.bind(next)
+	}
+	if finalizer != nil {
+		finalizer()
+	}
+	c.emit(instr.GLOBAL_GET, uint64(errSlot))
+	c.emit(instr.THROW)
+	c.bind(after)
+	c.tryRegion(start, end, catch, 0)
+}
+
+func (c *Compiler) emitTryFinally(body func(), finalizer func()) {
+	start := c.label()
+	end := c.label()
+	catch := c.label()
+	after := c.label()
+
+	c.bind(start)
+	c.finally = append(c.finally, finallyFrame{emit: finalizer})
+	body()
+	c.finally = c.finally[:len(c.finally)-1]
+	c.emit(instr.NOP)
+	c.bind(end)
+	finalizer()
+	c.br(after)
+
+	c.bind(catch)
+	errSlot := c.tmp()
+	c.emit(instr.GLOBAL_SET, uint64(errSlot))
+	finalizer()
+	c.emit(instr.GLOBAL_GET, uint64(errSlot))
+	c.emit(instr.THROW)
+
+	c.bind(after)
+	c.tryRegion(start, end, catch, 0)
+}
+
+func (c *Compiler) finalizer(body []ast.Stmt) func() {
+	if len(body) == 0 {
+		return nil
+	}
+	return func() { c.block(body) }
+}
+
+func (c *Compiler) inlineFinalizers() {
+	for i := len(c.finally) - 1; i >= 0; i-- {
+		c.finally[i].emit()
+	}
+}
+
+func (c *Compiler) emitCaughtInstance(errSlot, instSlot int) {
+	trap := c.label()
+	done := c.label()
+	c.emit(instr.GLOBAL_GET, uint64(errSlot))
+	c.emit(instr.ERROR_GET)
+	c.emit(instr.DUP)
+	c.emit(instr.REF_IS_NULL)
+	c.brIf(trap)
+	c.br(done)
+	c.bind(trap)
+	c.emit(instr.DROP)
+	c.emit(instr.GLOBAL_GET, uint64(errSlot))
+	c.callHost(c.host.excInstance)
+	c.bind(done)
+	c.emit(instr.GLOBAL_SET, uint64(instSlot))
+}
+
+func (c *Compiler) emitExceptionTest(instSlot int, typ ast.Expr, next instr.Label) {
+	name := typ.(*ast.Name).Name
+	info := c.classes[name]
+	c.emitExceptionClassID(instSlot)
+	c.emit(instr.I64_CONST, uint64(info.low))
+	c.emit(instr.I64_GE_S)
+	c.emitExceptionClassID(instSlot)
+	c.emit(instr.I64_CONST, uint64(info.high))
+	c.emit(instr.I64_LE_S)
+	c.emit(instr.I32_AND)
+	c.emit(instr.I32_EQZ)
+	c.brIf(next)
+}
+
+func (c *Compiler) emitExceptionClassID(instSlot int) {
+	c.emit(instr.GLOBAL_GET, uint64(instSlot))
+	c.emit(instr.I32_CONST, 0)
+	c.emit(instr.STRUCT_GET)
+}
+
+func (c *Compiler) emitRaise(n *ast.Raise) {
+	if n.Exc == nil {
+		c.emit(instr.GLOBAL_GET, uint64(c.excepts[len(c.excepts)-1]))
+		c.emit(instr.THROW)
+		return
+	}
+	if call, ok := n.Exc.(*ast.CallExpr); ok {
+		if name, ok := call.Fn.(*ast.Name); ok {
+			if cls := c.classes[name.Name]; cls != nil && isExceptionInfo(cls) {
+				c.emitExceptionInstance(cls, call.Args)
+				c.emit(instr.ERROR_NEW)
+				c.emit(instr.THROW)
+				return
+			}
+		}
+	}
+	c.expr(n.Exc)
+	c.emit(instr.ERROR_NEW)
+	c.emit(instr.THROW)
+}
+
+func (c *Compiler) emitExceptionInstance(cls *classInfo, args []ast.Expr) {
+	c.emit(instr.STRUCT_NEW_DEFAULT, c.typeIndex(cls.typ))
+	c.emit(instr.DUP)
+	c.emit(instr.I32_CONST, 0)
+	c.emit(instr.I64_CONST, uint64(cls.classID))
+	c.emit(instr.STRUCT_SET)
+	c.emit(instr.DUP)
+	c.emit(instr.I32_CONST, 1)
+	if len(args) > 0 {
+		c.expr(args[0])
+	} else {
+		c.constGet(vmtypes.String(""))
+	}
+	c.emit(instr.STRUCT_SET)
+}
+
+func (c *Compiler) emitWith(n *ast.With) {
+	var emit func(int)
+	emit = func(i int) {
+		item := n.Items[i]
+		ctxSlot := c.tmp()
+		c.expr(item.Context)
+		c.emit(instr.GLOBAL_SET, uint64(ctxSlot))
+		owner, enter := c.methodOwner(c.types[item.Context].(*types.Class).Name, "__enter__")
+		c.emit(instr.GLOBAL_GET, uint64(ctxSlot))
+		c.funcValue(enter, owner.methodBody["__enter__"])
+		c.emit(instr.CALL)
+		if item.OptionalVars != nil {
+			c.set(item.OptionalVars.(*ast.Name).Name)
+		} else {
+			c.emit(instr.DROP)
+		}
+		_, exit := c.methodOwner(c.types[item.Context].(*types.Class).Name, "__exit__")
+		exitOwner, _ := c.methodOwner(c.types[item.Context].(*types.Class).Name, "__exit__")
+		c.emitTryFinally(func() {
+			if i+1 < len(n.Items) {
+				emit(i + 1)
+				return
+			}
+			c.block(n.Body)
+		}, func() {
+			c.emit(instr.GLOBAL_GET, uint64(ctxSlot))
+			c.funcValue(exit, exitOwner.methodBody["__exit__"])
+			c.emit(instr.CALL)
+			c.emit(instr.DROP)
+		})
+	}
+	emit(0)
+}
+
+func (c *Compiler) methodOwner(name, method string) (*classInfo, *fn) {
+	for info := c.classes[name]; info != nil; info = info.base {
+		if fn := info.methods[method]; fn != nil {
+			return info, fn
+		}
+	}
+	return nil, nil
 }
 
 // emitPatternTest tests the value in global slot `slot` (static type typ) against
@@ -504,7 +750,7 @@ func (c *Compiler) emitMappingTest(pat *ast.MappingPattern, slot int, typ types.
 		c.emitPatternTest(pat.Values[i], child, d.Value, next)
 	}
 	if pat.Rest != "" && pat.Rest != "_" {
-		keysT := types.ListOf(d.Key)
+		keysT := types.NewList(d.Key)
 		c.emit(instr.I32_CONST, uint64(len(pat.Keys)))
 		c.emit(instr.ARRAY_NEW_DEFAULT, c.typeIndex(keysT))
 		for i, keyExpr := range pat.Keys {
@@ -869,6 +1115,8 @@ func (c *Compiler) funcValue(info *fn, body []ast.Stmt) {
 	child.fn = info
 	child.locals = info.locals
 	child.loops = nil
+	child.finally = nil
+	child.excepts = nil
 	child.temps = map[string]int{}
 	child.boxed = map[*local]bool{}
 	child.block(body)
@@ -909,6 +1157,7 @@ func (c *Compiler) ret(n *ast.Return) {
 	} else {
 		c.emit(instr.REF_NULL)
 	}
+	c.inlineFinalizers()
 	c.emit(instr.RETURN)
 }
 
@@ -1440,6 +1689,15 @@ func (c *Compiler) emitCmp(l ast.Expr, op token.Type, r ast.Expr) {
 		c.contains(op, l, r)
 		return
 	}
+	if op == token.IS || op == token.ISNOT {
+		c.expr(l)
+		c.expr(r)
+		c.emit(instr.REF_EQ)
+		if op == token.ISNOT {
+			c.emit(instr.I32_EQZ)
+		}
+		return
+	}
 	c.expr(l)
 	c.expr(r)
 	c.emit(cmpOpcode(op, t))
@@ -1449,6 +1707,7 @@ func (c *Compiler) contains(op token.Type, l ast.Expr, r ast.Expr) {
 	switch c.types[r].(type) {
 	case *types.Dict:
 		c.emit(instr.MAP_LOOKUP)
+		c.emit(instr.SWAP)
 		c.emit(instr.DROP)
 	case *types.List:
 		c.callHost(c.host.listContains(c.types[l], c.types[r]))
@@ -1557,6 +1816,27 @@ func (c *Compiler) call(x *ast.CallExpr) {
 			c.emit(instr.STRING_LEN)
 			c.emit(instr.I32_CONST, 0)
 			c.emit(instr.I32_NE)
+		default:
+			switch t := at.(type) {
+			case *types.List:
+				c.emit(instr.ARRAY_LEN)
+				c.emit(instr.I32_CONST, 0)
+				c.emit(instr.I32_NE)
+			case *types.Dict, *types.Set:
+				c.emit(instr.MAP_LEN)
+				c.emit(instr.I32_CONST, 0)
+				c.emit(instr.I32_NE)
+			case *types.Tuple:
+				c.emit(instr.DROP)
+				if len(t.Elems) == 0 {
+					c.emit(instr.I32_CONST, 0)
+				} else {
+					c.emit(instr.I32_CONST, 1)
+				}
+			case *types.Iterator, *types.Callable, *types.Class:
+				c.emit(instr.REF_IS_NULL)
+				c.emit(instr.I32_EQZ)
+			}
 		}
 	case "abs":
 		if at == types.Int {
@@ -1595,6 +1875,10 @@ func (c *Compiler) call(x *ast.CallExpr) {
 }
 
 func (c *Compiler) construct(x *ast.CallExpr, cls *classInfo) {
+	if isExceptionInfo(cls) {
+		c.emitExceptionInstance(cls, x.Args)
+		return
+	}
 	c.emit(instr.STRUCT_NEW_DEFAULT, c.typeIndex(cls.typ))
 	c.applyFieldDefaults(cls)
 	if init := cls.methods["__init__"]; init != nil {
@@ -1690,12 +1974,12 @@ func (c *Compiler) nextCall(arg ast.Expr) {
 func (c *Compiler) methodCall(x *ast.CallExpr, attr *ast.Attribute) {
 	recvType := c.types[attr.X]
 	if cls, ok := recvType.(*types.Class); ok {
-		info := c.classes[cls.Name]
+		owner, method := c.methodOwner(cls.Name, attr.Name)
 		c.expr(attr.X)
 		for _, arg := range x.Args {
 			c.expr(arg)
 		}
-		c.funcValue(info.methods[attr.Name], info.methodBody[attr.Name])
+		c.funcValue(method, owner.methodBody[attr.Name])
 		c.emit(instr.CALL)
 		return
 	}

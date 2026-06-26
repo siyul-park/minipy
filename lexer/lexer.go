@@ -17,12 +17,6 @@ import (
 	"github.com/siyul-park/minipy/token"
 )
 
-// eofRune marks "no more input" from the rune accessors.
-const eofRune = rune(-1)
-
-// bom is the UTF-8 byte-order mark, skipped if it leads the input.
-const bom = '\uFEFF'
-
 // Lexer scans source read from an io.Reader into tokens, one Next at a time.
 type Lexer struct {
 	r   *bufio.Reader
@@ -44,6 +38,12 @@ type Lexer struct {
 	pending []token.Token
 	errs    token.ErrorList
 }
+
+// eofRune marks "no more input" from the rune accessors.
+const eofRune = rune(-1)
+
+// bom is the UTF-8 byte-order mark, skipped if it leads the input.
+const bom = '\uFEFF'
 
 var stringPrefixes = map[string]struct{}{
 	"r": {}, "R": {}, "f": {}, "F": {}, "b": {}, "B": {}, "u": {}, "U": {},
