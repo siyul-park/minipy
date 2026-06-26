@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/siyul-park/minipy/parser"
 	"github.com/siyul-park/minipy/token"
 	"github.com/siyul-park/minivm/instr"
 	"github.com/siyul-park/minivm/interp"
@@ -37,6 +38,54 @@ func hasCode(t *testing.T, err error, code token.Code) {
 		}
 	}
 	t.Fatalf("expected diagnostic %s, got %v", code, err)
+}
+
+// checkOnly runs the parser and type checker without lowering, returning the
+// accumulated diagnostics. It lets union/inference checks be tested before the
+// codegen stage exists.
+func checkOnly(t *testing.T, src string) token.ErrorList {
+	t.Helper()
+	mod, parseErr := parser.Parse(strings.NewReader(src))
+	chk := newChecker()
+	chk.check(mod)
+	var errs token.ErrorList
+	if pl, ok := parseErr.(token.ErrorList); ok {
+		errs = append(errs, pl...)
+	}
+	return append(errs, chk.errs...)
+}
+
+func TestCheckUnions(t *testing.T) {
+	t.Run("union annotation and isinstance narrowing type-check", func(t *testing.T) {
+		errs := checkOnly(t, "def describe(x: int | str) -> str:\n"+
+			"    if isinstance(x, int):\n"+
+			"        return \"int:\" + str(x)\n"+
+			"    return \"str:\" + x\n")
+		require.Empty(t, errs)
+	})
+
+	t.Run("is-not-None narrowing on Optional", func(t *testing.T) {
+		errs := checkOnly(t, "def f(x: int | None) -> int:\n"+
+			"    if x is not None:\n"+
+			"        return x\n"+
+			"    return 0\n")
+		require.Empty(t, errs)
+	})
+
+	t.Run("operating on an un-narrowed union is an error", func(t *testing.T) {
+		errs := checkOnly(t, "def f(x: int | str) -> str:\n    return \"v:\" + x\n")
+		require.NotEmpty(t, errs)
+	})
+
+	t.Run("global inference needs no annotation", func(t *testing.T) {
+		require.Empty(t, checkOnly(t, "x = 5\nprint(str(x))\n"))
+	})
+
+	t.Run("isinstance arity is checked", func(t *testing.T) {
+		errs := checkOnly(t, "x: int = 1\nprint(str(isinstance(x)))\n")
+		require.NotEmpty(t, errs)
+		require.Equal(t, token.ArityMismatch, errs[0].Code)
+	})
 }
 
 func TestCompile(t *testing.T) {
@@ -888,7 +937,6 @@ func hasOps(t *testing.T, constants []vmtypes.Value, ops ...instr.Opcode) {
 
 func TestCompileErrors(t *testing.T) {
 	cases := map[string]token.Code{
-		"x = 5\n":                             token.MissingAnnotation,
 		"x: int = 1.5\n":                      token.TypeMismatch,
 		"print(str(1 + 1.5))\n":               token.TypeMismatch,
 		"x: int = 99999999999999999999999\n":  token.IntOverflow,

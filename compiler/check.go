@@ -87,15 +87,20 @@ type checker struct {
 	loops      int // enclosing-loop depth, for break/continue validation
 	excepts    int // enclosing-except depth, for bare raise validation
 	fn         *fn
+	// narrowed overlays flow-sensitive types onto bindings inside a guarded
+	// region (isinstance / is-None). nameType consults it first so a use sees
+	// the narrowed member type, not the declared union.
+	narrowed map[string]types.Type
 }
 
 func newChecker() *checker {
 	c := &checker{
-		types:   map[ast.Expr]types.Type{},
-		globals: map[string]*global{},
-		funcs:   map[string]*fn{},
-		classes: map[string]*classInfo{},
-		lambdas: map[*ast.LambdaExpr]*fn{},
+		types:    map[ast.Expr]types.Type{},
+		globals:  map[string]*global{},
+		funcs:    map[string]*fn{},
+		classes:  map[string]*classInfo{},
+		lambdas:  map[*ast.LambdaExpr]*fn{},
+		narrowed: map[string]types.Type{},
 	}
 	c.declareBuiltinExceptions()
 	return c
@@ -110,10 +115,137 @@ func (c *checker) check(mod *ast.Module) {
 }
 
 // checkBlock checks a statement sequence (a module body or a compound block).
+// When an `if` whose body always returns/raises and has no else precedes other
+// statements, the negative narrowing of its condition applies to the rest of
+// the block (e.g. `if isinstance(x, int): return ...` narrows x for what
+// follows).
 func (c *checker) checkBlock(body []ast.Stmt) {
-	for _, s := range body {
+	for i, s := range body {
 		c.stmt(s)
+		iff, ok := s.(*ast.If)
+		if !ok || len(iff.Orelse) != 0 || !blockReturns(iff.Body) {
+			continue
+		}
+		if _, neg := c.narrowings(iff.Cond); len(neg) > 0 {
+			rest := body[i+1:]
+			c.withNarrow(neg, func() { c.checkBlock(rest) })
+			return
+		}
 	}
+}
+
+// withNarrow runs fn with the given bindings narrowed, restoring the previous
+// overlay afterward.
+func (c *checker) withNarrow(m map[string]types.Type, fn func()) {
+	if len(m) == 0 {
+		fn()
+		return
+	}
+	type saved struct {
+		t  types.Type
+		ok bool
+	}
+	old := make(map[string]saved, len(m))
+	for k, v := range m {
+		prev, ok := c.narrowed[k]
+		old[k] = saved{prev, ok}
+		c.narrowed[k] = v
+	}
+	fn()
+	for k, s := range old {
+		if s.ok {
+			c.narrowed[k] = s.t
+		} else {
+			delete(c.narrowed, k)
+		}
+	}
+}
+
+// narrowings extracts the type refinements a condition implies for its true
+// (pos) and false (neg) branches. It recognizes isinstance(NAME, T) and
+// NAME is/is not None, and only narrows bindings whose type is a union or Any.
+func (c *checker) narrowings(cond ast.Expr) (pos, neg map[string]types.Type) {
+	pos = map[string]types.Type{}
+	neg = map[string]types.Type{}
+	switch e := cond.(type) {
+	case *ast.CallExpr:
+		name, ok := e.Fn.(*ast.Name)
+		if !ok || name.Name != "isinstance" || len(e.Args) != 2 {
+			return
+		}
+		target, ok := e.Args[0].(*ast.Name)
+		if !ok {
+			return
+		}
+		cur := c.currentType(target.Name)
+		if !narrowable(cur) {
+			return
+		}
+		t := c.resolveType(e.Args[1])
+		if t == types.Invalid {
+			return
+		}
+		pos[target.Name] = t
+		if w := types.Without(cur, t); w != types.Invalid {
+			neg[target.Name] = w
+		}
+	case *ast.Compare:
+		if len(e.Ops) != 1 {
+			return
+		}
+		target, ok := e.X.(*ast.Name)
+		if !ok {
+			return
+		}
+		if _, ok := e.Comparators[0].(*ast.NoneLit); !ok {
+			return
+		}
+		cur := c.currentType(target.Name)
+		if !narrowable(cur) {
+			return
+		}
+		switch e.Ops[0] {
+		case token.IS:
+			pos[target.Name] = types.None
+			if w := types.Without(cur, types.None); w != types.Invalid {
+				neg[target.Name] = w
+			}
+		case token.ISNOT:
+			if w := types.Without(cur, types.None); w != types.Invalid {
+				pos[target.Name] = w
+			}
+			neg[target.Name] = types.None
+		}
+	}
+	return
+}
+
+// currentType returns the binding's current (possibly narrowed) type without
+// emitting diagnostics, or Invalid if the name is unknown here.
+func (c *checker) currentType(name string) types.Type {
+	if t, ok := c.narrowed[name]; ok {
+		return t
+	}
+	if c.fn != nil && !c.fn.globals[name] {
+		if l, ok := c.fn.locals[name]; ok {
+			return l.typ
+		}
+		if cap, ok := c.fn.captures[name]; ok {
+			return cap.typ
+		}
+	}
+	if g, ok := c.globals[name]; ok {
+		return g.typ
+	}
+	return types.Invalid
+}
+
+// narrowable reports whether a binding of type t benefits from flow narrowing.
+func narrowable(t types.Type) bool {
+	if _, ok := t.(*types.Union); ok {
+		return true
+	}
+	return types.IsAny(t)
 }
 
 func (c *checker) stmt(s ast.Stmt) {
@@ -525,8 +657,9 @@ func (c *checker) checkClassPattern(pat *ast.ClassPattern, subjT types.Type) {
 
 func (c *checker) ifStmt(n *ast.If) {
 	c.condition(n.Cond)
-	c.checkBlock(n.Body)
-	c.checkBlock(n.Orelse)
+	pos, neg := c.narrowings(n.Cond)
+	c.withNarrow(pos, func() { c.checkBlock(n.Body) })
+	c.withNarrow(neg, func() { c.checkBlock(n.Orelse) })
 }
 
 func (c *checker) whileStmt(n *ast.While) {
@@ -696,7 +829,8 @@ func (c *checker) assign(n *ast.Assign) {
 global:
 	g, declared := c.globals[name.Name]
 	if !declared {
-		c.errs.Add(n.Pos(), token.MissingAnnotation, "global %q needs a type annotation on its first assignment", name.Name)
+		// Whole-program inference: an unannotated global takes the type of its
+		// first assignment instead of requiring an annotation.
 		g = c.declare(name.Name, vt, n.Pos())
 		g.init = true
 		c.types[name] = vt
@@ -775,8 +909,12 @@ func (c *checker) unpackAssign(target *ast.TupleLit, vt types.Type, pos token.Po
 		}
 		g, declared := c.globals[name.Name]
 		if !declared {
-			c.errs.Add(name.Pos(), token.MissingAnnotation, "global %q needs a type annotation on its first assignment", name.Name)
+			// Whole-program inference: infer the unannotated global from the
+			// unpacked element type instead of requiring an annotation.
 			g = c.declare(name.Name, elems[i], name.Pos())
+			g.init = true
+			c.types[name] = g.typ
+			continue
 		}
 		if !types.AssignableTo(elems[i], g.typ) {
 			c.errs.Add(name.Pos(), token.TypeMismatch, "cannot assign %s to %s %q", elems[i], g.typ, name.Name)
@@ -1270,6 +1408,17 @@ func (c *checker) resolveType(e ast.Expr) types.Type {
 		c.errs.Add(e.Pos(), token.UnsupportedType, "unknown type %q", name.Name)
 		return types.Invalid
 	}
+	if u, ok := e.(*ast.UnionType); ok {
+		members := make([]types.Type, len(u.Members))
+		for i, m := range u.Members {
+			mt := c.resolveType(m)
+			if mt == types.Invalid {
+				return types.Invalid
+			}
+			members[i] = mt
+		}
+		return types.NewUnion(members...)
+	}
 	if sub, ok := e.(*ast.Subscript); ok {
 		base, ok := sub.X.(*ast.Name)
 		if !ok {
@@ -1309,6 +1458,28 @@ func (c *checker) resolveType(e ast.Expr) types.Type {
 			return types.NewTuple(c.resolveType(sub.Index))
 		case "Iterator":
 			return types.NewIterator(c.resolveType(sub.Index))
+		case "Optional":
+			elem := c.resolveType(sub.Index)
+			if elem == types.Invalid {
+				return types.Invalid
+			}
+			return types.NewUnion(elem, types.None)
+		case "Union":
+			var members []types.Type
+			if args, ok := sub.Index.(*ast.TupleLit); ok {
+				members = make([]types.Type, len(args.Elems))
+				for i, elem := range args.Elems {
+					members[i] = c.resolveType(elem)
+				}
+			} else {
+				members = []types.Type{c.resolveType(sub.Index)}
+			}
+			for _, m := range members {
+				if m == types.Invalid {
+					return types.Invalid
+				}
+			}
+			return types.NewUnion(members...)
 		case "Callable":
 			args, ok := sub.Index.(*ast.TupleLit)
 			if !ok || len(args.Elems) != 2 {
@@ -1753,6 +1924,9 @@ func (c *checker) ifExpType(n *ast.IfExp) types.Type {
 }
 
 func (c *checker) nameType(n *ast.Name) types.Type {
+	if t, ok := c.narrowed[n.Name]; ok {
+		return t
+	}
 	if c.fn != nil {
 		if c.fn.globals[n.Name] {
 			goto global
@@ -2079,11 +2253,11 @@ func (c *checker) checkComparable(op token.Type, lt, rt types.Type, pos token.Po
 }
 
 func identityComparable(t types.Type) bool {
-	if types.Equal(t, types.None) || types.Equal(t, types.Str) {
+	if types.Equal(t, types.None) || types.Equal(t, types.Str) || types.IsAny(t) {
 		return true
 	}
 	switch t.(type) {
-	case *types.List, *types.Dict, *types.Set, *types.Tuple, *types.Class, *types.Iterator, *types.Callable:
+	case *types.List, *types.Dict, *types.Set, *types.Tuple, *types.Class, *types.Iterator, *types.Callable, *types.Union:
 		return true
 	default:
 		return false
@@ -2103,6 +2277,23 @@ func containsType(needle, haystack types.Type) bool {
 	}
 }
 
+// isinstanceType checks isinstance(value, T). The first argument is any value;
+// the second is a type operand (resolved as an annotation, not a value) whose
+// resolved type is recorded for the compiler to lower as a REF_TEST.
+func (c *checker) isinstanceType(n *ast.CallExpr) types.Type {
+	if len(n.Args) != 2 {
+		c.errs.Add(n.Pos(), token.ArityMismatch, "isinstance() takes exactly 2 arguments (%d given)", len(n.Args))
+		for _, a := range n.Args {
+			c.expr(a)
+		}
+		return types.Bool
+	}
+	c.expr(n.Args[0])
+	t := c.resolveType(n.Args[1])
+	c.types[n.Args[1]] = t
+	return types.Bool
+}
+
 func (c *checker) callType(n *ast.CallExpr) types.Type {
 	name, ok := n.Fn.(*ast.Name)
 	if !ok {
@@ -2111,6 +2302,10 @@ func (c *checker) callType(n *ast.CallExpr) types.Type {
 		}
 		fnType := c.expr(n.Fn)
 		return c.callableCallType(n, fnType)
+	}
+
+	if name.Name == "isinstance" {
+		return c.isinstanceType(n)
 	}
 
 	argTypes := make([]types.Type, len(n.Args))
