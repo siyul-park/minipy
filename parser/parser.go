@@ -956,8 +956,24 @@ func (p *Parser) parseNameList() []string {
 	return names
 }
 
-// parseType parses an annotation.
+// parseType parses an annotation, including union forms `A | B | C`.
 func (p *Parser) parseType() ast.Expr {
+	pos := p.cur().Pos
+	first := p.parseTypeAtom()
+	if !p.at(token.PIPE) {
+		return first
+	}
+	members := []ast.Expr{first}
+	for p.at(token.PIPE) {
+		p.advance()
+		members = append(members, p.parseTypeAtom())
+	}
+	return &ast.UnionType{Base: ast.Base{Position: pos}, Members: members}
+}
+
+// parseTypeAtom parses a single non-union annotation atom: a name, a None, or a
+// subscripted/generic type such as list[T], dict[K, V], or Callable[[P], R].
+func (p *Parser) parseTypeAtom() ast.Expr {
 	t := p.cur()
 	if t.Type == token.NAME || t.Type == token.NONE {
 		p.advance()
@@ -987,10 +1003,6 @@ func (p *Parser) parseType() ast.Expr {
 				index = &ast.TupleLit{Base: ast.Base{Position: t.Pos}, Elems: args}
 			}
 			return &ast.Subscript{Base: ast.Base{Position: t.Pos}, X: node, Index: index}
-		}
-		if p.at(token.PIPE) {
-			p.errs.Add(t.Pos, token.UnsupportedType, "optional/union annotations arrive later")
-			p.skipTypeTail()
 		}
 		return node
 	}
@@ -1579,38 +1591,6 @@ func (p *Parser) skipBlock() {
 		if depth == 0 {
 			return
 		}
-	}
-}
-
-// skipBracketed consumes a balanced open..close bracket region starting here.
-func (p *Parser) skipBracketed(open, closing token.Type) {
-	if !p.at(open) {
-		return
-	}
-	depth := 0
-	for !p.at(token.EOF) {
-		switch p.cur().Type {
-		case open:
-			depth++
-		case closing:
-			depth--
-		}
-		p.advance()
-		if depth == 0 {
-			return
-		}
-	}
-}
-
-// skipTypeTail consumes a `[...]` or `| ...` annotation tail for recovery.
-func (p *Parser) skipTypeTail() {
-	if p.at(token.LBRACKET) {
-		p.skipBracketed(token.LBRACKET, token.RBRACKET)
-		return
-	}
-	for p.at(token.PIPE) {
-		p.advance()
-		p.parseType()
 	}
 }
 
