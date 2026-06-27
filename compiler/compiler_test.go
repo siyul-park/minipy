@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/siyul-park/minipy/parser"
 	"github.com/siyul-park/minipy/token"
 	"github.com/siyul-park/minivm/instr"
 	"github.com/siyul-park/minivm/interp"
@@ -37,6 +38,162 @@ func hasCode(t *testing.T, err error, code token.Code) {
 		}
 	}
 	t.Fatalf("expected diagnostic %s, got %v", code, err)
+}
+
+// checkOnly runs the parser and type checker without lowering, returning the
+// accumulated diagnostics. It lets union/inference checks be tested before the
+// codegen stage exists.
+func checkOnly(t *testing.T, src string) token.ErrorList {
+	t.Helper()
+	mod, parseErr := parser.Parse(strings.NewReader(src))
+	chk := newChecker()
+	chk.check(mod)
+	var errs token.ErrorList
+	if pl, ok := parseErr.(token.ErrorList); ok {
+		errs = append(errs, pl...)
+	}
+	return append(errs, chk.errs...)
+}
+
+func TestCompileUnions(t *testing.T) {
+	t.Run("isinstance dispatch on a union runs", func(t *testing.T) {
+		src := "def describe(x: int | str) -> str:\n" +
+			"    if isinstance(x, int):\n" +
+			"        return \"int:\" + str(x)\n" +
+			"    return \"str:\" + x\n" +
+			"print(describe(3))\n" +
+			"print(describe(\"hi\"))\n"
+		require.Equal(t, "int:3\nstr:hi\n", run(t, src))
+	})
+
+	t.Run("Optional narrowing with is not None runs", func(t *testing.T) {
+		src := "def f(x: int | None) -> int:\n" +
+			"    if x is not None:\n" +
+			"        return x + 1\n" +
+			"    return 0\n" +
+			"v: int | None = 41\n" +
+			"print(str(f(v)))\n" +
+			"w: int | None = None\n" +
+			"print(str(f(w)))\n"
+		require.Equal(t, "42\n0\n", run(t, src))
+	})
+
+	t.Run("isinstance lowers to REF_TEST and narrowing to REF_CAST", func(t *testing.T) {
+		src := "def describe(x: int | str) -> str:\n" +
+			"    if isinstance(x, int):\n" +
+			"        return str(x)\n" +
+			"    return x\n" +
+			"print(describe(1))\n"
+		prog, err := Compile(strings.NewReader(src), WithOutput(&bytes.Buffer{}))
+		require.NoError(t, err)
+		hasOps(t, prog.Constants, instr.REF_TEST, instr.REF_CAST)
+	})
+
+	t.Run("concrete calls specialize isinstance branches", func(t *testing.T) {
+		src := "def describe(x: int | str) -> str:\n" +
+			"    if isinstance(x, int):\n" +
+			"        return \"int:\" + str(x)\n" +
+			"    return \"str:\" + x\n" +
+			"print(describe(3))\n" +
+			"print(describe(\"hi\"))\n"
+		var buf bytes.Buffer
+		prog, err := Compile(strings.NewReader(src), WithOutput(&buf))
+		require.NoError(t, err)
+
+		vm := interp.New(prog)
+		defer vm.Close()
+		require.NoError(t, vm.Run(context.Background()))
+		require.Equal(t, "int:3\nstr:hi\n", buf.String())
+
+		requireFuncParam(t, prog.Constants, vmtypes.TypeI64, false, instr.REF_TEST, instr.REF_CAST)
+		requireFuncParam(t, prog.Constants, vmtypes.TypeString, false, instr.REF_TEST, instr.REF_CAST)
+		requireFuncParam(t, prog.Constants, vmtypes.TypeRef, true, instr.REF_TEST, instr.REF_CAST)
+	})
+
+	t.Run("specialized forward function call runs", func(t *testing.T) {
+		src := "def g() -> str:\n" +
+			"    return describe(3)\n" +
+			"def describe(x: int | str) -> str:\n" +
+			"    if isinstance(x, int):\n" +
+			"        return \"int:\" + str(x)\n" +
+			"    return \"str:\" + x\n" +
+			"print(g())\n"
+		require.Equal(t, "int:3\n", run(t, src))
+	})
+}
+
+func TestCompileInference(t *testing.T) {
+	t.Run("unannotated function compiles and runs via inference", func(t *testing.T) {
+		src := "def identity(x):\n" +
+			"    return x\n" +
+			"print(str(identity(3)))\n" +
+			"print(identity(\"hi\"))\n"
+		require.Equal(t, "3\nhi\n", run(t, src))
+	})
+
+	t.Run("unannotated concrete calls specialize by argument type", func(t *testing.T) {
+		src := "def identity(x):\n" +
+			"    return x\n" +
+			"print(str(identity(3)))\n" +
+			"print(identity(\"hi\"))\n"
+		prog, err := Compile(strings.NewReader(src), WithOutput(io.Discard))
+		require.NoError(t, err)
+
+		requireFuncParam(t, prog.Constants, vmtypes.TypeI64, true)
+		requireFuncParam(t, prog.Constants, vmtypes.TypeString, true)
+		requireFuncParam(t, prog.Constants, vmtypes.TypeRef, true)
+	})
+
+	t.Run("inferred concrete return type", func(t *testing.T) {
+		src := "def two():\n" +
+			"    return 2\n" +
+			"x = two()\n" +
+			"print(str(x + 1))\n"
+		require.Equal(t, "3\n", run(t, src))
+	})
+
+	t.Run("unannotated parameter narrowed with isinstance", func(t *testing.T) {
+		src := "def kind(x):\n" +
+			"    if isinstance(x, int):\n" +
+			"        return \"int\"\n" +
+			"    return \"other\"\n" +
+			"print(kind(1))\n" +
+			"print(kind(\"s\"))\n"
+		require.Equal(t, "int\nother\n", run(t, src))
+	})
+}
+
+func TestCheckUnions(t *testing.T) {
+	t.Run("union annotation and isinstance narrowing type-check", func(t *testing.T) {
+		errs := checkOnly(t, "def describe(x: int | str) -> str:\n"+
+			"    if isinstance(x, int):\n"+
+			"        return \"int:\" + str(x)\n"+
+			"    return \"str:\" + x\n")
+		require.Empty(t, errs)
+	})
+
+	t.Run("is-not-None narrowing on Optional", func(t *testing.T) {
+		errs := checkOnly(t, "def f(x: int | None) -> int:\n"+
+			"    if x is not None:\n"+
+			"        return x\n"+
+			"    return 0\n")
+		require.Empty(t, errs)
+	})
+
+	t.Run("operating on an un-narrowed union is an error", func(t *testing.T) {
+		errs := checkOnly(t, "def f(x: int | str) -> str:\n    return \"v:\" + x\n")
+		require.NotEmpty(t, errs)
+	})
+
+	t.Run("global inference needs no annotation", func(t *testing.T) {
+		require.Empty(t, checkOnly(t, "x = 5\nprint(str(x))\n"))
+	})
+
+	t.Run("isinstance arity is checked", func(t *testing.T) {
+		errs := checkOnly(t, "x: int = 1\nprint(str(isinstance(x)))\n")
+		require.NotEmpty(t, errs)
+		require.Equal(t, token.ArityMismatch, errs[0].Code)
+	})
 }
 
 func TestCompile(t *testing.T) {
@@ -886,9 +1043,30 @@ func hasOps(t *testing.T, constants []vmtypes.Value, ops ...instr.Opcode) {
 	}
 }
 
+func requireFuncParam(t *testing.T, constants []vmtypes.Value, param vmtypes.Type, wantOps bool, ops ...instr.Opcode) {
+	t.Helper()
+	for _, constant := range constants {
+		fn, ok := constant.(*vmtypes.Function)
+		if !ok || len(fn.Typ.Params) != 1 || !fn.Typ.Params[0].Equals(param) {
+			continue
+		}
+		if len(ops) == 0 {
+			return
+		}
+		seen := map[instr.Opcode]bool{}
+		for _, ins := range instr.Unmarshal(fn.Code) {
+			seen[ins.Opcode()] = true
+		}
+		for _, op := range ops {
+			require.Equalf(t, wantOps, seen[op], "function with param %s opcode %s", param, op)
+		}
+		return
+	}
+	t.Fatalf("expected function constant with param %s", param)
+}
+
 func TestCompileErrors(t *testing.T) {
 	cases := map[string]token.Code{
-		"x = 5\n":                             token.MissingAnnotation,
 		"x: int = 1.5\n":                      token.TypeMismatch,
 		"print(str(1 + 1.5))\n":               token.TypeMismatch,
 		"x: int = 99999999999999999999999\n":  token.IntOverflow,

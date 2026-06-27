@@ -37,25 +37,26 @@ type config struct {
 // package-level Compile convenience function while keeping options reusable for
 // one source stream.
 type Compiler struct {
-	src     []byte
-	cfg     config
-	prog    *program.Builder
-	code    target
-	types   map[ast.Expr]types.Type
-	globals map[string]*global
-	funcs   map[string]*fn
-	classes map[string]*classInfo
-	lambdas map[*ast.LambdaExpr]*fn
-	locals  map[string]*local
-	fn      *fn
-	temps   map[string]int
-	host    *hostFuncs
-	consts  map[*interp.HostFunction]int
-	loops   []loopLabels // enclosing-loop branch targets, innermost last
-	finally []finallyFrame
-	excepts []int
-	next    int
-	boxed   map[*local]bool
+	src      []byte
+	cfg      config
+	prog     *program.Builder
+	code     target
+	types    map[ast.Expr]types.Type
+	globals  map[string]*global
+	funcs    map[string]*fn
+	classes  map[string]*classInfo
+	lambdas  map[*ast.LambdaExpr]*fn
+	callSpec map[*ast.CallExpr]*specialization
+	locals   map[string]*local
+	fn       *fn
+	temps    map[string]int
+	host     *hostFuncs
+	consts   map[*interp.HostFunction]int
+	loops    []loopLabels // enclosing-loop branch targets, innermost last
+	finally  []finallyFrame
+	excepts  []int
+	next     int
+	boxed    map[*local]bool
 }
 
 // loopLabels are the branch targets for the loop currently being lowered: cont
@@ -134,7 +135,7 @@ func defaultConfig() config {
 
 // init resets per-compile lowering state. Compiler is reusable; each
 // Compile call gets a fresh builder, symbol tables, loop stack, and host cache.
-func (c *Compiler) init(b *program.Builder, types map[ast.Expr]types.Type, globals map[string]*global, funcs map[string]*fn, classes map[string]*classInfo, lambdas map[*ast.LambdaExpr]*fn, host *hostFuncs) {
+func (c *Compiler) init(b *program.Builder, types map[ast.Expr]types.Type, globals map[string]*global, funcs map[string]*fn, classes map[string]*classInfo, lambdas map[*ast.LambdaExpr]*fn, callSpec map[*ast.CallExpr]*specialization, host *hostFuncs) {
 	c.prog = b
 	c.code = mainTarget(b)
 	c.types = types
@@ -142,6 +143,7 @@ func (c *Compiler) init(b *program.Builder, types map[ast.Expr]types.Type, globa
 	c.funcs = funcs
 	c.classes = classes
 	c.lambdas = lambdas
+	c.callSpec = callSpec
 	c.locals = nil
 	c.fn = nil
 	c.temps = map[string]int{}
@@ -217,7 +219,7 @@ func (c *Compiler) Compile() (*program.Program, error) {
 
 	host := newHostFuncs(c.cfg.out, chk.classes)
 	b := program.NewBuilder()
-	c.init(b, chk.types, chk.globals, chk.funcs, chk.classes, chk.lambdas, host)
+	c.init(b, chk.types, chk.globals, chk.funcs, chk.classes, chk.lambdas, chk.callSpec, host)
 	c.module(mod)
 
 	prog, err := b.Build()
@@ -245,6 +247,7 @@ func (c *Compiler) Compile() (*program.Program, error) {
 // landing instruction — branch targets must stay within the code (analysis
 // rejects a jump to len(code)).
 func (c *Compiler) module(mod *ast.Module) {
+	c.buildCallSpecs(c.callSpec)
 	c.block(mod.Body)
 	c.emit(instr.NOP)
 }
@@ -253,7 +256,62 @@ func (c *Compiler) module(mod *ast.Module) {
 func (c *Compiler) block(body []ast.Stmt) {
 	for _, s := range body {
 		c.stmt(s)
+		if iff, ok := s.(*ast.If); ok && len(iff.Orelse) == 0 && blockReturns(iff.Body) {
+			if known, truth := c.conditionTruth(iff.Cond); known && truth {
+				return
+			}
+		}
 	}
+}
+
+// conditionTruth mirrors checker.conditionTruth for codegen. Specialized
+// function bodies may leave impossible branches unchecked, so lowering must
+// prune those same branches instead of compiling expressions with no type table
+// entries.
+func (c *Compiler) conditionTruth(cond ast.Expr) (known bool, truth bool) {
+	switch e := cond.(type) {
+	case *ast.CallExpr:
+		name, ok := e.Fn.(*ast.Name)
+		if !ok || name.Name != "isinstance" || len(e.Args) != 2 {
+			return false, false
+		}
+		target, ok := e.Args[0].(*ast.Name)
+		if !ok {
+			return false, false
+		}
+		cur := c.typ(target.Name)
+		if !concrete(cur) && !types.Equal(cur, types.None) {
+			return false, false
+		}
+		t := c.types[e.Args[1]]
+		if t == nil || t == types.Invalid {
+			return false, false
+		}
+		return true, types.AssignableTo(cur, t)
+	case *ast.Compare:
+		if len(e.Ops) != 1 {
+			return false, false
+		}
+		target, ok := e.X.(*ast.Name)
+		if !ok {
+			return false, false
+		}
+		if _, ok := e.Comparators[0].(*ast.NoneLit); !ok {
+			return false, false
+		}
+		cur := c.typ(target.Name)
+		if !concrete(cur) && !types.Equal(cur, types.None) {
+			return false, false
+		}
+		isNone := types.Equal(cur, types.None)
+		switch e.Ops[0] {
+		case token.IS:
+			return true, isNone
+		case token.ISNOT:
+			return true, !isNone
+		}
+	}
+	return false, false
 }
 
 func (c *Compiler) stmt(s ast.Stmt) {
@@ -918,6 +976,31 @@ func (c *Compiler) set(name string) {
 	c.emit(instr.GLOBAL_SET, uint64(c.globals[name].index))
 }
 
+// narrowCast unboxes a ref-backed binding (union/Any) to the concrete type the
+// checker narrowed this use to. Flow-proven narrowing (isinstance / is-None)
+// recorded a concrete type on the use node while the slot stays a ref, so a
+// checked REF_CAST recovers the unboxed value. No cast is emitted when the use
+// itself is still dynamic or None.
+func (c *Compiler) narrowCast(x *ast.Name) {
+	use := c.types[x]
+	if use == nil || refDynamic(use) || types.Equal(use, types.None) {
+		return
+	}
+	if !refDynamic(c.typ(x.Name)) {
+		return
+	}
+	c.emit(instr.REF_CAST, c.typeIndex(use))
+}
+
+// refDynamic reports whether a type is represented as minivm's dynamic ref —
+// a union or Any — whose members are recovered with REF_TEST / REF_CAST.
+func refDynamic(t types.Type) bool {
+	if _, ok := t.(*types.Union); ok {
+		return true
+	}
+	return types.IsAny(t)
+}
+
 func (c *Compiler) typ(name string) types.Type {
 	if _, ok := c.temps[name]; ok {
 		return types.Int
@@ -938,6 +1021,14 @@ func (c *Compiler) typ(name string) types.Type {
 // emitIf lowers `if`/`elif`/`else`: invert the condition and branch over the
 // then-block to the else-block (docs/spec/05-codegen.md).
 func (c *Compiler) emitIf(n *ast.If) {
+	if known, truth := c.conditionTruth(n.Cond); known {
+		if truth {
+			c.block(n.Body)
+		} else {
+			c.block(n.Orelse)
+		}
+		return
+	}
 	c.expr(n.Cond)
 	c.emit(instr.I32_EQZ)
 	elseL := c.label()
@@ -1087,12 +1178,67 @@ func (c *Compiler) function(n *ast.Function) {
 	if info == nil {
 		return
 	}
+	if c.fn == nil && info.specializable {
+		// Emit each monomorphic instantiation as its own function constant; the
+		// Any-typed body below still goes to the global slot as the fallback.
+		for _, spec := range info.instances {
+			c.buildSpec(spec)
+		}
+	}
 	c.funcValue(info, n.Body)
 	if c.fn != nil {
 		c.set(n.Name.Name)
 		return
 	}
 	c.emit(instr.GLOBAL_SET, uint64(info.slot.index))
+}
+
+// buildSpec compiles one specialization to a function constant, recording its
+// index on the instance. Specializations are top-level and capture nothing.
+func (c *Compiler) buildSpec(spec *specialization) {
+	if spec == nil || spec.emitted || spec.emitting {
+		return
+	}
+	spec.emitting = true
+	c.buildCallSpecs(spec.calls)
+
+	info := spec.info
+	fb := vmtypes.NewFunctionBuilder(&vmtypes.FunctionType{
+		Params:  vmParams(info),
+		Returns: vmReturns(info.ret),
+	})
+	fb.WithLocals(vmLocals(info)...)
+
+	child := *c
+	child.code = fnTarget(fb)
+	child.fn = info
+	child.locals = info.locals
+	child.types = spec.types
+	child.callSpec = spec.calls
+	child.loops = nil
+	child.finally = nil
+	child.excepts = nil
+	child.temps = map[string]int{}
+	child.boxed = map[*local]bool{}
+	child.block(info.body)
+	child.emitNoneReturn()
+	if child.next > c.next {
+		c.next = child.next
+	}
+
+	f, err := fb.Build()
+	if err != nil {
+		panic(err)
+	}
+	info.constIdx = c.prog.Const(f)
+	spec.emitted = true
+	spec.emitting = false
+}
+
+func (c *Compiler) buildCallSpecs(calls map[*ast.CallExpr]*specialization) {
+	for _, spec := range calls {
+		c.buildSpec(spec)
+	}
 }
 
 func (c *Compiler) funcInfo(n *ast.Function) *fn {
@@ -1242,6 +1388,7 @@ func (c *Compiler) expr(n ast.Expr) {
 		c.constGet(vmtypes.String(x.Value))
 	case *ast.Name:
 		c.get(x.Name)
+		c.narrowCast(x)
 	case *ast.UnaryExpr:
 		c.unary(x)
 	case *ast.BinaryExpr:
@@ -1736,6 +1883,15 @@ func (c *Compiler) call(x *ast.CallExpr) {
 		return
 	}
 	name, isName := x.Fn.(*ast.Name)
+	if isName && name.Name == "isinstance" && len(x.Args) == 2 {
+		// isinstance(value, T) → REF_TEST recovers the runtime tag as i32; the
+		// trailing I32_NE normalizes it to a minipy bool (i1).
+		c.expr(x.Args[0])
+		c.emit(instr.REF_TEST, c.typeIndex(c.types[x.Args[1]]))
+		c.emit(instr.I32_CONST, 0)
+		c.emit(instr.I32_NE)
+		return
+	}
 	if isName {
 		if cls, ok := c.classes[name.Name]; ok {
 			c.construct(x, cls)
@@ -1744,6 +1900,11 @@ func (c *Compiler) call(x *ast.CallExpr) {
 		if fn, ok := c.funcs[name.Name]; ok {
 			for _, arg := range x.Args {
 				c.expr(arg)
+			}
+			if spec := c.callSpec[x]; spec != nil {
+				c.emit(instr.CONST_GET, uint64(spec.info.constIdx))
+				c.emit(instr.CALL)
+				return
 			}
 			c.emit(instr.GLOBAL_GET, uint64(fn.slot.index))
 			c.emit(instr.CALL)

@@ -7,6 +7,7 @@
 package types
 
 import (
+	"sort"
 	"strings"
 
 	vmtypes "github.com/siyul-park/minivm/types"
@@ -63,6 +64,22 @@ type Callable struct {
 	Return Type
 }
 
+// Union is a closed disjunction of member types (`A | B`). It is always kept
+// normalized (flattened, deduped, sorted) by NewUnion, so two unions with the
+// same members compare Equal. Optional[T] is the special case Union{T, None}.
+// A union lowers to minivm's dynamic ref type and is unboxed by narrowing.
+type Union struct {
+	Members []Type
+}
+
+// TypeVar is an inference placeholder used by the whole-program solver while it
+// resolves the types of unannotated bindings. It must be resolved to a concrete
+// type, union, or Any before code generation; reaching VM() is a bug.
+type TypeVar struct {
+	ID    int
+	Bound Type
+}
+
 var (
 	Invalid Type = primitive{name: "<invalid>"}
 	Int     Type = primitive{name: "int", vm: vmtypes.TypeI64, num: true}
@@ -70,6 +87,9 @@ var (
 	Bool    Type = primitive{name: "bool", vm: vmtypes.TypeI1}
 	Str     Type = primitive{name: "str", vm: vmtypes.TypeString}
 	None    Type = primitive{name: "None", vm: vmtypes.TypeRef}
+	// Any is the open top of the lattice (⊤) — the gradual fallback used only
+	// when no bounded union fits. It is backed by minivm's dynamic ref type.
+	Any Type = primitive{name: "Any", vm: vmtypes.TypeRef}
 )
 
 // NewList returns the list type with the given element type.
@@ -109,6 +129,133 @@ func NewCallable(params []Type, ret Type) Type {
 	return &Callable{Params: append([]Type(nil), params...), Return: ret}
 }
 
+// NewUnion returns the normalized union of the given members. Nested unions are
+// flattened, duplicates removed (by Equal), and members sorted by their string
+// form for a canonical representation. A single distinct member collapses to
+// that member; an Any member absorbs the whole union to Any; an Invalid member
+// poisons the result to Invalid; an empty union is Invalid.
+func NewUnion(members ...Type) Type {
+	var flat []Type
+	var add func(t Type)
+	add = func(t Type) {
+		switch m := t.(type) {
+		case nil:
+			return
+		case *Union:
+			for _, sub := range m.Members {
+				add(sub)
+			}
+		default:
+			flat = append(flat, t)
+		}
+	}
+	for _, m := range members {
+		add(m)
+	}
+
+	var uniq []Type
+	for _, m := range flat {
+		if m == Invalid {
+			return Invalid
+		}
+		if Equal(m, Any) {
+			return Any
+		}
+		dup := false
+		for _, u := range uniq {
+			if Equal(m, u) {
+				dup = true
+				break
+			}
+		}
+		if !dup {
+			uniq = append(uniq, m)
+		}
+	}
+
+	switch len(uniq) {
+	case 0:
+		return Invalid
+	case 1:
+		return uniq[0]
+	}
+	sort.Slice(uniq, func(i, j int) bool { return uniq[i].String() < uniq[j].String() })
+	return &Union{Members: uniq}
+}
+
+// NewTypeVar returns a fresh inference type variable with the given id.
+func NewTypeVar(id int) *TypeVar {
+	return &TypeVar{ID: id}
+}
+
+// IsUnion reports whether t is a union and returns it.
+func IsUnion(t Type) (*Union, bool) {
+	u, ok := t.(*Union)
+	return u, ok
+}
+
+// IsAny reports whether t is the open top type.
+func IsAny(t Type) bool { return Equal(t, Any) }
+
+// IsOptional reports whether t is a union that includes None (i.e. Optional).
+func IsOptional(t Type) bool {
+	u, ok := t.(*Union)
+	if !ok {
+		return false
+	}
+	for _, m := range u.Members {
+		if Equal(m, None) {
+			return true
+		}
+	}
+	return false
+}
+
+// Join returns the least upper bound of a and b in the lattice
+// (⊥ < concrete < closed-union < Any). Invalid is treated as bottom so error
+// operands do not poison inference. Distinct members merge into a closed union.
+func Join(a, b Type) Type {
+	switch {
+	case a == nil || a == Invalid:
+		return b
+	case b == nil || b == Invalid:
+		return a
+	case Equal(a, b):
+		return a
+	case IsAny(a) || IsAny(b):
+		return Any
+	}
+	return NewUnion(a, b)
+}
+
+// Narrow returns the positive narrowing of u to t — the type inside a branch
+// where flow proved the value is a t (e.g. isinstance(x, t) true). When t is a
+// member of u (or u is Any), the result is t; otherwise t is returned unchanged
+// since the guard established it.
+func Narrow(u, t Type) Type {
+	return t
+}
+
+// Without returns u with member t removed — the negative narrowing used in the
+// else branch of an isinstance/None guard. Removing the sole remaining member
+// yields Invalid (an unreachable branch).
+func Without(u, t Type) Type {
+	un, ok := u.(*Union)
+	if !ok {
+		if Equal(u, t) {
+			return Invalid
+		}
+		return u
+	}
+	var kept []Type
+	for _, m := range un.Members {
+		if !Equal(m, t) {
+			kept = append(kept, m)
+		}
+	}
+	return NewUnion(kept...)
+}
+
 // Equal reports structural equality of two source types.
 func Equal(a, b Type) bool {
 	if a == nil || b == nil {
@@ -118,9 +265,41 @@ func Equal(a, b Type) bool {
 }
 
 // AssignableTo reports whether a value of type src may be stored where dst is
-// expected. There is no implicit coercion, so structural equality is enough.
+// expected. There is no implicit numeric coercion, but widening into a union or
+// Any is free: a concrete value flows into any union that admits it, and a
+// union flows into a wider union whose members cover it.
 func AssignableTo(src, dst Type) bool {
-	return src != nil && dst != nil && src != Invalid && dst != Invalid && Equal(src, dst)
+	if src == nil || dst == nil || src == Invalid || dst == Invalid {
+		return false
+	}
+	if Equal(src, dst) {
+		return true
+	}
+	if IsAny(dst) {
+		return true
+	}
+	if du, ok := dst.(*Union); ok {
+		if su, ok := src.(*Union); ok {
+			for _, m := range su.Members {
+				if !unionAdmits(du, m) {
+					return false
+				}
+			}
+			return true
+		}
+		return unionAdmits(du, src)
+	}
+	return false
+}
+
+// unionAdmits reports whether union u has a member equal to t.
+func unionAdmits(u *Union, t Type) bool {
+	for _, m := range u.Members {
+		if Equal(m, t) {
+			return true
+		}
+	}
+	return false
 }
 
 // Printable reports whether str()/print() accept t.
@@ -131,8 +310,18 @@ func Printable(t Type) bool {
 	if Equal(t, Int) || Equal(t, Float) || Equal(t, Bool) || Equal(t, Str) || Equal(t, None) {
 		return true
 	}
-	switch t.(type) {
+	if IsAny(t) {
+		return true
+	}
+	switch v := t.(type) {
 	case *List, *Dict, *Set, *Tuple:
+		return true
+	case *Union:
+		for _, m := range v.Members {
+			if !Printable(m) {
+				return false
+			}
+		}
 		return true
 	default:
 		return false
@@ -153,6 +342,8 @@ func Resolve(name string) (Type, bool) {
 		return Str, true
 	case "None":
 		return None, true
+	case "Any":
+		return Any, true
 	default:
 		return Invalid, false
 	}
@@ -348,6 +539,59 @@ func (t *Callable) Equal(o Type) bool {
 	return true
 }
 
+func (t *Union) String() string {
+	if t == nil || len(t.Members) == 0 {
+		return "<invalid>"
+	}
+	parts := make([]string, len(t.Members))
+	for i, m := range t.Members {
+		if m == nil {
+			parts[i] = "<invalid>"
+		} else {
+			parts[i] = m.String()
+		}
+	}
+	return strings.Join(parts, " | ")
+}
+func (*Union) IsNumeric() bool { return false }
+func (*Union) VM() vmtypes.Type {
+	return vmtypes.TypeRef
+}
+func (t *Union) Equal(o Type) bool {
+	other, ok := o.(*Union)
+	if !ok || len(t.Members) != len(other.Members) {
+		return false
+	}
+	for i := range t.Members {
+		if !Equal(t.Members[i], other.Members[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+func (t *TypeVar) String() string {
+	if t == nil {
+		return "<invalid>"
+	}
+	if t.Bound != nil {
+		return t.Bound.String()
+	}
+	return "?"
+}
+func (t *TypeVar) IsNumeric() bool {
+	return t != nil && t.Bound != nil && t.Bound.IsNumeric()
+}
+func (*TypeVar) VM() vmtypes.Type {
+	// A type variable must be resolved before code generation; reaching here is
+	// a compiler bug, so report the invalid (nil) VM type rather than guessing.
+	return nil
+}
+func (t *TypeVar) Equal(o Type) bool {
+	other, ok := o.(*TypeVar)
+	return ok && t != nil && other != nil && t.ID == other.ID
+}
+
 // sealed restricts Type implementations to this package.
 func (primitive) sealed() {}
 func (*List) sealed()     {}
@@ -357,3 +601,5 @@ func (*Tuple) sealed()    {}
 func (*Class) sealed()    {}
 func (*Iterator) sealed() {}
 func (*Callable) sealed() {}
+func (*Union) sealed()    {}
+func (*TypeVar) sealed()  {}

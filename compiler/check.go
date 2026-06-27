@@ -1,6 +1,8 @@
 package compiler
 
 import (
+	"strings"
+
 	"github.com/siyul-park/minipy/ast"
 	"github.com/siyul-park/minipy/token"
 	"github.com/siyul-park/minipy/types"
@@ -30,6 +32,8 @@ type fn struct {
 	name      string
 	params    []param
 	ret       types.Type
+	inferRet  bool         // return type is inferred from the body (no annotation)
+	returns   []types.Type // return expression types collected while inferring
 	generator bool
 	slot      *global
 	local     *local
@@ -41,6 +45,29 @@ type fn struct {
 	capOrder  []string
 	globals   map[string]bool
 	nonlocal  map[string]bool
+
+	// specialization: a polymorphic function (union/Any parameter) is
+	// monomorphized per concrete call-site argument tuple when its body
+	// type-checks under that tuple. The union/Any body still compiles to the
+	// global slot as the fallback.
+	specializable bool
+	body          []ast.Stmt
+	astParams     []*ast.Param
+	instances     []*specialization
+	constIdx      int // VM constant index of this (specialized) function body
+}
+
+// specialization is one monomorphic instantiation of a specializable function:
+// a clone whose parameters are bound to a concrete argument tuple, with its own
+// per-node type table so the same body lowers differently per instantiation.
+type specialization struct {
+	key      string
+	params   []types.Type
+	info     *fn
+	types    map[ast.Expr]types.Type
+	calls    map[*ast.CallExpr]*specialization
+	emitted  bool
+	emitting bool
 }
 
 type classField struct {
@@ -87,19 +114,34 @@ type checker struct {
 	loops      int // enclosing-loop depth, for break/continue validation
 	excepts    int // enclosing-except depth, for bare raise validation
 	fn         *fn
+	// narrowed overlays flow-sensitive types onto bindings inside a guarded
+	// region (isinstance / is-None). nameType consults it first so a use sees
+	// the narrowed member type, not the declared union.
+	narrowed map[string]types.Type
+	// callSpec maps a call site to the specialization it links to; specActive
+	// guards against unbounded re-instantiation of recursive specializations.
+	callSpec   map[*ast.CallExpr]*specialization
+	specActive map[string]bool
 }
 
 func newChecker() *checker {
 	c := &checker{
-		types:   map[ast.Expr]types.Type{},
-		globals: map[string]*global{},
-		funcs:   map[string]*fn{},
-		classes: map[string]*classInfo{},
-		lambdas: map[*ast.LambdaExpr]*fn{},
+		types:      map[ast.Expr]types.Type{},
+		globals:    map[string]*global{},
+		funcs:      map[string]*fn{},
+		classes:    map[string]*classInfo{},
+		lambdas:    map[*ast.LambdaExpr]*fn{},
+		narrowed:   map[string]types.Type{},
+		callSpec:   map[*ast.CallExpr]*specialization{},
+		specActive: map[string]bool{},
 	}
 	c.declareBuiltinExceptions()
 	return c
 }
+
+// maxSpecializations caps monomorphic instantiations per function; past it,
+// calls fall back to the single union/Any-typed body.
+const maxSpecializations = 8
 
 // check walks every top-level statement, accumulating diagnostics.
 func (c *checker) check(mod *ast.Module) {
@@ -110,10 +152,191 @@ func (c *checker) check(mod *ast.Module) {
 }
 
 // checkBlock checks a statement sequence (a module body or a compound block).
+// When an `if` whose body always returns/raises and has no else precedes other
+// statements, the negative narrowing of its condition applies to the rest of
+// the block (e.g. `if isinstance(x, int): return ...` narrows x for what
+// follows).
 func (c *checker) checkBlock(body []ast.Stmt) {
-	for _, s := range body {
+	for i, s := range body {
 		c.stmt(s)
+		iff, ok := s.(*ast.If)
+		if !ok || len(iff.Orelse) != 0 || !blockReturns(iff.Body) {
+			continue
+		}
+		if known, truth := c.conditionTruth(iff.Cond); known {
+			if truth {
+				return
+			}
+			continue
+		}
+		if _, neg := c.narrowings(iff.Cond); len(neg) > 0 {
+			rest := body[i+1:]
+			c.withNarrow(neg, func() { c.checkBlock(rest) })
+			return
+		}
 	}
+}
+
+// withNarrow runs fn with the given bindings narrowed, restoring the previous
+// overlay afterward.
+func (c *checker) withNarrow(m map[string]types.Type, fn func()) {
+	if len(m) == 0 {
+		fn()
+		return
+	}
+	type saved struct {
+		t  types.Type
+		ok bool
+	}
+	old := make(map[string]saved, len(m))
+	for k, v := range m {
+		prev, ok := c.narrowed[k]
+		old[k] = saved{prev, ok}
+		c.narrowed[k] = v
+	}
+	fn()
+	for k, s := range old {
+		if s.ok {
+			c.narrowed[k] = s.t
+		} else {
+			delete(c.narrowed, k)
+		}
+	}
+}
+
+// narrowings extracts the type refinements a condition implies for its true
+// (pos) and false (neg) branches. It recognizes isinstance(NAME, T) and
+// NAME is/is not None, and only narrows bindings whose type is a union or Any.
+func (c *checker) narrowings(cond ast.Expr) (pos, neg map[string]types.Type) {
+	pos = map[string]types.Type{}
+	neg = map[string]types.Type{}
+	switch e := cond.(type) {
+	case *ast.CallExpr:
+		name, ok := e.Fn.(*ast.Name)
+		if !ok || name.Name != "isinstance" || len(e.Args) != 2 {
+			return
+		}
+		target, ok := e.Args[0].(*ast.Name)
+		if !ok {
+			return
+		}
+		cur := c.currentType(target.Name)
+		if !narrowable(cur) {
+			return
+		}
+		t := c.resolveType(e.Args[1])
+		if t == types.Invalid {
+			return
+		}
+		pos[target.Name] = t
+		if w := types.Without(cur, t); w != types.Invalid {
+			neg[target.Name] = w
+		}
+	case *ast.Compare:
+		if len(e.Ops) != 1 {
+			return
+		}
+		target, ok := e.X.(*ast.Name)
+		if !ok {
+			return
+		}
+		if _, ok := e.Comparators[0].(*ast.NoneLit); !ok {
+			return
+		}
+		cur := c.currentType(target.Name)
+		if !narrowable(cur) {
+			return
+		}
+		switch e.Ops[0] {
+		case token.IS:
+			pos[target.Name] = types.None
+			if w := types.Without(cur, types.None); w != types.Invalid {
+				neg[target.Name] = w
+			}
+		case token.ISNOT:
+			if w := types.Without(cur, types.None); w != types.Invalid {
+				pos[target.Name] = w
+			}
+			neg[target.Name] = types.None
+		}
+	}
+	return
+}
+
+// conditionTruth returns statically known results for pure guards once a
+// specialization has bound a narrowed value to one concrete type.
+func (c *checker) conditionTruth(cond ast.Expr) (known bool, truth bool) {
+	switch e := cond.(type) {
+	case *ast.CallExpr:
+		name, ok := e.Fn.(*ast.Name)
+		if !ok || name.Name != "isinstance" || len(e.Args) != 2 {
+			return false, false
+		}
+		target, ok := e.Args[0].(*ast.Name)
+		if !ok {
+			return false, false
+		}
+		cur := c.currentType(target.Name)
+		if !concrete(cur) && !types.Equal(cur, types.None) {
+			return false, false
+		}
+		t := c.resolveType(e.Args[1])
+		if t == types.Invalid {
+			return false, false
+		}
+		return true, types.AssignableTo(cur, t)
+	case *ast.Compare:
+		if len(e.Ops) != 1 {
+			return false, false
+		}
+		target, ok := e.X.(*ast.Name)
+		if !ok {
+			return false, false
+		}
+		if _, ok := e.Comparators[0].(*ast.NoneLit); !ok {
+			return false, false
+		}
+		cur := c.currentType(target.Name)
+		if !concrete(cur) && !types.Equal(cur, types.None) {
+			return false, false
+		}
+		isNone := types.Equal(cur, types.None)
+		switch e.Ops[0] {
+		case token.IS:
+			return true, isNone
+		case token.ISNOT:
+			return true, !isNone
+		}
+	}
+	return false, false
+}
+
+// currentType returns the binding's current (possibly narrowed) type without
+// emitting diagnostics, or Invalid if the name is unknown here.
+func (c *checker) currentType(name string) types.Type {
+	if t, ok := c.narrowed[name]; ok {
+		return t
+	}
+	if c.fn != nil && !c.fn.globals[name] {
+		if l, ok := c.fn.locals[name]; ok {
+			return l.typ
+		}
+		if cap, ok := c.fn.captures[name]; ok {
+			return cap.typ
+		}
+	}
+	if g, ok := c.globals[name]; ok {
+		return g.typ
+	}
+	return types.Invalid
+}
+
+// narrowable reports whether a binding of type t benefits from flow narrowing.
+func narrowable(t types.Type) bool {
+	if _, ok := t.(*types.Union); ok {
+		return true
+	}
+	return types.IsAny(t)
 }
 
 func (c *checker) stmt(s ast.Stmt) {
@@ -525,8 +748,17 @@ func (c *checker) checkClassPattern(pat *ast.ClassPattern, subjT types.Type) {
 
 func (c *checker) ifStmt(n *ast.If) {
 	c.condition(n.Cond)
-	c.checkBlock(n.Body)
-	c.checkBlock(n.Orelse)
+	if known, truth := c.conditionTruth(n.Cond); known {
+		if truth {
+			c.checkBlock(n.Body)
+		} else {
+			c.checkBlock(n.Orelse)
+		}
+		return
+	}
+	pos, neg := c.narrowings(n.Cond)
+	c.withNarrow(pos, func() { c.checkBlock(n.Body) })
+	c.withNarrow(neg, func() { c.checkBlock(n.Orelse) })
 }
 
 func (c *checker) whileStmt(n *ast.While) {
@@ -696,7 +928,8 @@ func (c *checker) assign(n *ast.Assign) {
 global:
 	g, declared := c.globals[name.Name]
 	if !declared {
-		c.errs.Add(n.Pos(), token.MissingAnnotation, "global %q needs a type annotation on its first assignment", name.Name)
+		// Whole-program inference: an unannotated global takes the type of its
+		// first assignment instead of requiring an annotation.
 		g = c.declare(name.Name, vt, n.Pos())
 		g.init = true
 		c.types[name] = vt
@@ -775,8 +1008,12 @@ func (c *checker) unpackAssign(target *ast.TupleLit, vt types.Type, pos token.Po
 		}
 		g, declared := c.globals[name.Name]
 		if !declared {
-			c.errs.Add(name.Pos(), token.MissingAnnotation, "global %q needs a type annotation on its first assignment", name.Name)
+			// Whole-program inference: infer the unannotated global from the
+			// unpacked element type instead of requiring an annotation.
 			g = c.declare(name.Name, elems[i], name.Pos())
+			g.init = true
+			c.types[name] = g.typ
+			continue
 		}
 		if !types.AssignableTo(elems[i], g.typ) {
 			c.errs.Add(name.Pos(), token.TypeMismatch, "cannot assign %s to %s %q", elems[i], g.typ, name.Name)
@@ -927,7 +1164,6 @@ func (c *checker) declareFuncs(body []ast.Stmt) {
 		}
 		info := &fn{
 			name:      f.Name.Name,
-			ret:       c.resolveType(f.Returns),
 			generator: containsYield(f.Body),
 			locals:    map[string]*local{},
 			children:  map[string]*fn{},
@@ -935,10 +1171,18 @@ func (c *checker) declareFuncs(body []ast.Stmt) {
 			globals:   map[string]bool{},
 			nonlocal:  map[string]bool{},
 		}
-		for _, p := range f.Params {
-			pt := c.resolveType(p.Ann)
-			info.params = append(info.params, param{name: p.Name.Name, typ: pt})
+		if f.Returns == nil {
+			info.inferRet = true
+			info.ret = types.None // refined from collected returns after the body
+		} else {
+			info.ret = c.resolveType(f.Returns)
 		}
+		for _, p := range f.Params {
+			info.params = append(info.params, param{name: p.Name.Name, typ: c.paramType(p)})
+		}
+		info.body = f.Body
+		info.astParams = f.Params
+		info.specializable = specializable(info)
 		info.slot = c.declare(f.Name.Name, types.Invalid, f.Pos())
 		c.funcs[f.Name.Name] = info
 	}
@@ -1171,7 +1415,7 @@ func (c *checker) classMethod(info *classInfo, n *ast.Function) {
 	for i, p := range n.Params {
 		pt := types.Type(info.typ)
 		if i > 0 {
-			pt = c.resolveType(p.Ann)
+			pt = c.paramType(p)
 		} else if p.Ann != nil {
 			pt = c.resolveType(p.Ann)
 			if pt != types.Invalid && !types.Equal(pt, info.typ) {
@@ -1180,14 +1424,19 @@ func (c *checker) classMethod(info *classInfo, n *ast.Function) {
 		}
 		params = append(params, param{name: p.Name.Name, typ: pt})
 	}
-	ret := c.resolveType(n.Returns)
-	if n.Name.Name == "__init__" && ret != types.Invalid && !types.Equal(ret, types.None) {
-		c.errs.Add(n.Returns.Pos(), token.TypeMismatch, "__init__ must return None, got %s", ret)
+	inferRet := n.Returns == nil && n.Name.Name != "__init__"
+	ret := types.None
+	if n.Returns != nil {
+		ret = c.resolveType(n.Returns)
+		if n.Name.Name == "__init__" && ret != types.Invalid && !types.Equal(ret, types.None) {
+			c.errs.Add(n.Returns.Pos(), token.TypeMismatch, "__init__ must return None, got %s", ret)
+		}
 	}
 	info.methods[n.Name.Name] = &fn{
 		name:      info.name + "." + n.Name.Name,
 		params:    params,
 		ret:       ret,
+		inferRet:  inferRet,
 		generator: containsYield(n.Body),
 		locals:    map[string]*local{},
 		children:  map[string]*fn{},
@@ -1234,7 +1483,6 @@ func (c *checker) nestedFuncs(info *fn, body []ast.Stmt) {
 		}
 		child := &fn{
 			name:      f.Name.Name,
-			ret:       c.resolveType(f.Returns),
 			generator: containsYield(f.Body),
 			locals:    map[string]*local{},
 			parent:    info,
@@ -1243,8 +1491,14 @@ func (c *checker) nestedFuncs(info *fn, body []ast.Stmt) {
 			globals:   map[string]bool{},
 			nonlocal:  map[string]bool{},
 		}
+		if f.Returns == nil {
+			child.inferRet = true
+			child.ret = types.None
+		} else {
+			child.ret = c.resolveType(f.Returns)
+		}
 		for _, p := range f.Params {
-			child.params = append(child.params, param{name: p.Name.Name, typ: c.resolveType(p.Ann)})
+			child.params = append(child.params, param{name: p.Name.Name, typ: c.paramType(p)})
 		}
 		info.children[f.Name.Name] = child
 		c.declareFuncLocal(child, f.Pos())
@@ -1259,6 +1513,15 @@ func srcTypes(params []param) []types.Type {
 	return out
 }
 
+// paramType resolves a parameter's declared type, defaulting an unannotated
+// parameter to Any so whole-program inference can compile it as a dynamic slot.
+func (c *checker) paramType(p *ast.Param) types.Type {
+	if p.Ann == nil {
+		return types.Any
+	}
+	return c.resolveType(p.Ann)
+}
+
 func (c *checker) resolveType(e ast.Expr) types.Type {
 	if name, ok := e.(*ast.Name); ok {
 		if resolved, known := types.Resolve(name.Name); known {
@@ -1269,6 +1532,17 @@ func (c *checker) resolveType(e ast.Expr) types.Type {
 		}
 		c.errs.Add(e.Pos(), token.UnsupportedType, "unknown type %q", name.Name)
 		return types.Invalid
+	}
+	if u, ok := e.(*ast.UnionType); ok {
+		members := make([]types.Type, len(u.Members))
+		for i, m := range u.Members {
+			mt := c.resolveType(m)
+			if mt == types.Invalid {
+				return types.Invalid
+			}
+			members[i] = mt
+		}
+		return types.NewUnion(members...)
 	}
 	if sub, ok := e.(*ast.Subscript); ok {
 		base, ok := sub.X.(*ast.Name)
@@ -1309,6 +1583,28 @@ func (c *checker) resolveType(e ast.Expr) types.Type {
 			return types.NewTuple(c.resolveType(sub.Index))
 		case "Iterator":
 			return types.NewIterator(c.resolveType(sub.Index))
+		case "Optional":
+			elem := c.resolveType(sub.Index)
+			if elem == types.Invalid {
+				return types.Invalid
+			}
+			return types.NewUnion(elem, types.None)
+		case "Union":
+			var members []types.Type
+			if args, ok := sub.Index.(*ast.TupleLit); ok {
+				members = make([]types.Type, len(args.Elems))
+				for i, elem := range args.Elems {
+					members[i] = c.resolveType(elem)
+				}
+			} else {
+				members = []types.Type{c.resolveType(sub.Index)}
+			}
+			for _, m := range members {
+				if m == types.Invalid {
+					return types.Invalid
+				}
+			}
+			return types.NewUnion(members...)
 		case "Callable":
 			args, ok := sub.Index.(*ast.TupleLit)
 			if !ok || len(args.Elems) != 2 {
@@ -1368,6 +1664,19 @@ func (c *checker) checkFunctionBody(body []ast.Stmt, params []*ast.Param, info *
 		}
 	}
 	c.checkBlock(body)
+	if info.inferRet {
+		// Infer the return type as the join of every return expression's type;
+		// a body with no value-returns is None.
+		if len(info.returns) == 0 {
+			info.ret = types.None
+		} else {
+			ret := info.returns[0]
+			for _, rt := range info.returns[1:] {
+				ret = types.Join(ret, rt)
+			}
+			info.ret = ret
+		}
+	}
 	if !info.generator && !types.Equal(info.ret, types.None) && !blockReturns(body) {
 		c.errs.Add(pos, token.TypeMismatch, "function %q may fall through without returning %s", info.name, info.ret)
 	}
@@ -1389,9 +1698,19 @@ func (c *checker) ret(n *ast.Return) {
 		}
 		return
 	}
-	rt := types.None
+	rt := types.Type(types.None)
 	if n.Value != nil {
-		rt = c.exprWithHint(n.Value, c.fn.ret)
+		if c.fn.inferRet {
+			rt = c.expr(n.Value)
+		} else {
+			rt = c.exprWithHint(n.Value, c.fn.ret)
+		}
+	}
+	if c.fn.inferRet {
+		// Return type is being inferred: collect this branch's type instead of
+		// checking against a fixed annotation.
+		c.fn.returns = append(c.fn.returns, rt)
+		return
 	}
 	if c.fn.ret != types.Invalid && rt != types.Invalid && !types.AssignableTo(rt, c.fn.ret) {
 		c.errs.Add(n.Pos(), token.TypeMismatch, "cannot return %s from function returning %s", rt, c.fn.ret)
@@ -1516,6 +1835,128 @@ func containsYield(body []ast.Stmt) bool {
 		}
 	}
 	return false
+}
+
+// specializable reports whether a function may be monomorphized: it has at
+// least one union/Any parameter (so distinct concrete call types are possible)
+// and is not a generator. Whether a given instantiation actually type-checks is
+// decided at the call site, which rolls back and falls back to the union/Any
+// body on any error.
+func specializable(info *fn) bool {
+	if info.generator {
+		return false
+	}
+	for _, p := range info.params {
+		if _, ok := p.typ.(*types.Union); ok {
+			return true
+		}
+		if types.IsAny(p.typ) {
+			return true
+		}
+	}
+	return false
+}
+
+// specialize returns the monomorphic instantiation of fn for the given concrete
+// argument tuple, creating it on first use. It returns nil — falling back to the
+// single union/Any-typed body — when the function is not specializable, an
+// argument is not concrete, the per-function cap is reached, the instantiation
+// recurses, or re-checking the reachable body under the concrete types produces
+// any error.
+func (c *checker) specialize(info *fn, argTypes []types.Type) *specialization {
+	if !info.specializable {
+		return nil
+	}
+	cparams := make([]param, len(info.params))
+	ptypes := make([]types.Type, len(info.params))
+	for i, p := range info.params {
+		at := argTypes[i]
+		if _, isU := p.typ.(*types.Union); isU || types.IsAny(p.typ) {
+			if !concrete(at) {
+				return nil
+			}
+			cparams[i] = param{name: p.name, typ: at}
+		} else {
+			if at == types.Invalid || !types.AssignableTo(at, p.typ) {
+				return nil
+			}
+			cparams[i] = param{name: p.name, typ: p.typ}
+		}
+		ptypes[i] = cparams[i].typ
+	}
+
+	key := specKey(ptypes)
+	for _, s := range info.instances {
+		if s.key == key {
+			return s
+		}
+	}
+	if len(info.instances) >= maxSpecializations {
+		return nil
+	}
+	guard := info.name + "#" + key
+	if c.specActive[guard] {
+		return nil
+	}
+
+	clone := &fn{
+		name:      info.name + "$" + key,
+		params:    cparams,
+		inferRet:  info.inferRet,
+		ret:       info.ret,
+		generator: info.generator,
+		body:      info.body,
+		astParams: info.astParams,
+		locals:    map[string]*local{},
+		children:  map[string]*fn{},
+		captures:  map[string]*capture{},
+		globals:   map[string]bool{},
+		nonlocal:  map[string]bool{},
+	}
+	if clone.inferRet {
+		clone.ret = types.None
+	}
+
+	errMark := len(c.errs)
+	savedTypes, savedNarrow, savedCalls := c.types, c.narrowed, c.callSpec
+	c.types = map[ast.Expr]types.Type{}
+	c.narrowed = map[string]types.Type{}
+	c.callSpec = map[*ast.CallExpr]*specialization{}
+	c.specActive[guard] = true
+	c.checkFunctionBody(clone.body, clone.astParams, clone, token.Pos{})
+	delete(c.specActive, guard)
+	itypes, icalls := c.types, c.callSpec
+	c.types, c.narrowed, c.callSpec = savedTypes, savedNarrow, savedCalls
+
+	if len(c.errs) > errMark {
+		c.errs = c.errs[:errMark] // discard: this tuple cannot specialize
+		return nil
+	}
+	spec := &specialization{key: key, params: ptypes, info: clone, types: itypes, calls: icalls}
+	info.instances = append(info.instances, spec)
+	return spec
+}
+
+// concrete reports whether a type is a single non-dynamic type that a
+// specialization can bind a parameter to.
+func concrete(t types.Type) bool {
+	if t == nil || t == types.Invalid || types.IsAny(t) {
+		return false
+	}
+	switch t.(type) {
+	case *types.Union, *types.TypeVar:
+		return false
+	}
+	return true
+}
+
+// specKey is the canonical signature key for a concrete parameter tuple.
+func specKey(ts []types.Type) string {
+	parts := make([]string, len(ts))
+	for i, t := range ts {
+		parts[i] = t.String()
+	}
+	return strings.Join(parts, ",")
 }
 
 // expr types an expression, records the result, and returns it.
@@ -1753,6 +2194,9 @@ func (c *checker) ifExpType(n *ast.IfExp) types.Type {
 }
 
 func (c *checker) nameType(n *ast.Name) types.Type {
+	if t, ok := c.narrowed[n.Name]; ok {
+		return t
+	}
 	if c.fn != nil {
 		if c.fn.globals[n.Name] {
 			goto global
@@ -2079,11 +2523,11 @@ func (c *checker) checkComparable(op token.Type, lt, rt types.Type, pos token.Po
 }
 
 func identityComparable(t types.Type) bool {
-	if types.Equal(t, types.None) || types.Equal(t, types.Str) {
+	if types.Equal(t, types.None) || types.Equal(t, types.Str) || types.IsAny(t) {
 		return true
 	}
 	switch t.(type) {
-	case *types.List, *types.Dict, *types.Set, *types.Tuple, *types.Class, *types.Iterator, *types.Callable:
+	case *types.List, *types.Dict, *types.Set, *types.Tuple, *types.Class, *types.Iterator, *types.Callable, *types.Union:
 		return true
 	default:
 		return false
@@ -2103,6 +2547,23 @@ func containsType(needle, haystack types.Type) bool {
 	}
 }
 
+// isinstanceType checks isinstance(value, T). The first argument is any value;
+// the second is a type operand (resolved as an annotation, not a value) whose
+// resolved type is recorded for the compiler to lower as a REF_TEST.
+func (c *checker) isinstanceType(n *ast.CallExpr) types.Type {
+	if len(n.Args) != 2 {
+		c.errs.Add(n.Pos(), token.ArityMismatch, "isinstance() takes exactly 2 arguments (%d given)", len(n.Args))
+		for _, a := range n.Args {
+			c.expr(a)
+		}
+		return types.Bool
+	}
+	c.expr(n.Args[0])
+	t := c.resolveType(n.Args[1])
+	c.types[n.Args[1]] = t
+	return types.Bool
+}
+
 func (c *checker) callType(n *ast.CallExpr) types.Type {
 	name, ok := n.Fn.(*ast.Name)
 	if !ok {
@@ -2111,6 +2572,10 @@ func (c *checker) callType(n *ast.CallExpr) types.Type {
 		}
 		fnType := c.expr(n.Fn)
 		return c.callableCallType(n, fnType)
+	}
+
+	if name.Name == "isinstance" {
+		return c.isinstanceType(n)
 	}
 
 	argTypes := make([]types.Type, len(n.Args))
@@ -2129,6 +2594,10 @@ func (c *checker) callType(n *ast.CallExpr) types.Type {
 		if len(argTypes) != len(fn.params) {
 			c.errs.Add(n.Pos(), token.ArityMismatch, "%s() takes exactly %d arguments (%d given)", name.Name, len(fn.params), len(argTypes))
 			return types.Invalid
+		}
+		if spec := c.specialize(fn, argTypes); spec != nil {
+			c.callSpec[n] = spec
+			return spec.info.ret
 		}
 		for i, at := range argTypes {
 			pt := fn.params[i].typ

@@ -389,6 +389,13 @@ type Subscript struct {
 	Index Expr
 }
 
+// UnionType is a union annotation `A | B | C`. It appears only in annotation
+// position; the checker resolves its members to a types.Union.
+type UnionType struct {
+	Base
+	Members []Expr
+}
+
 // ListLit is `[a, b, c]`.
 type ListLit struct {
 	Base
@@ -522,6 +529,7 @@ func (*CallExpr) exprNode()   {}
 func (*IfExp) exprNode()      {}
 func (*Attribute) exprNode()  {}
 func (*Subscript) exprNode()  {}
+func (*UnionType) exprNode()  {}
 func (*ListLit) exprNode()    {}
 func (*DictLit) exprNode()    {}
 func (*SetLit) exprNode()     {}

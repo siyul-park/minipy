@@ -25,7 +25,7 @@ func TestRunFile(t *testing.T) {
 func TestRunFile_CompileError(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "bad.py")
-	require.NoError(t, os.WriteFile(path, []byte("x = 5\n"), 0o644))
+	require.NoError(t, os.WriteFile(path, []byte("x: int = \"oops\"\n"), 0o644))
 
 	var out bytes.Buffer
 	err := runFile(path, &out, optimize.O0)

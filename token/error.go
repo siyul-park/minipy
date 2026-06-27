@@ -37,6 +37,7 @@ const (
 	NotIndexable         Code = "NotIndexable"
 	NoBindingForNonlocal Code = "NoBindingForNonlocal"
 	PatternError         Code = "PatternError"
+	InvalidUnionMember   Code = "InvalidUnionMember"
 )
 
 // Python maps a catalogue code to the CPython exception name a user would see
@@ -47,7 +48,7 @@ func (c Code) Python() string {
 		return "SyntaxError"
 	case IntOverflow:
 		return "ValueError"
-	case MissingAnnotation, TypeMismatch, ArityMismatch, NotComparable, NotIterable, NotIndexable, PatternError:
+	case MissingAnnotation, TypeMismatch, ArityMismatch, NotComparable, NotIterable, NotIndexable, PatternError, InvalidUnionMember:
 		return "TypeError"
 	case UndefinedName, UseBeforeDefinition, NoBindingForNonlocal:
 		return "NameError"

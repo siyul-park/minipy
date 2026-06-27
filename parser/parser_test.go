@@ -46,6 +46,53 @@ func TestParse(t *testing.T) {
 		require.Equal(t, "float", ann.Ann.(*ast.Name).Name)
 	})
 
+	t.Run("union annotations", func(t *testing.T) {
+		mod, err := parse("x: int | str = 1\n")
+		require.NoError(t, err)
+		u := mod.Body[0].(*ast.AnnAssign).Ann.(*ast.UnionType)
+		require.Len(t, u.Members, 2)
+		require.Equal(t, "int", u.Members[0].(*ast.Name).Name)
+		require.Equal(t, "str", u.Members[1].(*ast.Name).Name)
+	})
+
+	t.Run("multi-member union with None", func(t *testing.T) {
+		mod, err := parse("x: int | str | None\n")
+		require.NoError(t, err)
+		u := mod.Body[0].(*ast.AnnAssign).Ann.(*ast.UnionType)
+		require.Len(t, u.Members, 3)
+		require.Equal(t, "None", u.Members[2].(*ast.Name).Name)
+	})
+
+	t.Run("Optional and Union subscripts parse as subscript", func(t *testing.T) {
+		mod, err := parse("x: Optional[int]\ny: Union[int, str]\n")
+		require.NoError(t, err)
+		opt := mod.Body[0].(*ast.AnnAssign).Ann.(*ast.Subscript)
+		require.Equal(t, "Optional", opt.X.(*ast.Name).Name)
+		un := mod.Body[1].(*ast.AnnAssign).Ann.(*ast.Subscript)
+		require.Equal(t, "Union", un.X.(*ast.Name).Name)
+	})
+
+	t.Run("union in function signature and nested generic", func(t *testing.T) {
+		mod, err := parse("def f(a: int | None) -> bool | None:\n    return True\n")
+		require.NoError(t, err)
+		fn := mod.Body[0].(*ast.Function)
+		require.IsType(t, &ast.UnionType{}, fn.Params[0].Ann)
+		require.IsType(t, &ast.UnionType{}, fn.Returns)
+
+		mod, err = parse("xs: list[int | str]\n")
+		require.NoError(t, err)
+		sub := mod.Body[0].(*ast.AnnAssign).Ann.(*ast.Subscript)
+		require.IsType(t, &ast.UnionType{}, sub.Index)
+	})
+
+	t.Run("optional parameter and return annotations", func(t *testing.T) {
+		mod, err := parse("def identity(x):\n    return x\n")
+		require.NoError(t, err)
+		fn := mod.Body[0].(*ast.Function)
+		require.Nil(t, fn.Params[0].Ann)
+		require.Nil(t, fn.Returns)
+	})
+
 	t.Run("plain and augmented assignment", func(t *testing.T) {
 		mod, err := parse("x = 1\nx += 2\n")
 		require.NoError(t, err)
@@ -428,9 +475,8 @@ finally:
 
 func TestParseErrors(t *testing.T) {
 	cases := map[string]token.Code{
-		"1 = 2\n":                token.SyntaxError,
-		"else:\n    pass\n":      token.SyntaxError,
-		"def f(x) -> int:\n p\n": token.MissingAnnotation,
+		"1 = 2\n":           token.SyntaxError,
+		"else:\n    pass\n": token.SyntaxError,
 		"@pkg.decorator\ndef f() -> None:\n pass\n":      token.UnsupportedFeature,
 		"@other\nclass C:\n    pass\n":                   token.UnsupportedFeature,
 		"class C(A, B):\n    pass\n":                     token.UnsupportedFeature,

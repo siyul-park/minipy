@@ -56,7 +56,7 @@ func TestPrintable(t *testing.T) {
 
 func TestResolve(t *testing.T) {
 	for name, want := range map[string]Type{
-		"int": Int, "float": Float, "bool": Bool, "str": Str, "None": None,
+		"int": Int, "float": Float, "bool": Bool, "str": Str, "None": None, "Any": Any,
 	} {
 		got, ok := Resolve(name)
 		require.Truef(t, ok, "name=%s", name)
@@ -64,4 +64,66 @@ func TestResolve(t *testing.T) {
 	}
 	_, ok := Resolve("list")
 	require.False(t, ok)
+}
+
+func TestNewUnion(t *testing.T) {
+	t.Run("normalizes flatten/dedup/sort/collapse", func(t *testing.T) {
+		require.Equal(t, Int, NewUnion(Int))                       // single collapses
+		require.Equal(t, Int, NewUnion(Int, Int))                  // dedup to one
+		require.Equal(t, "int | str", NewUnion(Str, Int).String()) // sorted canonical
+		require.True(t, Equal(NewUnion(Int, Str), NewUnion(Str, Int)))
+		require.True(t, Equal(NewUnion(NewUnion(Int, Str), None), NewUnion(Int, Str, None)))
+	})
+	t.Run("absorbs Any and poisons on Invalid", func(t *testing.T) {
+		require.Equal(t, Any, NewUnion(Int, Any))
+		require.Equal(t, Invalid, NewUnion(Int, Invalid))
+		require.Equal(t, Invalid, NewUnion())
+	})
+	t.Run("VM is ref", func(t *testing.T) {
+		require.Equal(t, vmtypes.TypeRef, NewUnion(Int, Str).VM())
+		require.Equal(t, vmtypes.TypeRef, Any.VM())
+	})
+}
+
+func TestOptional(t *testing.T) {
+	opt := NewUnion(Int, None)
+	require.True(t, IsOptional(opt))
+	require.False(t, IsOptional(NewUnion(Int, Str)))
+	require.Equal(t, Int, Without(opt, None)) // unwrap Optional[int] -> int
+}
+
+func TestJoin(t *testing.T) {
+	require.Equal(t, Int, Join(Int, Int))
+	require.Equal(t, Int, Join(Invalid, Int)) // Invalid is bottom
+	require.Equal(t, Any, Join(Int, Any))
+	require.True(t, Equal(NewUnion(Int, Str), Join(Int, Str)))
+	require.True(t, Equal(NewUnion(Int, Str, None), Join(NewUnion(Int, Str), None)))
+}
+
+func TestNarrowWithout(t *testing.T) {
+	u := NewUnion(Int, Str)
+	require.Equal(t, Int, Narrow(u, Int))  // positive narrow to member
+	require.Equal(t, Str, Without(u, Int)) // remove member -> remaining collapses
+	require.Equal(t, Invalid, Without(Int, Int))
+}
+
+func TestAssignable_Union(t *testing.T) {
+	u := NewUnion(Int, Str)
+	require.True(t, AssignableTo(Int, u))   // widen concrete into union
+	require.True(t, AssignableTo(Int, Any)) // widen into Any
+	require.True(t, AssignableTo(u, NewUnion(Int, Str, None)))
+	require.False(t, AssignableTo(u, Int))   // union not assignable to concrete
+	require.False(t, AssignableTo(Float, u)) // not a member
+	require.False(t, AssignableTo(Any, Int)) // Any needs a cast
+	require.True(t, Printable(u))
+	require.True(t, Printable(Any))
+}
+
+func TestTypeVar(t *testing.T) {
+	a := NewTypeVar(1)
+	b := NewTypeVar(1)
+	c := NewTypeVar(2)
+	require.True(t, a.Equal(b)) // same id
+	require.False(t, a.Equal(c))
+	require.Nil(t, a.VM()) // must be resolved before codegen
 }

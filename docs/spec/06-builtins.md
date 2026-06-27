@@ -56,7 +56,7 @@ A first-class lazy `range` object is deferred to M6 (it is naturally a generator
 | M6 | `iter`, `next`, lazy `range` object |
 | M7 | exception classes `Exception`, `ValueError`, `KeyError`, `IndexError`, … |
 | M8 | a curated typed stdlib subset (`math`, `random`, …) exposed as host modules |
-| M10 | `isinstance` extended to narrow arbitrary union members; reflective/dynamic builtins (opt-in) |
+| M10 | `isinstance(x, T)` narrows arbitrary union/`Any` members (lowered to `REF_TEST`) |
 
 ## Host-function ABI (for embedders)
 
