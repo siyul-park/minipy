@@ -11,9 +11,10 @@ fast, embeddable language that *looks like* Python.
 ## Highlights
 
 - **Static, AOT.** Every type is known at compile time; no runtime type dispatch.
-- **Type hints required at boundaries, inferred locally.** Annotate function
-  params/returns, class fields, and module globals; local variables are inferred.
-  Untyped boundaries do not compile.
+- **Static with whole-program inference.** Boundary annotations are accepted and
+  preferred for clarity, while implemented inference fills in missing function
+  params/returns, module globals, and locals where the program gives enough
+  information.
 - **`int` is int64** (wraps on overflow) — no arbitrary-precision integers.
 - **A real subset.** Every minipy program is valid Python 3.13 source.
 - **Direct lowering.** Typed AST → minivm bytecode (no IR); reuses minivm's
@@ -30,8 +31,9 @@ print(str(fib(20)))   # 6765
 
 ## Status
 
-Specification stage. The language and its staged implementation plan are
-documented; the compiler is not yet built. Start at the overview:
+Compiler, CLI, and REPL are implemented for the documented subset. The
+specification remains the source of truth for supported syntax and staged
+constraints; start at the overview:
 
 - **[docs/spec/00-overview.md](docs/spec/00-overview.md)** — goals, typing model,
   int64 rule, compilation pipeline.

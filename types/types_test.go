@@ -13,8 +13,23 @@ func TestType_String(t *testing.T) {
 	require.Equal(t, "bool", Bool.String())
 	require.Equal(t, "str", Str.String())
 	require.Equal(t, "None", None.String())
+	require.Equal(t, "list[int]", NewList(Int).String())
+	require.Equal(t, "dict[str, int]", NewDict(Str, Int).String())
+	require.Equal(t, "set[int]", NewSet(Int).String())
+	require.Equal(t, "tuple[int, str]", NewTuple(Int, Str).String())
+	require.Equal(t, "tuple[int,]", NewTuple(Int).String())
 	require.Equal(t, "Point", NewClass("Point", []Field{{Name: "x", Type: Int}}).String())
 	require.Equal(t, "Iterator[int]", NewIterator(Int).String())
+	require.Equal(t, "Callable[[int, str], bool]", NewCallable([]Type{Int, Str}, Bool).String())
+	require.Equal(t, "<class>", (*Class)(nil).String())
+	require.Equal(t, "list[<invalid>]", (*List)(nil).String())
+	require.Equal(t, "dict[<invalid>, <invalid>]", (*Dict)(nil).String())
+	require.Equal(t, "set[<invalid>]", (*Set)(nil).String())
+	require.Equal(t, "tuple[<invalid>]", (*Tuple)(nil).String())
+	require.Equal(t, "Iterator[<invalid>]", (*Iterator)(nil).String())
+	require.Equal(t, "Callable[[<invalid>], <invalid>]", (*Callable)(nil).String())
+	require.Equal(t, "<invalid>", (&Union{}).String())
+	require.Equal(t, "<invalid> | int", (&Union{Members: []Type{nil, Int}}).String())
 	require.Equal(t, "<invalid>", Invalid.String())
 }
 
@@ -23,6 +38,14 @@ func TestType_IsNumeric(t *testing.T) {
 	require.True(t, Float.IsNumeric())
 	require.False(t, Bool.IsNumeric())
 	require.False(t, Str.IsNumeric())
+	require.False(t, NewList(Int).IsNumeric())
+	require.False(t, NewDict(Str, Int).IsNumeric())
+	require.False(t, NewSet(Int).IsNumeric())
+	require.False(t, NewTuple(Int).IsNumeric())
+	require.False(t, NewClass("Point", nil).IsNumeric())
+	require.False(t, NewIterator(Int).IsNumeric())
+	require.False(t, NewCallable(nil, None).IsNumeric())
+	require.False(t, NewUnion(Int, Str).IsNumeric())
 }
 
 func TestType_VM(t *testing.T) {
@@ -31,27 +54,56 @@ func TestType_VM(t *testing.T) {
 	require.Equal(t, vmtypes.TypeI1, Bool.VM())
 	require.Equal(t, vmtypes.TypeString, Str.VM())
 	require.Equal(t, vmtypes.TypeRef, None.VM())
+	require.IsType(t, &vmtypes.ArrayType{}, NewList(Int).VM())
+	require.IsType(t, &vmtypes.MapType{}, NewDict(Str, Int).VM())
+	require.IsType(t, &vmtypes.MapType{}, NewSet(Int).VM())
+	require.IsType(t, &vmtypes.StructType{}, NewTuple(Int, Str).VM())
 	require.Equal(t, vmtypes.TypeRef, NewIterator(Int).VM())
+	require.IsType(t, &vmtypes.FunctionType{}, NewCallable([]Type{Int}, Str).VM())
 	require.IsType(t, &vmtypes.StructType{}, NewClass("Point", []Field{{Name: "x", Type: Int}}).VM())
 	require.Nil(t, Invalid.VM())
+	require.Nil(t, (*List)(nil).VM())
+	require.Nil(t, (&List{}).VM())
+	require.Nil(t, (*Dict)(nil).VM())
+	require.Nil(t, (&Dict{}).VM())
+	require.Nil(t, (*Set)(nil).VM())
+	require.Nil(t, (&Set{}).VM())
+	require.Nil(t, (*Tuple)(nil).VM())
+	require.Nil(t, (*Class)(nil).VM())
+	require.Nil(t, (*Callable)(nil).VM())
 }
 
 func TestAssignable(t *testing.T) {
 	require.True(t, AssignableTo(Int, Int))
+	require.True(t, AssignableTo(NewList(Int), NewList(Int)))
+	require.True(t, AssignableTo(NewDict(Str, Int), NewDict(Str, Int)))
+	require.True(t, AssignableTo(NewSet(Int), NewSet(Int)))
+	require.True(t, AssignableTo(NewTuple(Int, Str), NewTuple(Int, Str)))
+	require.True(t, AssignableTo(NewCallable([]Type{Int}, Str), NewCallable([]Type{Int}, Str)))
 	require.True(t, AssignableTo(NewIterator(Int), NewIterator(Int)))
 	require.True(t, AssignableTo(NewClass("Point", nil), NewClass("Point", []Field{{Name: "x", Type: Int}})))
 	require.False(t, AssignableTo(Bool, Int))  // bool is not int
 	require.False(t, AssignableTo(Int, Float)) // no implicit widening
+	require.False(t, AssignableTo(NewList(Int), NewList(Str)))
+	require.False(t, AssignableTo(NewDict(Str, Int), NewDict(Str, Str)))
+	require.False(t, AssignableTo(NewSet(Int), NewSet(Str)))
+	require.False(t, AssignableTo(NewTuple(Int), NewTuple(Int, Str)))
+	require.False(t, AssignableTo(NewCallable([]Type{Int}, Str), NewCallable([]Type{Str}, Str)))
 	require.False(t, AssignableTo(NewIterator(Int), NewIterator(Str)))
 	require.False(t, AssignableTo(NewClass("Point", nil), NewClass("Other", nil)))
+	require.False(t, AssignableTo(nil, Int))
+	require.False(t, AssignableTo(Int, nil))
 	require.False(t, AssignableTo(Invalid, Invalid))
 }
 
 func TestPrintable(t *testing.T) {
-	for _, ty := range []Type{Int, Float, Bool, Str, None} {
+	for _, ty := range []Type{Int, Float, Bool, Str, None, Any, NewList(Int), NewDict(Str, Int), NewSet(Int), NewTuple(Int, Str), NewUnion(Int, Str)} {
 		require.Truef(t, Printable(ty), "%s should be printable", ty)
 	}
+	require.False(t, Printable(nil))
 	require.False(t, Printable(Invalid))
+	require.False(t, Printable(NewClass("Point", nil)))
+	require.False(t, Printable(NewUnion(Int, NewClass("Point", nil))))
 }
 
 func TestResolve(t *testing.T) {
@@ -82,6 +134,13 @@ func TestNewUnion(t *testing.T) {
 	t.Run("VM is ref", func(t *testing.T) {
 		require.Equal(t, vmtypes.TypeRef, NewUnion(Int, Str).VM())
 		require.Equal(t, vmtypes.TypeRef, Any.VM())
+	})
+	t.Run("detects union", func(t *testing.T) {
+		u, ok := IsUnion(NewUnion(Int, Str))
+		require.True(t, ok)
+		require.Len(t, u.Members, 2)
+		_, ok = IsUnion(Int)
+		require.False(t, ok)
 	})
 }
 
@@ -125,5 +184,13 @@ func TestTypeVar(t *testing.T) {
 	c := NewTypeVar(2)
 	require.True(t, a.Equal(b)) // same id
 	require.False(t, a.Equal(c))
+	require.False(t, a.Equal(nil))
+	require.Equal(t, "?", a.String())
+	require.False(t, a.IsNumeric())
+	a.Bound = Int
+	require.Equal(t, "int", a.String())
+	require.True(t, a.IsNumeric())
+	require.Equal(t, "<invalid>", (*TypeVar)(nil).String())
+	require.False(t, (*TypeVar)(nil).IsNumeric())
 	require.Nil(t, a.VM()) // must be resolved before codegen
 }

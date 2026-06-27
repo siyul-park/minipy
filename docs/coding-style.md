@@ -74,18 +74,47 @@ that is what `Error()` renders. A phase collects a `token.ErrorList` and reports
 ## Naming
 
 - Intent-based: names describe the caller-visible outcome, not the mechanism.
+- Prefer **one clear word**. Grow to two words only when the local context cannot
+  disambiguate it. Avoid suffixes like `Helper`, `Manager`, `Data`, `Info` unless
+  the type already has that meaning in the package.
 - Shortest clear name; avoid one-letter names except domain standards
-  (`VM`, `i` for the interpreter receiver in host functions).
+  (`VM`, `i` for the interpreter receiver in host functions). Short local names
+  are good when the surrounding function already supplies the noun.
 - Constructors are `New<Type>`. The primary parse-like entry point is `Parse`/
   `Lex`/`Compile`; secondary targets get a `Parse<Type>` form.
 - Prefer functional options (`WithOutput`) over config structs; apply defaults
   before options.
 
+## Control flow
+
+- Prefer guard clauses, early returns, and small helpers over `goto` or flag-heavy
+  control flow. `goto` is reserved for tight lexer/state-machine code where it is
+  clearer than duplicated scanning logic.
+- Check an expression once, store the result, and pass that result through the
+  branch that needs it. Assignment, `global`, and `nonlocal` paths must not
+  re-type-check the same RHS.
+- Share pure predicates instead of duplicating checker/codegen logic. Keep the
+  shared helper private and small.
+
 ## Error handling
 
 - Wrap propagated errors with `%w` and context: `fmt.Errorf("assemble: %w", err)`.
+- Constructors that intentionally stay error-free may store setup errors and have
+  the public operation return them with context (`New(...).Compile()` reports
+  source read errors as `read source: ...`).
 - Diagnostics from a compile phase are values (`token.ErrorList`), not panics.
 - Panic only for violated internal invariants; recover at execution boundaries.
+
+## Checker rules
+
+- Name resolution follows the language model: local, captured/nonlocal, global,
+  builtin. Keep the global path as a helper instead of jumping to labels.
+- Temporary names that are not real bindings, such as comprehension targets, use
+  an overlay map. Do not create and later delete module globals or function locals
+  for temporary compiler scopes.
+- Checker and codegen must resolve class methods the same way, including inherited
+  methods. Use the shared method lookup path instead of reading only the immediate
+  class map.
 
 ## Lowering to minivm
 
@@ -100,6 +129,13 @@ that is what `Error()` renders. A phase collects a `token.ErrorList` and reports
   when an operation cannot be lowered inline today (e.g. `**` and float `%`,
   which need a loop/temporaries the module-entry frame has no locals for). Such
   cases are documented at their definition as future inline/extension-op work.
+- Prefer existing minivm primitives over compiler-side materialization. Dict/set
+  iteration and comprehensions use `MAP_ITER`, not `MAP_KEYS` plus an array loop.
+- Preserve Python evaluation rules while lowering: chained comparisons evaluate
+  each operand once and short-circuit after the first false comparison.
+- Use standard library building blocks for linear work: `strings.Builder` for
+  repeated concatenation, `strings.Repeat` for padding, and exponentiation by
+  squaring for integer powers.
 
 ## Testing
 
@@ -112,11 +148,23 @@ that is what `Error()` renders. A phase collects a `token.ErrorList` and reports
 - Tests are **self-contained**: inline setup, execution, and assertions. The
   only shared helpers are thin adapters (e.g. wrapping a string in an
   `io.Reader`, or asserting a diagnostic `Code` is present).
+- Test helper names should be one clear word when possible (`code`, `count`,
+  `ops`, `opcode`). Keep helpers narrow enough that the call site reads plainly.
 - Assert diagnostics on the `Code` (via the typed `token.ErrorList`), not on the
   rendered string, so message wording can evolve.
+- For lowering changes, add both behavior tests and bytecode-shape tests when the
+  shape matters (for example, `MAP_ITER` present and `MAP_KEYS` absent).
 - Table-driven where every case shares the same shape; explicit `t.Run`
   otherwise. Do not mix the two at one nesting level.
 - Target ≥80% statement coverage per package.
+
+## Documentation
+
+- When implementation behavior changes, update this file and the relevant spec
+  page in the same change. Comments in code must not contradict the spec.
+- Status text must describe the shipped compiler/CLI/REPL, not an old roadmap
+  phase. Annotation docs must say boundary annotations are optional where
+  whole-program inference can solve them.
 
 ## Git
 

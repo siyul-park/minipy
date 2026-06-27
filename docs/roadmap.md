@@ -69,8 +69,9 @@ scalars.
 ## M2 — Functions
 
 - **Grammar:** `def NAME(params) -> type:`; positional args; `return`; recursion;
-  bare-name decorators (`@staticmethod` placeholder). Param/return annotations
-  **required**. (M2.1: keyword args, default args.)
+  bare-name decorators (`@staticmethod` placeholder). The original milestone
+  required param/return annotations; the shipped M10 layer now infers missing
+  annotations where possible. (M2.1: keyword args, default args.)
 - **Types:** structural `Callable`; arity/positional type checks; local inference
   in bodies.
 - **Opcodes:** `*Function` constants, `CALL`, `RETURN`, `RETURN_CALL` (tail),

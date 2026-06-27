@@ -67,6 +67,9 @@ checked — i64 wraps, by design. `// %` by zero traps (`I64_DIV_S`/`REM_S`
 → `ErrDivideByZero`).
 
 `str` `==`/`<`… use `STRING_EQ`/`STRING_LT`/… ; `str + str` is `STRING_CONCAT`.
+Chained comparisons (`a < b < c`) evaluate each operand once and short-circuit on
+the first false comparison. Middle operands are saved to a temporary slot only
+long enough to become the left operand of the next comparison.
 
 ## Boolean & short-circuit
 
@@ -136,8 +139,10 @@ L_end:
 `for x in <iterable>` (list/dict/generator, M3/M6) desugars to the iterator
 protocol: obtain an iterator, then loop `RESUME`/`CORO_DONE`/`CORO_VALUE`
 (see [generators](#generators-m6)). Over a `list[T]`, the simple form uses
-`ARRAY_LEN` + an index loop with `ARRAY_GET`. Over a `dict`, `MAP_KEYS`→array then
-index loop (or `MAP_ITER`).
+`ARRAY_LEN` + an index loop with `ARRAY_GET`. Over a `dict` or `set`, lowering
+uses `MAP_ITER` and the same iterator loop, avoiding key-array materialization.
+Comprehensions use the same choice: array loop for lists, iterator loop for
+iterators/dicts/sets/strings.
 
 ## Functions & calls (M2)
 

@@ -118,6 +118,9 @@ type checker struct {
 	// region (isinstance / is-None). nameType consults it first so a use sees
 	// the narrowed member type, not the declared union.
 	narrowed map[string]types.Type
+	// temps overlays short-lived names such as comprehension targets without
+	// declaring them in module or function scope.
+	temps map[string]types.Type
 	// callSpec maps a call site to the specialization it links to; specActive
 	// guards against unbounded re-instantiation of recursive specializations.
 	callSpec   map[*ast.CallExpr]*specialization
@@ -132,6 +135,7 @@ func newChecker() *checker {
 		classes:    map[string]*classInfo{},
 		lambdas:    map[*ast.LambdaExpr]*fn{},
 		narrowed:   map[string]types.Type{},
+		temps:      map[string]types.Type{},
 		callSpec:   map[*ast.CallExpr]*specialization{},
 		specActive: map[string]bool{},
 	}
@@ -163,7 +167,7 @@ func (c *checker) checkBlock(body []ast.Stmt) {
 		if !ok || len(iff.Orelse) != 0 || !blockReturns(iff.Body) {
 			continue
 		}
-		if known, truth := c.conditionTruth(iff.Cond); known {
+		if known, truth := c.truth(iff.Cond); known {
 			if truth {
 				return
 			}
@@ -263,9 +267,13 @@ func (c *checker) narrowings(cond ast.Expr) (pos, neg map[string]types.Type) {
 	return
 }
 
-// conditionTruth returns statically known results for pure guards once a
+// truth returns statically known results for pure guards once a
 // specialization has bound a narrowed value to one concrete type.
-func (c *checker) conditionTruth(cond ast.Expr) (known bool, truth bool) {
+func (c *checker) truth(cond ast.Expr) (known bool, truth bool) {
+	return fold(cond, c.currentType, c.resolveType)
+}
+
+func fold(cond ast.Expr, current func(string) types.Type, typeOf func(ast.Expr) types.Type) (known bool, truth bool) {
 	switch e := cond.(type) {
 	case *ast.CallExpr:
 		name, ok := e.Fn.(*ast.Name)
@@ -276,12 +284,12 @@ func (c *checker) conditionTruth(cond ast.Expr) (known bool, truth bool) {
 		if !ok {
 			return false, false
 		}
-		cur := c.currentType(target.Name)
+		cur := current(target.Name)
 		if !concrete(cur) && !types.Equal(cur, types.None) {
 			return false, false
 		}
-		t := c.resolveType(e.Args[1])
-		if t == types.Invalid {
+		t := typeOf(e.Args[1])
+		if t == nil || t == types.Invalid {
 			return false, false
 		}
 		return true, types.AssignableTo(cur, t)
@@ -296,7 +304,7 @@ func (c *checker) conditionTruth(cond ast.Expr) (known bool, truth bool) {
 		if _, ok := e.Comparators[0].(*ast.NoneLit); !ok {
 			return false, false
 		}
-		cur := c.currentType(target.Name)
+		cur := current(target.Name)
 		if !concrete(cur) && !types.Equal(cur, types.None) {
 			return false, false
 		}
@@ -314,6 +322,9 @@ func (c *checker) conditionTruth(cond ast.Expr) (known bool, truth bool) {
 // currentType returns the binding's current (possibly narrowed) type without
 // emitting diagnostics, or Invalid if the name is unknown here.
 func (c *checker) currentType(name string) types.Type {
+	if t, ok := c.temps[name]; ok {
+		return t
+	}
 	if t, ok := c.narrowed[name]; ok {
 		return t
 	}
@@ -748,7 +759,7 @@ func (c *checker) checkClassPattern(pat *ast.ClassPattern, subjT types.Type) {
 
 func (c *checker) ifStmt(n *ast.If) {
 	c.condition(n.Cond)
-	if known, truth := c.conditionTruth(n.Cond); known {
+	if known, truth := c.truth(n.Cond); known {
 		if truth {
 			c.checkBlock(n.Body)
 		} else {
@@ -896,16 +907,13 @@ func (c *checker) assign(n *ast.Assign) {
 	}
 	vt := c.expr(n.Value)
 	if c.fn != nil {
-		if c.fn.globals[name.Name] {
-			goto global
-		}
-		if c.fn.nonlocal[name.Name] {
+		switch {
+		case c.fn.globals[name.Name]:
+		case c.fn.nonlocal[name.Name]:
 			cap := c.capture(name)
 			if cap == nil {
-				c.expr(n.Value)
 				return
 			}
-			vt := c.expr(n.Value)
 			if cap.typ != types.Invalid && vt != types.Invalid && !types.AssignableTo(vt, cap.typ) {
 				c.errs.Add(n.Value.Pos(), token.TypeMismatch, "cannot assign %s to %s %q", vt, cap.typ, name.Name)
 			}
@@ -913,19 +921,19 @@ func (c *checker) assign(n *ast.Assign) {
 			cap.src.boxed = true
 			c.types[name] = cap.typ
 			return
+		default:
+			l, declared := c.fn.locals[name.Name]
+			if !declared {
+				l = c.declareLocal(name.Name, vt, n.Pos())
+			}
+			if l.typ != types.Invalid && vt != types.Invalid && !types.AssignableTo(vt, l.typ) {
+				c.errs.Add(n.Value.Pos(), token.TypeMismatch, "cannot assign %s to %s %q", vt, l.typ, name.Name)
+			}
+			l.init = true
+			c.types[name] = l.typ
+			return
 		}
-		l, declared := c.fn.locals[name.Name]
-		if !declared {
-			l = c.declareLocal(name.Name, vt, n.Pos())
-		}
-		if l.typ != types.Invalid && vt != types.Invalid && !types.AssignableTo(vt, l.typ) {
-			c.errs.Add(n.Value.Pos(), token.TypeMismatch, "cannot assign %s to %s %q", vt, l.typ, name.Name)
-		}
-		l.init = true
-		c.types[name] = l.typ
-		return
 	}
-global:
 	g, declared := c.globals[name.Name]
 	if !declared {
 		// Whole-program inference: an unannotated global takes the type of its
@@ -1042,10 +1050,9 @@ func (c *checker) augAssign(n *ast.AugAssign) {
 		return
 	}
 	if c.fn != nil {
-		if c.fn.globals[name.Name] {
-			goto global
-		}
-		if c.fn.nonlocal[name.Name] {
+		switch {
+		case c.fn.globals[name.Name]:
+		case c.fn.nonlocal[name.Name]:
 			cap := c.capture(name)
 			if cap == nil {
 				c.expr(n.Value)
@@ -1060,26 +1067,26 @@ func (c *checker) augAssign(n *ast.AugAssign) {
 			cap.boxed = true
 			cap.src.boxed = true
 			return
-		}
-		l, declared := c.fn.locals[name.Name]
-		if !declared {
-			c.errs.Add(n.Pos(), token.UndefinedName, "name %q is not defined", name.Name)
-			c.expr(n.Value)
+		default:
+			l, declared := c.fn.locals[name.Name]
+			if !declared {
+				c.errs.Add(n.Pos(), token.UndefinedName, "name %q is not defined", name.Name)
+				c.expr(n.Value)
+				return
+			}
+			if !l.init {
+				c.errs.Add(n.Pos(), token.UseBeforeDefinition, "name %q used before assignment", name.Name)
+			}
+			c.types[name] = l.typ
+			vt := c.expr(n.Value)
+			rt := c.binaryType(l.typ, n.Op, vt, n.Pos())
+			if rt != types.Invalid && l.typ != types.Invalid && !types.AssignableTo(rt, l.typ) {
+				c.errs.Add(n.Pos(), token.TypeMismatch, "result %s is not assignable to %s %q", rt, l.typ, name.Name)
+			}
+			l.init = true
 			return
 		}
-		if !l.init {
-			c.errs.Add(n.Pos(), token.UseBeforeDefinition, "name %q used before assignment", name.Name)
-		}
-		c.types[name] = l.typ
-		vt := c.expr(n.Value)
-		rt := c.binaryType(l.typ, n.Op, vt, n.Pos())
-		if rt != types.Invalid && l.typ != types.Invalid && !types.AssignableTo(rt, l.typ) {
-			c.errs.Add(n.Pos(), token.TypeMismatch, "result %s is not assignable to %s %q", rt, l.typ, name.Name)
-		}
-		l.init = true
-		return
 	}
-global:
 	g, declared := c.globals[name.Name]
 	if !declared {
 		c.errs.Add(n.Pos(), token.UndefinedName, "name %q is not defined", name.Name)
@@ -2014,10 +2021,11 @@ func (c *checker) typeOf(e ast.Expr, hint types.Type) types.Type {
 		elem := c.compElem(n.Clauses, n.Elem)
 		return types.NewList(elem)
 	case *ast.DictComp:
-		cleanup := c.compClauses(n.Clauses)
-		defer cleanup()
-		kt := c.expr(n.Key)
-		vt := c.expr(n.Value)
+		var kt, vt types.Type
+		c.compClauses(n.Clauses, func() {
+			kt = c.expr(n.Key)
+			vt = c.expr(n.Value)
+		})
 		if !hashableKey(kt) {
 			c.errs.Add(n.Key.Pos(), token.UnsupportedType, "dict key type %s is not supported", kt)
 			return types.Invalid
@@ -2194,12 +2202,15 @@ func (c *checker) ifExpType(n *ast.IfExp) types.Type {
 }
 
 func (c *checker) nameType(n *ast.Name) types.Type {
+	if t, ok := c.temps[n.Name]; ok {
+		return t
+	}
 	if t, ok := c.narrowed[n.Name]; ok {
 		return t
 	}
 	if c.fn != nil {
 		if c.fn.globals[n.Name] {
-			goto global
+			return c.global(n)
 		}
 		if l, ok := c.fn.locals[n.Name]; ok {
 			if !l.init {
@@ -2221,7 +2232,10 @@ func (c *checker) nameType(n *ast.Name) types.Type {
 		c.errs.Add(n.Pos(), token.UnsupportedFeature, "class value %q is not supported", n.Name)
 		return types.Invalid
 	}
-global:
+	return c.global(n)
+}
+
+func (c *checker) global(n *ast.Name) types.Type {
 	g, ok := c.globals[n.Name]
 	if !ok {
 		c.errs.Add(n.Pos(), token.UndefinedName, "name %q is not defined", n.Name)
@@ -2350,38 +2364,44 @@ func (c *checker) setType(n *ast.SetLit, hint types.Type) types.Type {
 }
 
 func (c *checker) compElem(clauses []*ast.Comprehension, elem ast.Expr) types.Type {
-	cleanup := c.compClauses(clauses)
-	defer cleanup()
-	return c.expr(elem)
+	var typ types.Type
+	c.compClauses(clauses, func() {
+		typ = c.expr(elem)
+	})
+	return typ
 }
 
-func (c *checker) compClauses(clauses []*ast.Comprehension) func() {
-	var tempGlobals []string
-	for _, clause := range clauses {
+func (c *checker) compClauses(clauses []*ast.Comprehension, body func()) {
+	var walk func(int)
+	walk = func(i int) {
+		if i == len(clauses) {
+			body()
+			return
+		}
+		clause := clauses[i]
 		iter := c.expr(clause.Iter)
 		elem := iterableElem(iter)
 		if elem == types.Invalid {
 			c.errs.Add(clause.Iter.Pos(), token.NotIterable, "%s is not iterable", iter)
 		}
-		if c.fn != nil {
-			l := c.declareLocal(clause.Target.Name, elem, clause.Target.Pos())
-			l.init = true
-			c.types[clause.Target] = l.typ
-		} else {
-			g := c.declare(clause.Target.Name, elem, clause.Target.Pos())
-			g.init = true
-			c.types[clause.Target] = g.typ
-			tempGlobals = append(tempGlobals, clause.Target.Name)
-		}
+
+		prev, hadPrev := c.temps[clause.Target.Name]
+		c.temps[clause.Target.Name] = elem
+		c.types[clause.Target] = elem
+		defer func() {
+			if hadPrev {
+				c.temps[clause.Target.Name] = prev
+			} else {
+				delete(c.temps, clause.Target.Name)
+			}
+		}()
+
 		for _, ifExpr := range clause.Ifs {
 			c.condition(ifExpr)
 		}
+		walk(i + 1)
 	}
-	return func() {
-		for _, name := range tempGlobals {
-			delete(c.globals, name)
-		}
-	}
+	walk(0)
 }
 
 func (c *checker) unaryType(n *ast.UnaryExpr) types.Type {
@@ -2740,7 +2760,7 @@ func (c *checker) methodCallType(n *ast.CallExpr, attr *ast.Attribute) types.Typ
 		if info == nil {
 			return types.Invalid
 		}
-		method := info.methods[attr.Name]
+		method := methodInfo(info, attr.Name)
 		if method == nil {
 			c.errs.Add(n.Pos(), token.UnsupportedFeature, "method %s on %s is not supported", attr.Name, recv)
 			return types.Invalid

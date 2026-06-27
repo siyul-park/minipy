@@ -93,7 +93,7 @@ type For struct {
 	Orelse []Stmt
 }
 
-// Param is a function parameter with a required type annotation.
+// Param is a function parameter with an optional inferred type annotation.
 type Param struct {
 	Base
 	Name *Name

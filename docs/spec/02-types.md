@@ -31,7 +31,7 @@ c = float(a) + b   # OK -> float
 ```
 
 Rationale: implicit widening hides the `I64_TO_F64_S` conversion and complicates
-inference; explicit is simple and predictable. (May be relaxed later.)
+inference; explicit is simple and predictable.
 
 ## Container types
 
@@ -86,8 +86,8 @@ multiple inheritance, no metaclasses.
 | minipy annotation | meaning | minivm |
 |---|---|---|
 | `Optional[T]` (= `T \| None`) | `T` or `None` | `ref` (dynamic slot) + null check |
-| `A \| B` / `Union[A, B]` | closed disjunction (tagged) | `ref` + runtime tag - **M10, low priority** |
-| `Any` | open top / fully dynamic | `ref` - **M10, low priority** |
+| `A \| B` / `Union[A, B]` | closed disjunction (tagged) | `ref` + runtime tag |
+| `Any` | open top / fully dynamic | `ref` |
 | `Iterator[T]` / generator | lazy producer of `T` | coroutine / `Iterator` heap value (M6) |
 
 `Optional[T]` uses a `ref` slot so it can hold either a `T` value or
@@ -96,7 +96,7 @@ static core, `T | None` (PEP 604) is the **only** union form accepted; a general
 `Union[A, B]` of non-`None` types, with the tagged runtime dispatch it needs, is
 the **M10** layer (below).
 
-### Unions, `Any`, and the dynamic boundary (M10, low priority)
+### Unions, `Any`, and the dynamic boundary (M10)
 
 The M10 layer generalizes the single `Optional` slot into first-class **unions**,
 and adds whole-program inference so unannotated code still resolves to concrete
@@ -132,10 +132,10 @@ type:
     | type ('|' type)+             # union: T | None (Optional, core); A | B (M10)
 ```
 
-In the static core only `T | None` (Optional) is accepted; a union of non-`None`
-members is the **M10** layer. Anything else in annotation position (arbitrary
-expressions, string forward refs beyond names, `Literal`, `Annotated`, `TypeVar`,
-generics with bounds) is `UnsupportedType`. Generic *user* classes are deferred.
+Union members beyond `None` are handled by the always-on M10 inference/union
+layer. Anything else in annotation position (arbitrary expressions, string
+forward refs beyond names, `Literal`, `Annotated`, `TypeVar`, generics with
+bounds) is `UnsupportedType`. Generic *user* classes are deferred.
 
 ## Assignability
 

@@ -83,12 +83,12 @@ compound_stmt:
 
 if_stmt:    'if' expression ':' block ('elif' expression ':' block)* ['else' ':' block]
 while_stmt: 'while' expression ':' block ['else' ':' block]
-for_stmt:   'for' NAME 'in' expression ':' block ['else' ':' block]     # single target
+for_stmt:   'for' target 'in' expression ':' block ['else' ':' block]
 
 function_def:
-    | ['@' NAME NEWLINE]* 'def' NAME '(' [params] ')' '->' type ':' block
+    | ['@' NAME NEWLINE]* 'def' NAME '(' [params] ')' ['->' type] ':' block
 params: param (',' param)* [',']
-param:  NAME ':' type ['=' expression]           # annotation REQUIRED; default optional
+param:  NAME [':' type] ['=' expression]          # annotation optional where inference resolves it
                                                  # *args/**kwargs/'/'/'*' separators deferred
 
 class_def:
@@ -110,11 +110,11 @@ case_block: 'case' patterns [guard] ':' block
 guard:      'if' expression
 ```
 
-**Note:** `for_stmt` takes a **single** `NAME` target in v1; tuple-unpacking
-targets (`for k, v in d.items()`) are an M3 extension. Decorators are restricted
-to a bare `NAME` (e.g. `@staticmethod`, `@dataclass`) — call-form and dotted
-decorators deferred. The function `'->' type` is **required** (no inference of
-return type at the boundary).
+**Note:** `for_stmt` supports a name target and flat tuple-unpacking targets
+such as `for k, v in d.items()`. Decorators are restricted to a bare `NAME`
+(e.g. `@staticmethod`, `@dataclass`) — call-form and dotted decorators deferred.
+The function `'->' type` return annotation is optional where inference resolves
+it.
 
 ## Expressions
 

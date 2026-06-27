@@ -586,8 +586,14 @@ func newHostFuncs(out io.Writer, classes map[string]*classInfo) *hostFuncs {
 					return nil, fmt.Errorf("int ** negative exponent is not an int")
 				}
 				result := int64(1)
-				for ; exp > 0; exp-- {
-					result *= base
+				for exp > 0 {
+					if exp&1 == 1 {
+						result *= base
+					}
+					exp >>= 1
+					if exp > 0 {
+						base *= base
+					}
 				}
 				return []vmtypes.Boxed{vmtypes.BoxI64(result)}, nil
 			},
@@ -757,8 +763,8 @@ func pyFormat(i *interp.Interpreter, v vmtypes.Boxed, spec string) string {
 		}
 		width, _ := strconv.Atoi(widthSpec)
 		s := strconv.FormatInt(loadI64(i, v), 10)
-		for len(s) < width {
-			s = string(pad) + s
+		if width > len(s) {
+			s = strings.Repeat(string(pad), width-len(s)) + s
 		}
 		return s
 	}

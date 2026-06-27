@@ -34,27 +34,27 @@ of CPython 3.13 syntax.
   multiple inheritance/MRO, or `complex` numbers.
 - No threads/`async` in the core (minivm coroutines back generators, not asyncio).
 
-## Typing model: boundary annotations + local inference
+## Typing model: optional boundary annotations + inference
 
 minipy is statically typed, but you do **not** annotate every line. The rule:
 
-- **Annotations are required at boundaries:** function parameters and return
-  types, class fields, and module-level globals.
-- **Local variable types are inferred** from their initializer (assign-once
-  inference), the way Kotlin/Rust/Swift infer `let`/`val`.
-- **A function with missing parameter or return annotations is a compile error**
-  (`MissingAnnotation`). This is the "compile only when type hints are present"
-  rule: untyped boundaries do not compile.
+- **Boundary annotations are optional where implemented:** function parameters
+  and return types, module-level globals, and locals can be inferred by
+  whole-program analysis when enough uses constrain them.
+- **Annotations are still preferred at public boundaries** and required where the
+  current implementation cannot infer a precise type, such as empty containers.
+- **Local variable types are inferred** from their initializer and later checked
+  against that inferred type.
 
 ```python
-# OK — boundaries annotated, locals inferred
+# OK — annotations plus inferred locals
 def area(w: int, h: int) -> int:
     a = w * h          # a inferred as int
     return a
 
-TOTAL: int = 0         # module global: annotation required
+TOTAL: int = 0         # annotated module global
 
-# ERROR — MissingAnnotation: parameters/return not annotated
+# OK — inferred from call sites and return body when resolvable
 def add(x, y):
     return x + y
 

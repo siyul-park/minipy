@@ -136,6 +136,9 @@ Rules:
   variable is promoted to a closure upvalue and the nested function becomes a
   `*Closure` (`CLOSURE_NEW`). Capture is by reference cell when the inner function
   also writes it (`REF_NEW`/`UPVAL_*`), by value otherwise.
+- Comprehension targets are temporary overlay bindings. They are visible inside
+  the comprehension element and filters, but they do not declare or overwrite a
+  module global or enclosing local of the same name.
 - Redefining a name in the same scope with an incompatible type is `TypeMismatch`;
   shadowing in a nested scope is allowed.
 - Local slot indices are assigned densely per frame (params first); globals get
@@ -147,8 +150,9 @@ Rules:
 - Field order = declaration order = struct field index order; a subclass appends
   its fields after the base's.
 - `self` is the first parameter of each method, typed as the class.
-- Method resolution is static (no MRO): a call `obj.m(...)` resolves to the field's
-  class method constant at compile time.
+- Method resolution is static (single-inheritance walk, no MRO): a call
+  `obj.m(...)` resolves to the nearest method on the class or its base chain at
+  compile time.
 - `__init__` must assign every non-defaulted field on all paths, else
   `UninitializedField`.
 

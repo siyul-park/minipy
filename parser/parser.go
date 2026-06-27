@@ -106,7 +106,7 @@ func (p *Parser) parseStatement() []ast.Stmt {
 	case token.WITH:
 		return []ast.Stmt{p.parseWith()}
 	case token.DEF:
-		return []ast.Stmt{p.parseFunction(nil, false)}
+		return []ast.Stmt{p.parseFunction(nil)}
 	case token.CLASS:
 		return []ast.Stmt{p.parseClass(nil)}
 	case token.AT:
@@ -292,7 +292,7 @@ func (p *Parser) parseDecorated() ast.Stmt {
 	}
 	switch p.cur().Type {
 	case token.DEF:
-		return p.parseFunction(decorators, false)
+		return p.parseFunction(decorators)
 	case token.CLASS:
 		for _, dec := range decorators {
 			if dec.Name != "dataclass" {
@@ -308,14 +308,14 @@ func (p *Parser) parseDecorated() ast.Stmt {
 	}
 }
 
-// parseFunction parses `def NAME(params) -> type: block`.
-func (p *Parser) parseFunction(decorators []*ast.Name, allowBareSelf bool) ast.Stmt {
+// parseFunction parses `def NAME(params) [-> type]: block`.
+func (p *Parser) parseFunction(decorators []*ast.Name) ast.Stmt {
 	pos := p.cur().Pos
 	p.advance() // def
 	nameTok := p.expect(token.NAME)
 	name := &ast.Name{Base: ast.Base{Position: nameTok.Pos}, Name: nameTok.Literal}
 	p.expect(token.LPAREN)
-	params := p.parseParams(allowBareSelf)
+	params := p.parseParams()
 	p.expect(token.RPAREN)
 	// The return annotation is optional: when omitted, whole-program inference
 	// determines the return type from the body.
@@ -335,7 +335,7 @@ func (p *Parser) parseFunction(decorators []*ast.Name, allowBareSelf bool) ast.S
 	}
 }
 
-func (p *Parser) parseParams(allowBareSelf bool) []*ast.Param {
+func (p *Parser) parseParams() []*ast.Param {
 	var params []*ast.Param
 	if p.at(token.RPAREN) || p.at(token.EOF) {
 		return params
@@ -414,7 +414,7 @@ func (p *Parser) parseClassBlock() []ast.Stmt {
 			body = append(body, &ast.Pass{Base: ast.Base{Position: t.Pos}})
 			p.expectLineEnd()
 		case token.DEF:
-			body = append(body, p.parseFunction(nil, true))
+			body = append(body, p.parseFunction(nil))
 		case token.NAME:
 			if p.peek(1).Type == token.COLON {
 				body = append(body, p.parseAnnAssign())
@@ -433,8 +433,7 @@ func (p *Parser) parseClassBlock() []ast.Stmt {
 	return body
 }
 
-// parseForTarget parses the single NAME loop variable. Tuple-unpacking targets
-// (`for k, v in ...`) are also accepted.
+// parseForTarget parses a NAME loop variable or a flat tuple-unpacking target.
 func (p *Parser) parseForTarget() ast.Expr {
 	t := p.cur()
 	if t.Type != token.NAME {
@@ -1294,13 +1293,14 @@ func (p *Parser) parseString() ast.Expr {
 		p.advance()
 		return p.parseFStringToken(t)
 	}
-	value := t.Literal
+	var value strings.Builder
+	value.WriteString(t.Literal)
 	p.advance()
 	for p.at(token.STRING) {
-		value += p.cur().Literal
+		value.WriteString(p.cur().Literal)
 		p.advance()
 	}
-	return &ast.StrLit{Base: ast.Base{Position: t.Pos}, Value: value}
+	return &ast.StrLit{Base: ast.Base{Position: t.Pos}, Value: value.String()}
 }
 
 // parseGroup parses a parenthesized expression or tuple display.

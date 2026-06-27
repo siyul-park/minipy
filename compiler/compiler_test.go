@@ -12,6 +12,7 @@ import (
 	"github.com/siyul-park/minivm/instr"
 	"github.com/siyul-park/minivm/interp"
 	"github.com/siyul-park/minivm/optimize"
+	"github.com/siyul-park/minivm/program"
 	vmtypes "github.com/siyul-park/minivm/types"
 	"github.com/stretchr/testify/require"
 )
@@ -28,16 +29,35 @@ func run(t *testing.T, src string) string {
 	return buf.String()
 }
 
-func hasCode(t *testing.T, err error, code token.Code) {
+func code(t *testing.T, err error, want token.Code) {
 	t.Helper()
 	el, ok := err.(token.ErrorList)
 	require.Truef(t, ok, "expected token.ErrorList, got %T", err)
 	for _, e := range el {
-		if e.Code == code {
+		if e.Code == want {
 			return
 		}
 	}
-	t.Fatalf("expected diagnostic %s, got %v", code, err)
+	t.Fatalf("expected diagnostic %s, got %v", want, err)
+}
+
+func count(t *testing.T, err error, want token.Code) int {
+	t.Helper()
+	el, ok := err.(token.ErrorList)
+	require.Truef(t, ok, "expected token.ErrorList, got %T", err)
+	count := 0
+	for _, e := range el {
+		if e.Code == want {
+			count++
+		}
+	}
+	return count
+}
+
+type broken struct{}
+
+func (broken) Read([]byte) (int, error) {
+	return 0, io.ErrUnexpectedEOF
 }
 
 // checkOnly runs the parser and type checker without lowering, returning the
@@ -86,7 +106,7 @@ func TestCompileUnions(t *testing.T) {
 			"print(describe(1))\n"
 		prog, err := Compile(strings.NewReader(src), WithOutput(&bytes.Buffer{}))
 		require.NoError(t, err)
-		hasOps(t, prog.Constants, instr.REF_TEST, instr.REF_CAST)
+		ops(t, prog.Constants, instr.REF_TEST, instr.REF_CAST)
 	})
 
 	t.Run("concrete calls specialize isinstance branches", func(t *testing.T) {
@@ -251,6 +271,25 @@ func TestCompile(t *testing.T) {
 		require.Equal(t, "True\n", run(t, "print(str(3 < 5))\n"))
 		require.Equal(t, "True\n", run(t, "print(str(1 < 2 < 3))\n"))
 		require.Equal(t, "False\n", run(t, "print(str(1 < 2 < 2))\n"))
+	})
+
+	t.Run("chained comparison evaluates middle operand once", func(t *testing.T) {
+		src := `calls: int = 0
+def mid() -> int:
+    global calls
+    calls += 1
+    return 2
+def last() -> int:
+    global calls
+    calls += 10
+    return 3
+print(str(1 < mid() < 3))
+print(str(calls))
+calls = 0
+print(str(3 < mid() < last()))
+print(str(calls))
+`
+		require.Equal(t, "True\n1\nFalse\n1\n", run(t, src))
 	})
 
 	t.Run("string concatenation and comparison", func(t *testing.T) {
@@ -538,7 +577,7 @@ print(str(add5(10)))
 		require.Equal(t, "15\n", run(t, src))
 		prog, err := Compile(strings.NewReader(src), WithOutput(io.Discard))
 		require.NoError(t, err)
-		hasOps(t, prog.Constants, instr.CLOSURE_NEW, instr.UPVAL_GET)
+		ops(t, prog.Constants, instr.CLOSURE_NEW, instr.UPVAL_GET)
 	})
 
 	t.Run("lambda closure does not depend on function name", func(t *testing.T) {
@@ -600,6 +639,18 @@ print(str(c()))
 		require.Equal(t, "1\n2\n", run(t, src))
 	})
 
+	t.Run("nonlocal assignment expression is checked once", func(t *testing.T) {
+		src := `def outer() -> None:
+    x = 0
+    def inner() -> None:
+        nonlocal x
+        x = missing
+`
+		_, err := Compile(strings.NewReader(src), WithOutput(io.Discard))
+		require.Error(t, err)
+		require.Equal(t, 1, count(t, err, token.UndefinedName))
+	})
+
 	t.Run("nonlocal augmented assignment updates boxed capture", func(t *testing.T) {
 		src := `def counter() -> Callable[[], int]:
     n = 0
@@ -652,7 +703,17 @@ print(str(len(s)))
 		var buf bytes.Buffer
 		_, err := Compile(strings.NewReader("xs: list[int] = [i for i in range(3)]\nprint(str(i))\n"), WithOutput(&buf))
 		require.Error(t, err)
-		hasCode(t, err, token.UndefinedName)
+		code(t, err, token.UndefinedName)
+	})
+
+	t.Run("comprehension target does not overwrite outer binding", func(t *testing.T) {
+		src := `x: int = 7
+xs: list[int] = [1, 2]
+ys: list[int] = [x for x in xs]
+print(str(x))
+print(str(ys[1]))
+`
+		require.Equal(t, "7\n2\n", run(t, src))
 	})
 
 	t.Run("generator roadmap sample", func(t *testing.T) {
@@ -718,6 +779,34 @@ print(next(iter(text)))
 		require.Equal(t, "4\na\n7\nx\n", run(t, src))
 	})
 
+	t.Run("dict and set loops use map iterator", func(t *testing.T) {
+		src := `d: dict[str, int] = {"a": 1}
+s: set[int] = {2}
+for k in d:
+    print(k)
+for v in s:
+    print(str(v))
+`
+		prog, err := Compile(strings.NewReader(src), WithOutput(io.Discard))
+		require.NoError(t, err)
+		require.True(t, opcode(prog, instr.MAP_ITER))
+		require.False(t, opcode(prog, instr.MAP_KEYS))
+	})
+
+	t.Run("dict and set comprehensions use map iterator", func(t *testing.T) {
+		src := `d: dict[str, int] = {"a": 1}
+s: set[int] = {2}
+ks: list[str] = [k for k in d]
+vs: set[int] = {v for v in s}
+print(ks[0])
+print(str(len(vs)))
+`
+		prog, err := Compile(strings.NewReader(src), WithOutput(io.Discard))
+		require.NoError(t, err)
+		require.True(t, opcode(prog, instr.MAP_ITER))
+		require.False(t, opcode(prog, instr.MAP_KEYS))
+	})
+
 	t.Run("nested generator captures outer local", func(t *testing.T) {
 		src := `def outer(base: int) -> Iterator[int]:
     def inner() -> Iterator[int]:
@@ -741,6 +830,17 @@ print(str(next(outer(9))))
 print(str(Point(3, 4).norm2()))
 `
 		require.Equal(t, "25\n", run(t, src))
+	})
+
+	t.Run("inherited method call", func(t *testing.T) {
+		src := `class Base:
+    def value(self) -> int:
+        return 3
+class Child(Base):
+    pass
+print(str(Child().value()))
+`
+		require.Equal(t, "3\n", run(t, src))
 	})
 
 	t.Run("dataclass constructor defaults and inherited fields", func(t *testing.T) {
@@ -1024,9 +1124,35 @@ with Ctx("a") as a, Ctx("b") as b:
 		require.NoError(t, err)
 		require.NotNil(t, prog)
 	})
+
+	t.Run("read error is returned from Compile", func(t *testing.T) {
+		_, err := New(broken{}).Compile()
+		require.Error(t, err)
+		require.ErrorContains(t, err, "read source")
+	})
 }
 
-func hasOps(t *testing.T, constants []vmtypes.Value, ops ...instr.Opcode) {
+func opcode(prog *program.Program, op instr.Opcode) bool {
+	for _, ins := range instr.Unmarshal(prog.Code) {
+		if ins.Opcode() == op {
+			return true
+		}
+	}
+	for _, constant := range prog.Constants {
+		fn, ok := constant.(*vmtypes.Function)
+		if !ok {
+			continue
+		}
+		for _, ins := range instr.Unmarshal(fn.Code) {
+			if ins.Opcode() == op {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func ops(t *testing.T, constants []vmtypes.Value, ops ...instr.Opcode) {
 	t.Helper()
 	seen := map[instr.Opcode]bool{}
 	for _, constant := range constants {
@@ -1137,9 +1263,9 @@ func TestCompileErrors(t *testing.T) {
 		"x: int = 1\nprint(str(x is 1))\n":                          token.TypeMismatch,
 		"try:\n    x = 1\nexcept ValueError:\n    pass\nprint(x)\n": token.UseBeforeDefinition,
 	}
-	for src, code := range cases {
+	for src, want := range cases {
 		_, err := Compile(strings.NewReader(src), WithOutput(&bytes.Buffer{}))
 		require.Errorf(t, err, "src=%q", src)
-		hasCode(t, err, code)
+		code(t, err, want)
 	}
 }

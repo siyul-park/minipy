@@ -38,6 +38,7 @@ type config struct {
 // one source stream.
 type Compiler struct {
 	src      []byte
+	err      error
 	cfg      config
 	prog     *program.Builder
 	code     target
@@ -126,7 +127,7 @@ func New(r io.Reader, opts ...Option) *Compiler {
 		// failure as a regular error.
 		src = []byte{}
 	}
-	return &Compiler{src: src, cfg: cfg}
+	return &Compiler{src: src, err: err, cfg: cfg}
 }
 
 func defaultConfig() config {
@@ -203,6 +204,9 @@ func Compile(r io.Reader, opts ...Option) (*program.Program, error) {
 
 // Compile parses, type-checks, lowers, optimizes, and verifies c's source.
 func (c *Compiler) Compile() (*program.Program, error) {
+	if c.err != nil {
+		return nil, fmt.Errorf("read source: %w", c.err)
+	}
 	mod, parseErr := parser.Parse(bytes.NewReader(c.src))
 
 	chk := newChecker()
@@ -257,61 +261,19 @@ func (c *Compiler) block(body []ast.Stmt) {
 	for _, s := range body {
 		c.stmt(s)
 		if iff, ok := s.(*ast.If); ok && len(iff.Orelse) == 0 && blockReturns(iff.Body) {
-			if known, truth := c.conditionTruth(iff.Cond); known && truth {
+			if known, truth := c.truth(iff.Cond); known && truth {
 				return
 			}
 		}
 	}
 }
 
-// conditionTruth mirrors checker.conditionTruth for codegen. Specialized
+// truth mirrors checker.truth for codegen. Specialized
 // function bodies may leave impossible branches unchecked, so lowering must
 // prune those same branches instead of compiling expressions with no type table
 // entries.
-func (c *Compiler) conditionTruth(cond ast.Expr) (known bool, truth bool) {
-	switch e := cond.(type) {
-	case *ast.CallExpr:
-		name, ok := e.Fn.(*ast.Name)
-		if !ok || name.Name != "isinstance" || len(e.Args) != 2 {
-			return false, false
-		}
-		target, ok := e.Args[0].(*ast.Name)
-		if !ok {
-			return false, false
-		}
-		cur := c.typ(target.Name)
-		if !concrete(cur) && !types.Equal(cur, types.None) {
-			return false, false
-		}
-		t := c.types[e.Args[1]]
-		if t == nil || t == types.Invalid {
-			return false, false
-		}
-		return true, types.AssignableTo(cur, t)
-	case *ast.Compare:
-		if len(e.Ops) != 1 {
-			return false, false
-		}
-		target, ok := e.X.(*ast.Name)
-		if !ok {
-			return false, false
-		}
-		if _, ok := e.Comparators[0].(*ast.NoneLit); !ok {
-			return false, false
-		}
-		cur := c.typ(target.Name)
-		if !concrete(cur) && !types.Equal(cur, types.None) {
-			return false, false
-		}
-		isNone := types.Equal(cur, types.None)
-		switch e.Ops[0] {
-		case token.IS:
-			return true, isNone
-		case token.ISNOT:
-			return true, !isNone
-		}
-	}
-	return false, false
+func (c *Compiler) truth(cond ast.Expr) (known bool, truth bool) {
+	return fold(cond, c.typ, func(e ast.Expr) types.Type { return c.types[e] })
 }
 
 func (c *Compiler) stmt(s ast.Stmt) {
@@ -1021,7 +983,7 @@ func (c *Compiler) typ(name string) types.Type {
 // emitIf lowers `if`/`elif`/`else`: invert the condition and branch over the
 // then-block to the else-block (docs/spec/05-codegen.md).
 func (c *Compiler) emitIf(n *ast.If) {
-	if known, truth := c.conditionTruth(n.Cond); known {
+	if known, truth := c.truth(n.Cond); known {
 		if truth {
 			c.block(n.Body)
 		} else {
@@ -1067,16 +1029,18 @@ func (c *Compiler) emitWhile(n *ast.While) {
 // values with the minivm coroutine/iterator protocol. continue → increment or
 // resume, break → past the else block.
 func (c *Compiler) emitFor(n *ast.For) {
-	if _, ok := c.types[n.Iter].(*types.Iterator); ok {
-		c.emitIteratorFor(n)
+	if c.iterates(c.types[n.Iter]) {
+		c.emitIteratorFor(n, func() {
+			c.iterate(n.Iter, c.types[n.Iter])
+		})
 		return
 	}
 	c.emitIterableFor(n)
 }
 
-func (c *Compiler) emitIteratorFor(n *ast.For) {
+func (c *Compiler) emitIteratorFor(n *ast.For, emitIter func()) {
 	iterSlot := c.tmp()
-	c.expr(n.Iter)
+	emitIter()
 	c.emit(instr.GLOBAL_SET, uint64(iterSlot))
 	top := c.label()
 	cont := c.label()
@@ -1104,17 +1068,36 @@ func (c *Compiler) emitIteratorFor(n *ast.For) {
 	c.bind(end)
 }
 
+func (c *Compiler) iterates(t types.Type) bool {
+	switch t.(type) {
+	case *types.Iterator, *types.Dict, *types.Set:
+		return true
+	default:
+		return types.Equal(t, types.Str)
+	}
+}
+
+func (c *Compiler) iterate(expr ast.Expr, typ types.Type) {
+	if _, ok := typ.(*types.Iterator); ok {
+		c.expr(expr)
+		return
+	}
+	c.expr(expr)
+	switch typ.(type) {
+	case *types.Dict, *types.Set:
+		c.emit(instr.MAP_ITER)
+	default:
+		if types.Equal(typ, types.Str) {
+			c.callHost(c.host.strIter())
+		}
+	}
+}
+
 func (c *Compiler) emitIterableFor(n *ast.For) {
 	iterSlot := c.tmp()
 	idxSlot := c.tmp()
 
 	c.expr(n.Iter)
-	if _, ok := c.types[n.Iter].(*types.Dict); ok {
-		c.emit(instr.MAP_KEYS)
-	}
-	if _, ok := c.types[n.Iter].(*types.Set); ok {
-		c.emit(instr.MAP_KEYS)
-	}
 	c.emit(instr.GLOBAL_SET, uint64(iterSlot))
 	c.emit(instr.I64_CONST, 0)
 	c.emit(instr.GLOBAL_SET, uint64(idxSlot))
@@ -1531,8 +1514,10 @@ func (c *Compiler) comp(clauses []*ast.Comprehension, body func()) {
 				delete(c.temps, clause.Target.Name)
 			}
 		}()
-		if _, ok := c.types[clause.Iter].(*types.Iterator); ok {
-			c.iteratorComp(clause, targetSlot, func() { emit(i + 1) })
+		if c.iterates(c.types[clause.Iter]) {
+			c.iteratorComp(clause, targetSlot, func() {
+				c.iterate(clause.Iter, c.types[clause.Iter])
+			}, func() { emit(i + 1) })
 			return
 		}
 		c.iterComp(clause, targetSlot, func() { emit(i + 1) })
@@ -1543,12 +1528,6 @@ func (c *Compiler) iterComp(clause *ast.Comprehension, targetSlot int, body func
 	iterSlot := c.tmp()
 	idxSlot := c.tmp()
 	c.expr(clause.Iter)
-	if _, ok := c.types[clause.Iter].(*types.Dict); ok {
-		c.emit(instr.MAP_KEYS)
-	}
-	if _, ok := c.types[clause.Iter].(*types.Set); ok {
-		c.emit(instr.MAP_KEYS)
-	}
 	c.emit(instr.GLOBAL_SET, uint64(iterSlot))
 	c.emit(instr.I64_CONST, 0)
 	c.emit(instr.GLOBAL_SET, uint64(idxSlot))
@@ -1579,9 +1558,9 @@ func (c *Compiler) iterComp(clause *ast.Comprehension, targetSlot int, body func
 	c.bind(end)
 }
 
-func (c *Compiler) iteratorComp(clause *ast.Comprehension, targetSlot int, body func()) {
+func (c *Compiler) iteratorComp(clause *ast.Comprehension, targetSlot int, emitIter func(), body func()) {
 	iterSlot := c.tmp()
-	c.expr(clause.Iter)
+	emitIter()
 	c.emit(instr.GLOBAL_SET, uint64(iterSlot))
 	top := c.label()
 	cont := c.label()
@@ -1815,51 +1794,73 @@ func (c *Compiler) boolOp(x *ast.BoolOp) {
 	c.bind(end)
 }
 
-// compare lowers a (possibly chained) comparison to an i32 result. Operands are
-// pure scalars, so a chain `a < b < c` re-evaluates the middle operand
-// rather than threading a temporary.
+// compare lowers a (possibly chained) comparison to an i32 result. Chained
+// comparisons evaluate each source operand once, matching Python semantics.
 func (c *Compiler) compare(x *ast.Compare) {
-	c.emitCmp(x.X, x.Ops[0], x.Comparators[0])
-	prev := x.Comparators[0]
-	for i := 1; i < len(x.Ops); i++ {
-		c.emitCmp(prev, x.Ops[i], x.Comparators[i])
-		c.emit(instr.I32_AND)
-		prev = x.Comparators[i]
+	if len(x.Ops) == 1 {
+		c.emitCmp(x.X, x.Ops[0], x.Comparators[0])
+		return
 	}
+	leftSlot := c.tmp()
+	end := c.label()
+	c.expr(x.X)
+	c.emit(instr.GLOBAL_SET, uint64(leftSlot))
+	left := x.X
+	for i, op := range x.Ops {
+		c.emit(instr.GLOBAL_GET, uint64(leftSlot))
+		c.expr(x.Comparators[i])
+		if i+1 < len(x.Ops) {
+			c.emit(instr.DUP)
+			c.emit(instr.GLOBAL_SET, uint64(leftSlot))
+		}
+		c.emitCmpStack(op, c.types[left], c.types[x.Comparators[i]])
+		left = x.Comparators[i]
+		if i+1 < len(x.Ops) {
+			c.emit(instr.DUP)
+			c.emit(instr.I32_EQZ)
+			c.brIf(end)
+			c.emit(instr.DROP)
+		}
+	}
+	c.bind(end)
 }
 
 func (c *Compiler) emitCmp(l ast.Expr, op token.Type, r ast.Expr) {
-	t := c.types[l]
+	c.expr(l)
+	c.expr(r)
+	c.emitCmpStack(op, c.types[l], c.types[r])
+}
+
+func (c *Compiler) emitCmpStack(op token.Type, lt types.Type, rt types.Type) {
 	if op == token.IN || op == token.NOTIN {
-		c.expr(r)
-		c.expr(l)
-		c.contains(op, l, r)
+		c.emit(instr.SWAP)
+		c.containsType(op, lt, rt)
 		return
 	}
 	if op == token.IS || op == token.ISNOT {
-		c.expr(l)
-		c.expr(r)
 		c.emit(instr.REF_EQ)
 		if op == token.ISNOT {
 			c.emit(instr.I32_EQZ)
 		}
 		return
 	}
-	c.expr(l)
-	c.expr(r)
-	c.emit(cmpOpcode(op, t))
+	c.emit(cmpOpcode(op, lt))
 }
 
 func (c *Compiler) contains(op token.Type, l ast.Expr, r ast.Expr) {
-	switch c.types[r].(type) {
+	c.containsType(op, c.types[l], c.types[r])
+}
+
+func (c *Compiler) containsType(op token.Type, lt types.Type, rt types.Type) {
+	switch rt.(type) {
 	case *types.Dict:
 		c.emit(instr.MAP_LOOKUP)
 		c.emit(instr.SWAP)
 		c.emit(instr.DROP)
 	case *types.List:
-		c.callHost(c.host.listContains(c.types[l], c.types[r]))
+		c.callHost(c.host.listContains(lt, rt))
 	default:
-		if types.Equal(c.types[r], types.Str) {
+		if types.Equal(rt, types.Str) {
 			c.callHost(c.host.strContains)
 		}
 	}
