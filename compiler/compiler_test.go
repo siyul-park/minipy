@@ -88,6 +88,38 @@ func TestCompileUnions(t *testing.T) {
 		require.NoError(t, err)
 		hasOps(t, prog.Constants, instr.REF_TEST, instr.REF_CAST)
 	})
+
+	t.Run("concrete calls specialize isinstance branches", func(t *testing.T) {
+		src := "def describe(x: int | str) -> str:\n" +
+			"    if isinstance(x, int):\n" +
+			"        return \"int:\" + str(x)\n" +
+			"    return \"str:\" + x\n" +
+			"print(describe(3))\n" +
+			"print(describe(\"hi\"))\n"
+		var buf bytes.Buffer
+		prog, err := Compile(strings.NewReader(src), WithOutput(&buf))
+		require.NoError(t, err)
+
+		vm := interp.New(prog)
+		defer vm.Close()
+		require.NoError(t, vm.Run(context.Background()))
+		require.Equal(t, "int:3\nstr:hi\n", buf.String())
+
+		requireFuncParam(t, prog.Constants, vmtypes.TypeI64, false, instr.REF_TEST, instr.REF_CAST)
+		requireFuncParam(t, prog.Constants, vmtypes.TypeString, false, instr.REF_TEST, instr.REF_CAST)
+		requireFuncParam(t, prog.Constants, vmtypes.TypeRef, true, instr.REF_TEST, instr.REF_CAST)
+	})
+
+	t.Run("specialized forward function call runs", func(t *testing.T) {
+		src := "def g() -> str:\n" +
+			"    return describe(3)\n" +
+			"def describe(x: int | str) -> str:\n" +
+			"    if isinstance(x, int):\n" +
+			"        return \"int:\" + str(x)\n" +
+			"    return \"str:\" + x\n" +
+			"print(g())\n"
+		require.Equal(t, "int:3\n", run(t, src))
+	})
 }
 
 func TestCompileInference(t *testing.T) {
@@ -97,6 +129,19 @@ func TestCompileInference(t *testing.T) {
 			"print(str(identity(3)))\n" +
 			"print(identity(\"hi\"))\n"
 		require.Equal(t, "3\nhi\n", run(t, src))
+	})
+
+	t.Run("unannotated concrete calls specialize by argument type", func(t *testing.T) {
+		src := "def identity(x):\n" +
+			"    return x\n" +
+			"print(str(identity(3)))\n" +
+			"print(identity(\"hi\"))\n"
+		prog, err := Compile(strings.NewReader(src), WithOutput(io.Discard))
+		require.NoError(t, err)
+
+		requireFuncParam(t, prog.Constants, vmtypes.TypeI64, true)
+		requireFuncParam(t, prog.Constants, vmtypes.TypeString, true)
+		requireFuncParam(t, prog.Constants, vmtypes.TypeRef, true)
 	})
 
 	t.Run("inferred concrete return type", func(t *testing.T) {
@@ -996,6 +1041,28 @@ func hasOps(t *testing.T, constants []vmtypes.Value, ops ...instr.Opcode) {
 	for _, op := range ops {
 		require.Truef(t, seen[op], "expected function constant to contain %s", op)
 	}
+}
+
+func requireFuncParam(t *testing.T, constants []vmtypes.Value, param vmtypes.Type, wantOps bool, ops ...instr.Opcode) {
+	t.Helper()
+	for _, constant := range constants {
+		fn, ok := constant.(*vmtypes.Function)
+		if !ok || len(fn.Typ.Params) != 1 || !fn.Typ.Params[0].Equals(param) {
+			continue
+		}
+		if len(ops) == 0 {
+			return
+		}
+		seen := map[instr.Opcode]bool{}
+		for _, ins := range instr.Unmarshal(fn.Code) {
+			seen[ins.Opcode()] = true
+		}
+		for _, op := range ops {
+			require.Equalf(t, wantOps, seen[op], "function with param %s opcode %s", param, op)
+		}
+		return
+	}
+	t.Fatalf("expected function constant with param %s", param)
 }
 
 func TestCompileErrors(t *testing.T) {

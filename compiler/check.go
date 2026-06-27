@@ -1,6 +1,8 @@
 package compiler
 
 import (
+	"strings"
+
 	"github.com/siyul-park/minipy/ast"
 	"github.com/siyul-park/minipy/token"
 	"github.com/siyul-park/minipy/types"
@@ -43,6 +45,29 @@ type fn struct {
 	capOrder  []string
 	globals   map[string]bool
 	nonlocal  map[string]bool
+
+	// specialization: a polymorphic function (union/Any parameter) is
+	// monomorphized per concrete call-site argument tuple when its body
+	// type-checks under that tuple. The union/Any body still compiles to the
+	// global slot as the fallback.
+	specializable bool
+	body          []ast.Stmt
+	astParams     []*ast.Param
+	instances     []*specialization
+	constIdx      int // VM constant index of this (specialized) function body
+}
+
+// specialization is one monomorphic instantiation of a specializable function:
+// a clone whose parameters are bound to a concrete argument tuple, with its own
+// per-node type table so the same body lowers differently per instantiation.
+type specialization struct {
+	key      string
+	params   []types.Type
+	info     *fn
+	types    map[ast.Expr]types.Type
+	calls    map[*ast.CallExpr]*specialization
+	emitted  bool
+	emitting bool
 }
 
 type classField struct {
@@ -93,20 +118,30 @@ type checker struct {
 	// region (isinstance / is-None). nameType consults it first so a use sees
 	// the narrowed member type, not the declared union.
 	narrowed map[string]types.Type
+	// callSpec maps a call site to the specialization it links to; specActive
+	// guards against unbounded re-instantiation of recursive specializations.
+	callSpec   map[*ast.CallExpr]*specialization
+	specActive map[string]bool
 }
 
 func newChecker() *checker {
 	c := &checker{
-		types:    map[ast.Expr]types.Type{},
-		globals:  map[string]*global{},
-		funcs:    map[string]*fn{},
-		classes:  map[string]*classInfo{},
-		lambdas:  map[*ast.LambdaExpr]*fn{},
-		narrowed: map[string]types.Type{},
+		types:      map[ast.Expr]types.Type{},
+		globals:    map[string]*global{},
+		funcs:      map[string]*fn{},
+		classes:    map[string]*classInfo{},
+		lambdas:    map[*ast.LambdaExpr]*fn{},
+		narrowed:   map[string]types.Type{},
+		callSpec:   map[*ast.CallExpr]*specialization{},
+		specActive: map[string]bool{},
 	}
 	c.declareBuiltinExceptions()
 	return c
 }
+
+// maxSpecializations caps monomorphic instantiations per function; past it,
+// calls fall back to the single union/Any-typed body.
+const maxSpecializations = 8
 
 // check walks every top-level statement, accumulating diagnostics.
 func (c *checker) check(mod *ast.Module) {
@@ -126,6 +161,12 @@ func (c *checker) checkBlock(body []ast.Stmt) {
 		c.stmt(s)
 		iff, ok := s.(*ast.If)
 		if !ok || len(iff.Orelse) != 0 || !blockReturns(iff.Body) {
+			continue
+		}
+		if known, truth := c.conditionTruth(iff.Cond); known {
+			if truth {
+				return
+			}
 			continue
 		}
 		if _, neg := c.narrowings(iff.Cond); len(neg) > 0 {
@@ -220,6 +261,54 @@ func (c *checker) narrowings(cond ast.Expr) (pos, neg map[string]types.Type) {
 		}
 	}
 	return
+}
+
+// conditionTruth returns statically known results for pure guards once a
+// specialization has bound a narrowed value to one concrete type.
+func (c *checker) conditionTruth(cond ast.Expr) (known bool, truth bool) {
+	switch e := cond.(type) {
+	case *ast.CallExpr:
+		name, ok := e.Fn.(*ast.Name)
+		if !ok || name.Name != "isinstance" || len(e.Args) != 2 {
+			return false, false
+		}
+		target, ok := e.Args[0].(*ast.Name)
+		if !ok {
+			return false, false
+		}
+		cur := c.currentType(target.Name)
+		if !concrete(cur) && !types.Equal(cur, types.None) {
+			return false, false
+		}
+		t := c.resolveType(e.Args[1])
+		if t == types.Invalid {
+			return false, false
+		}
+		return true, types.AssignableTo(cur, t)
+	case *ast.Compare:
+		if len(e.Ops) != 1 {
+			return false, false
+		}
+		target, ok := e.X.(*ast.Name)
+		if !ok {
+			return false, false
+		}
+		if _, ok := e.Comparators[0].(*ast.NoneLit); !ok {
+			return false, false
+		}
+		cur := c.currentType(target.Name)
+		if !concrete(cur) && !types.Equal(cur, types.None) {
+			return false, false
+		}
+		isNone := types.Equal(cur, types.None)
+		switch e.Ops[0] {
+		case token.IS:
+			return true, isNone
+		case token.ISNOT:
+			return true, !isNone
+		}
+	}
+	return false, false
 }
 
 // currentType returns the binding's current (possibly narrowed) type without
@@ -659,6 +748,14 @@ func (c *checker) checkClassPattern(pat *ast.ClassPattern, subjT types.Type) {
 
 func (c *checker) ifStmt(n *ast.If) {
 	c.condition(n.Cond)
+	if known, truth := c.conditionTruth(n.Cond); known {
+		if truth {
+			c.checkBlock(n.Body)
+		} else {
+			c.checkBlock(n.Orelse)
+		}
+		return
+	}
 	pos, neg := c.narrowings(n.Cond)
 	c.withNarrow(pos, func() { c.checkBlock(n.Body) })
 	c.withNarrow(neg, func() { c.checkBlock(n.Orelse) })
@@ -1083,6 +1180,9 @@ func (c *checker) declareFuncs(body []ast.Stmt) {
 		for _, p := range f.Params {
 			info.params = append(info.params, param{name: p.Name.Name, typ: c.paramType(p)})
 		}
+		info.body = f.Body
+		info.astParams = f.Params
+		info.specializable = specializable(info)
 		info.slot = c.declare(f.Name.Name, types.Invalid, f.Pos())
 		c.funcs[f.Name.Name] = info
 	}
@@ -1737,6 +1837,128 @@ func containsYield(body []ast.Stmt) bool {
 	return false
 }
 
+// specializable reports whether a function may be monomorphized: it has at
+// least one union/Any parameter (so distinct concrete call types are possible)
+// and is not a generator. Whether a given instantiation actually type-checks is
+// decided at the call site, which rolls back and falls back to the union/Any
+// body on any error.
+func specializable(info *fn) bool {
+	if info.generator {
+		return false
+	}
+	for _, p := range info.params {
+		if _, ok := p.typ.(*types.Union); ok {
+			return true
+		}
+		if types.IsAny(p.typ) {
+			return true
+		}
+	}
+	return false
+}
+
+// specialize returns the monomorphic instantiation of fn for the given concrete
+// argument tuple, creating it on first use. It returns nil — falling back to the
+// single union/Any-typed body — when the function is not specializable, an
+// argument is not concrete, the per-function cap is reached, the instantiation
+// recurses, or re-checking the reachable body under the concrete types produces
+// any error.
+func (c *checker) specialize(info *fn, argTypes []types.Type) *specialization {
+	if !info.specializable {
+		return nil
+	}
+	cparams := make([]param, len(info.params))
+	ptypes := make([]types.Type, len(info.params))
+	for i, p := range info.params {
+		at := argTypes[i]
+		if _, isU := p.typ.(*types.Union); isU || types.IsAny(p.typ) {
+			if !concrete(at) {
+				return nil
+			}
+			cparams[i] = param{name: p.name, typ: at}
+		} else {
+			if at == types.Invalid || !types.AssignableTo(at, p.typ) {
+				return nil
+			}
+			cparams[i] = param{name: p.name, typ: p.typ}
+		}
+		ptypes[i] = cparams[i].typ
+	}
+
+	key := specKey(ptypes)
+	for _, s := range info.instances {
+		if s.key == key {
+			return s
+		}
+	}
+	if len(info.instances) >= maxSpecializations {
+		return nil
+	}
+	guard := info.name + "#" + key
+	if c.specActive[guard] {
+		return nil
+	}
+
+	clone := &fn{
+		name:      info.name + "$" + key,
+		params:    cparams,
+		inferRet:  info.inferRet,
+		ret:       info.ret,
+		generator: info.generator,
+		body:      info.body,
+		astParams: info.astParams,
+		locals:    map[string]*local{},
+		children:  map[string]*fn{},
+		captures:  map[string]*capture{},
+		globals:   map[string]bool{},
+		nonlocal:  map[string]bool{},
+	}
+	if clone.inferRet {
+		clone.ret = types.None
+	}
+
+	errMark := len(c.errs)
+	savedTypes, savedNarrow, savedCalls := c.types, c.narrowed, c.callSpec
+	c.types = map[ast.Expr]types.Type{}
+	c.narrowed = map[string]types.Type{}
+	c.callSpec = map[*ast.CallExpr]*specialization{}
+	c.specActive[guard] = true
+	c.checkFunctionBody(clone.body, clone.astParams, clone, token.Pos{})
+	delete(c.specActive, guard)
+	itypes, icalls := c.types, c.callSpec
+	c.types, c.narrowed, c.callSpec = savedTypes, savedNarrow, savedCalls
+
+	if len(c.errs) > errMark {
+		c.errs = c.errs[:errMark] // discard: this tuple cannot specialize
+		return nil
+	}
+	spec := &specialization{key: key, params: ptypes, info: clone, types: itypes, calls: icalls}
+	info.instances = append(info.instances, spec)
+	return spec
+}
+
+// concrete reports whether a type is a single non-dynamic type that a
+// specialization can bind a parameter to.
+func concrete(t types.Type) bool {
+	if t == nil || t == types.Invalid || types.IsAny(t) {
+		return false
+	}
+	switch t.(type) {
+	case *types.Union, *types.TypeVar:
+		return false
+	}
+	return true
+}
+
+// specKey is the canonical signature key for a concrete parameter tuple.
+func specKey(ts []types.Type) string {
+	parts := make([]string, len(ts))
+	for i, t := range ts {
+		parts[i] = t.String()
+	}
+	return strings.Join(parts, ",")
+}
+
 // expr types an expression, records the result, and returns it.
 func (c *checker) expr(e ast.Expr) types.Type {
 	return c.exprWithHint(e, nil)
@@ -2372,6 +2594,10 @@ func (c *checker) callType(n *ast.CallExpr) types.Type {
 		if len(argTypes) != len(fn.params) {
 			c.errs.Add(n.Pos(), token.ArityMismatch, "%s() takes exactly %d arguments (%d given)", name.Name, len(fn.params), len(argTypes))
 			return types.Invalid
+		}
+		if spec := c.specialize(fn, argTypes); spec != nil {
+			c.callSpec[n] = spec
+			return spec.info.ret
 		}
 		for i, at := range argTypes {
 			pt := fn.params[i].typ
