@@ -161,7 +161,6 @@ func TestJoin(t *testing.T) {
 
 func TestNarrowWithout(t *testing.T) {
 	u := NewUnion(Int, Str)
-	require.Equal(t, Int, Narrow(u, Int))  // positive narrow to member
 	require.Equal(t, Str, Without(u, Int)) // remove member -> remaining collapses
 	require.Equal(t, Invalid, Without(Int, Int))
 }

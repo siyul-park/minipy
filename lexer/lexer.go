@@ -64,12 +64,12 @@ func New(r io.Reader) *Lexer {
 // token.ErrorList holding every lexical diagnostic found.
 func Lex(r io.Reader) ([]token.Token, error) {
 	l := New(r)
-	var toks []token.Token
+	var tokens []token.Token
 	for {
-		tok := l.Next()
-		toks = append(toks, tok)
-		if tok.Type == token.EOF {
-			return toks, l.Err()
+		next := l.Next()
+		tokens = append(tokens, next)
+		if next.Type == token.EOF {
+			return tokens, l.Err()
 		}
 	}
 }
@@ -82,9 +82,9 @@ func (l *Lexer) Next() token.Token {
 	if len(l.pending) == 0 {
 		return token.Token{Type: token.EOF, Pos: l.here()}
 	}
-	tok := l.pending[0]
+	next := l.pending[0]
 	l.pending = l.pending[1:]
-	return tok
+	return next
 }
 
 // Err returns the accumulated lexical diagnostics, or nil if there were none.
@@ -326,7 +326,7 @@ func (l *Lexer) scanStringAt(pos token.Pos, raw, fstr, bytes bool) {
 		l.col++
 	}
 
-	var sb strings.Builder
+	var builder strings.Builder
 	for {
 		c := l.cur()
 		if c == eofRune {
@@ -348,23 +348,23 @@ func (l *Lexer) scanStringAt(pos token.Pos, raw, fstr, bytes bool) {
 				l.col += 3
 				break
 			}
-			sb.WriteRune(c)
+			builder.WriteRune(c)
 			l.pos++
 			l.col++
 			continue
 		}
 		if c == '\n' || c == '\r' {
-			sb.WriteByte('\n')
+			builder.WriteByte('\n')
 			l.consumeNewline()
 			continue
 		}
 		if c == '\\' {
 			if raw {
-				sb.WriteRune(c)
+				builder.WriteRune(c)
 				l.pos++
 				l.col++
 				if l.cur() != eofRune {
-					sb.WriteRune(l.cur())
+					builder.WriteRune(l.cur())
 					l.pos++
 					l.col++
 				}
@@ -372,23 +372,23 @@ func (l *Lexer) scanStringAt(pos token.Pos, raw, fstr, bytes bool) {
 			}
 			l.pos++
 			l.col++
-			l.decodeEscape(&sb, pos)
+			l.decodeEscape(&builder, pos)
 			continue
 		}
-		sb.WriteRune(c)
+		builder.WriteRune(c)
 		l.pos++
 		l.col++
 	}
 	if fstr {
-		l.add(token.FSTRING, sb.String(), pos)
+		l.add(token.FSTRING, builder.String(), pos)
 		return
 	}
-	l.add(token.STRING, sb.String(), pos)
+	l.add(token.STRING, builder.String(), pos)
 }
 
 // decodeEscape consumes one escape sequence (the backslash is already consumed)
-// and writes its decoded value to sb.
-func (l *Lexer) decodeEscape(sb *strings.Builder, pos token.Pos) {
+// and writes its decoded value to builder.
+func (l *Lexer) decodeEscape(builder *strings.Builder, pos token.Pos) {
 	c := l.cur()
 	if c == eofRune {
 		l.errs.Add(pos, token.LexError, "unterminated escape sequence")
@@ -398,42 +398,42 @@ func (l *Lexer) decodeEscape(sb *strings.Builder, pos token.Pos) {
 	l.col++
 	switch c {
 	case 'n':
-		sb.WriteByte('\n')
+		builder.WriteByte('\n')
 	case 't':
-		sb.WriteByte('\t')
+		builder.WriteByte('\t')
 	case 'r':
-		sb.WriteByte('\r')
+		builder.WriteByte('\r')
 	case '\\':
-		sb.WriteByte('\\')
+		builder.WriteByte('\\')
 	case '\'':
-		sb.WriteByte('\'')
+		builder.WriteByte('\'')
 	case '"':
-		sb.WriteByte('"')
+		builder.WriteByte('"')
 	case '0':
-		sb.WriteByte(0)
+		builder.WriteByte(0)
 	case 'a':
-		sb.WriteByte(7)
+		builder.WriteByte(7)
 	case 'b':
-		sb.WriteByte(8)
+		builder.WriteByte(8)
 	case 'f':
-		sb.WriteByte('\f')
+		builder.WriteByte('\f')
 	case 'v':
-		sb.WriteByte('\v')
+		builder.WriteByte('\v')
 	case 'x':
-		l.decodeHex(sb, pos, 2)
+		l.decodeHex(builder, pos, 2)
 	case 'u':
-		l.decodeHex(sb, pos, 4)
+		l.decodeHex(builder, pos, 4)
 	case 'U':
-		l.decodeHex(sb, pos, 8)
+		l.decodeHex(builder, pos, 8)
 	default:
 		// Unknown escape: keep the backslash and the character (Python's lenient rule).
-		sb.WriteByte('\\')
-		sb.WriteRune(c)
+		builder.WriteByte('\\')
+		builder.WriteRune(c)
 	}
 }
 
 // decodeHex reads exactly n hex digits and writes the resulting rune.
-func (l *Lexer) decodeHex(sb *strings.Builder, pos token.Pos, n int) {
+func (l *Lexer) decodeHex(builder *strings.Builder, pos token.Pos, n int) {
 	l.fill(n - 1)
 	if l.pos+n > len(l.buf) {
 		l.errs.Add(pos, token.LexError, "truncated \\x/\\u/\\U escape")
@@ -447,7 +447,7 @@ func (l *Lexer) decodeHex(sb *strings.Builder, pos token.Pos, n int) {
 	}
 	l.pos += n
 	l.col += n
-	sb.WriteRune(rune(v))
+	builder.WriteRune(rune(v))
 }
 
 // scanOperator matches the longest operator or delimiter at the cursor.

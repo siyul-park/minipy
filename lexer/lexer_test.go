@@ -26,29 +26,29 @@ func hasCode(t *testing.T, err error, code token.Code) {
 
 func TestLex(t *testing.T) {
 	t.Run("annotated assignment with positions", func(t *testing.T) {
-		toks, err := lex("x: int = 6")
+		tokens, err := lex("x: int = 6")
 		require.NoError(t, err)
 
-		got := make([]token.Type, len(toks))
-		for i, tok := range toks {
-			got[i] = tok.Type
+		got := make([]token.Type, len(tokens))
+		for i, token := range tokens {
+			got[i] = token.Type
 		}
 		require.Equal(t, []token.Type{
 			token.NAME, token.COLON, token.NAME, token.ASSIGN, token.INT,
 			token.NEWLINE, token.EOF,
 		}, got)
-		require.Equal(t, token.Pos{Line: 1, Column: 1}, toks[0].Pos)
-		require.Equal(t, "x", toks[0].Literal)
-		require.Equal(t, token.Pos{Line: 1, Column: 10}, toks[4].Pos)
+		require.Equal(t, token.Pos{Line: 1, Column: 1}, tokens[0].Pos)
+		require.Equal(t, "x", tokens[0].Literal)
+		require.Equal(t, token.Pos{Line: 1, Column: 10}, tokens[4].Pos)
 	})
 
 	t.Run("keywords distinct from names", func(t *testing.T) {
-		toks, err := lex("if True and not None or x")
+		tokens, err := lex("if True and not None or x")
 		require.NoError(t, err)
 
-		got := make([]token.Type, len(toks))
-		for i, tok := range toks {
-			got[i] = tok.Type
+		got := make([]token.Type, len(tokens))
+		for i, token := range tokens {
+			got[i] = token.Type
 		}
 		require.Equal(t, []token.Type{
 			token.IF, token.TRUE, token.AND, token.NOT, token.NONE, token.OR,
@@ -73,10 +73,10 @@ func TestLex(t *testing.T) {
 			"6.022_140e23": {token.FLOAT, "6.022140e23"},
 		}
 		for src, want := range cases {
-			toks, err := lex(src)
+			tokens, err := lex(src)
 			require.NoErrorf(t, err, "src=%q", src)
-			require.Equalf(t, want.typ, toks[0].Type, "src=%q", src)
-			require.Equalf(t, want.lit, toks[0].Literal, "src=%q", src)
+			require.Equalf(t, want.typ, tokens[0].Type, "src=%q", src)
+			require.Equalf(t, want.lit, tokens[0].Literal, "src=%q", src)
 		}
 	})
 
@@ -100,15 +100,15 @@ func TestLex(t *testing.T) {
 	})
 
 	t.Run("multi-char operators longest match", func(t *testing.T) {
-		toks, err := lex("** // <<= -> := == != >= <=")
+		tokens, err := lex("** // <<= -> := == != >= <=")
 		require.NoError(t, err)
 
-		got := make([]token.Type, 0, len(toks))
-		for _, tok := range toks {
-			if tok.Type == token.NEWLINE || tok.Type == token.EOF {
+		got := make([]token.Type, 0, len(tokens))
+		for _, next := range tokens {
+			if next.Type == token.NEWLINE || next.Type == token.EOF {
 				continue
 			}
-			got = append(got, tok.Type)
+			got = append(got, next.Type)
 		}
 		require.Equal(t, []token.Type{
 			token.DOUBLESTAR, token.DOUBLESLASH, token.LSHIFTEQ, token.ARROW,
@@ -117,12 +117,12 @@ func TestLex(t *testing.T) {
 	})
 
 	t.Run("indentation emits INDENT and DEDENT", func(t *testing.T) {
-		toks, err := lex("if x:\n    pass\ny\n")
+		tokens, err := lex("if x:\n    pass\ny\n")
 		require.NoError(t, err)
 
-		got := make([]token.Type, len(toks))
-		for i, tok := range toks {
-			got[i] = tok.Type
+		got := make([]token.Type, len(tokens))
+		for i, token := range tokens {
+			got[i] = token.Type
 		}
 		require.Equal(t, []token.Type{
 			token.IF, token.NAME, token.COLON, token.NEWLINE,
@@ -133,12 +133,12 @@ func TestLex(t *testing.T) {
 	})
 
 	t.Run("blank and comment-only lines produce no NEWLINE", func(t *testing.T) {
-		toks, err := lex("x\n\n   \n# comment\ny\n")
+		tokens, err := lex("x\n\n   \n# comment\ny\n")
 		require.NoError(t, err)
 
-		got := make([]token.Type, len(toks))
-		for i, tok := range toks {
-			got[i] = tok.Type
+		got := make([]token.Type, len(tokens))
+		for i, token := range tokens {
+			got[i] = token.Type
 		}
 		require.Equal(t, []token.Type{
 			token.NAME, token.NEWLINE, token.NAME, token.NEWLINE, token.EOF,
@@ -146,12 +146,12 @@ func TestLex(t *testing.T) {
 	})
 
 	t.Run("implicit line joining inside brackets", func(t *testing.T) {
-		toks, err := lex("(\n  1 +\n  2\n)")
+		tokens, err := lex("(\n  1 +\n  2\n)")
 		require.NoError(t, err)
 
-		got := make([]token.Type, len(toks))
-		for i, tok := range toks {
-			got[i] = tok.Type
+		got := make([]token.Type, len(tokens))
+		for i, token := range tokens {
+			got[i] = token.Type
 		}
 		require.Equal(t, []token.Type{
 			token.LPAREN, token.INT, token.PLUS, token.INT, token.RPAREN,
@@ -160,12 +160,12 @@ func TestLex(t *testing.T) {
 	})
 
 	t.Run("explicit line joining with backslash", func(t *testing.T) {
-		toks, err := lex("1 + \\\n2")
+		tokens, err := lex("1 + \\\n2")
 		require.NoError(t, err)
 
-		got := make([]token.Type, len(toks))
-		for i, tok := range toks {
-			got[i] = tok.Type
+		got := make([]token.Type, len(tokens))
+		for i, token := range tokens {
+			got[i] = token.Type
 		}
 		require.Equal(t, []token.Type{
 			token.INT, token.PLUS, token.INT, token.NEWLINE, token.EOF,
@@ -175,15 +175,15 @@ func TestLex(t *testing.T) {
 	t.Run("every operator and delimiter", func(t *testing.T) {
 		src := "+ - * ** / // % << >> & | ^ ~ @ < > <= >= == != = " +
 			"+= -= *= /= //= %= &= |= ^= <<= >>= **= -> ( ) [ ] { } , : . ;"
-		toks, err := lex(src)
+		tokens, err := lex(src)
 		require.NoError(t, err)
 
-		got := make([]token.Type, 0, len(toks))
-		for _, tok := range toks {
-			if tok.Type == token.NEWLINE || tok.Type == token.EOF {
+		got := make([]token.Type, 0, len(tokens))
+		for _, next := range tokens {
+			if next.Type == token.NEWLINE || next.Type == token.EOF {
 				continue
 			}
-			got = append(got, tok.Type)
+			got = append(got, next.Type)
 		}
 		require.Equal(t, []token.Type{
 			token.PLUS, token.MINUS, token.STAR, token.DOUBLESTAR, token.SLASH,
@@ -199,9 +199,9 @@ func TestLex(t *testing.T) {
 	})
 
 	t.Run("escape sequences decode", func(t *testing.T) {
-		toks, err := lex(`"\x41B\a\b\f\v\r\0\q"`)
+		tokens, err := lex(`"\x41B\a\b\f\v\r\0\q"`)
 		require.NoError(t, err)
-		require.Equal(t, "AB\a\b\f\v\r\x00\\q", toks[0].Literal)
+		require.Equal(t, "AB\a\b\f\v\r\x00\\q", tokens[0].Literal)
 	})
 }
 
@@ -210,9 +210,9 @@ func TestLexer_Next(t *testing.T) {
 		l := New(strings.NewReader("x = 1"))
 		var got []token.Type
 		for {
-			tok := l.Next()
-			got = append(got, tok.Type)
-			if tok.Type == token.EOF {
+			next := l.Next()
+			got = append(got, next.Type)
+			if next.Type == token.EOF {
 				break
 			}
 		}
@@ -262,10 +262,10 @@ func TestLexErrors(t *testing.T) {
 	})
 
 	t.Run("f-string token", func(t *testing.T) {
-		toks, err := lex(`f"x={x}"`)
+		tokens, err := lex(`f"x={x}"`)
 		require.NoError(t, err)
-		require.Equal(t, token.FSTRING, toks[0].Type)
-		require.Equal(t, "x={x}", toks[0].Literal)
+		require.Equal(t, token.FSTRING, tokens[0].Type)
+		require.Equal(t, "x={x}", tokens[0].Literal)
 	})
 
 	t.Run("lone bang is illegal", func(t *testing.T) {

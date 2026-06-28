@@ -368,7 +368,7 @@ type Compare struct {
 	Comparators []Expr
 }
 
-// CallExpr is a function call `fn(args...)`.
+// CallExpr is a function call `function(args...)`.
 type CallExpr struct {
 	Base
 	Fn   Expr

@@ -23,13 +23,6 @@ func main() {
 func newRootCmd() *cobra.Command {
 	var opt int
 
-	optLevel := func() (optimize.Level, error) {
-		if opt < int(optimize.O0) || opt > int(optimize.O3) {
-			return 0, fmt.Errorf("invalid optimization level %d: must be 0..3", opt)
-		}
-		return optimize.Level(opt), nil
-	}
-
 	root := &cobra.Command{
 		Use:           "minipy [file]",
 		Short:         "minipy — a statically-typed Python subset on minivm",
@@ -37,7 +30,7 @@ func newRootCmd() *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			level, err := optLevel()
+			level, err := optLevel(opt)
 			if err != nil {
 				return err
 			}
@@ -57,7 +50,7 @@ func newRootCmd() *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			level, err := optLevel()
+			level, err := optLevel(opt)
 			if err != nil {
 				return err
 			}
@@ -66,4 +59,11 @@ func newRootCmd() *cobra.Command {
 	})
 
 	return root
+}
+
+func optLevel(opt int) (optimize.Level, error) {
+	if opt < int(optimize.O0) || opt > int(optimize.O3) {
+		return 0, fmt.Errorf("invalid optimization level %d: must be 0..3", opt)
+	}
+	return optimize.Level(opt), nil
 }

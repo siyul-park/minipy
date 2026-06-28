@@ -23,28 +23,28 @@ type local struct {
 	boxed bool
 }
 
-type param struct {
+type parameter struct {
 	name string
 	typ  types.Type
 }
 
-type fn struct {
-	name      string
-	params    []param
-	ret       types.Type
-	inferRet  bool         // return type is inferred from the body (no annotation)
-	returns   []types.Type // return expression types collected while inferring
-	generator bool
-	slot      *global
-	local     *local
-	locals    map[string]*local
-	order     []string
-	parent    *fn
-	children  map[string]*fn
-	captures  map[string]*capture
-	capOrder  []string
-	globals   map[string]bool
-	nonlocal  map[string]bool
+type function struct {
+	name        string
+	params      []parameter
+	result      types.Type
+	inferResult bool         // return type is inferred from the body (no annotation)
+	returns     []types.Type // return expression types collected while inferring
+	generator   bool
+	slot        *global
+	local       *local
+	locals      map[string]*local
+	order       []string
+	parent      *function
+	children    map[string]*function
+	captures    map[string]*capture
+	capOrder    []string
+	globals     map[string]bool
+	nonlocal    map[string]bool
 
 	// specialization: a polymorphic function (union/Any parameter) is
 	// monomorphized per concrete call-site argument tuple when its body
@@ -63,7 +63,7 @@ type fn struct {
 type specialization struct {
 	key      string
 	params   []types.Type
-	info     *fn
+	info     *function
 	types    map[ast.Expr]types.Type
 	calls    map[*ast.CallExpr]*specialization
 	emitted  bool
@@ -78,14 +78,14 @@ type classField struct {
 	pos   token.Pos
 }
 
-type classInfo struct {
+type class struct {
 	name       string
 	typ        *types.Class
 	fields     []classField
 	fieldIndex map[string]int
-	methods    map[string]*fn
+	methods    map[string]*function
 	methodBody map[string][]ast.Stmt
-	base       *classInfo
+	base       *class
 	classID    int
 	low        int
 	high       int
@@ -106,14 +106,14 @@ type checker struct {
 	errs       token.ErrorList
 	types      map[ast.Expr]types.Type
 	globals    map[string]*global
-	funcs      map[string]*fn
-	classes    map[string]*classInfo
-	lambdas    map[*ast.LambdaExpr]*fn
+	functions  map[string]*function
+	classes    map[string]*class
+	lambdas    map[*ast.LambdaExpr]*function
 	order      []string
 	classOrder []string
 	loops      int // enclosing-loop depth, for break/continue validation
 	excepts    int // enclosing-except depth, for bare raise validation
-	fn         *fn
+	current    *function
 	// narrowed overlays flow-sensitive types onto bindings inside a guarded
 	// region (isinstance / is-None). nameType consults it first so a use sees
 	// the narrowed member type, not the declared union.
@@ -131,9 +131,9 @@ func newChecker() *checker {
 	c := &checker{
 		types:      map[ast.Expr]types.Type{},
 		globals:    map[string]*global{},
-		funcs:      map[string]*fn{},
-		classes:    map[string]*classInfo{},
-		lambdas:    map[*ast.LambdaExpr]*fn{},
+		functions:  map[string]*function{},
+		classes:    map[string]*class{},
+		lambdas:    map[*ast.LambdaExpr]*function{},
 		narrowed:   map[string]types.Type{},
 		temps:      map[string]types.Type{},
 		callSpec:   map[*ast.CallExpr]*specialization{},
@@ -181,11 +181,11 @@ func (c *checker) checkBlock(body []ast.Stmt) {
 	}
 }
 
-// withNarrow runs fn with the given bindings narrowed, restoring the previous
+// withNarrow runs body with the given bindings narrowed, restoring the previous
 // overlay afterward.
-func (c *checker) withNarrow(m map[string]types.Type, fn func()) {
+func (c *checker) withNarrow(m map[string]types.Type, body func()) {
 	if len(m) == 0 {
-		fn()
+		body()
 		return
 	}
 	type saved struct {
@@ -198,7 +198,7 @@ func (c *checker) withNarrow(m map[string]types.Type, fn func()) {
 		old[k] = saved{prev, ok}
 		c.narrowed[k] = v
 	}
-	fn()
+	body()
 	for k, s := range old {
 		if s.ok {
 			c.narrowed[k] = s.t
@@ -328,11 +328,11 @@ func (c *checker) currentType(name string) types.Type {
 	if t, ok := c.narrowed[name]; ok {
 		return t
 	}
-	if c.fn != nil && !c.fn.globals[name] {
-		if l, ok := c.fn.locals[name]; ok {
+	if c.current != nil && !c.current.globals[name] {
+		if l, ok := c.current.locals[name]; ok {
 			return l.typ
 		}
-		if cap, ok := c.fn.captures[name]; ok {
+		if cap, ok := c.current.captures[name]; ok {
 			return cap.typ
 		}
 	}
@@ -367,19 +367,19 @@ func (c *checker) stmt(s ast.Stmt) {
 	case *ast.For:
 		c.forStmt(n)
 	case *ast.Function:
-		c.function(n)
+		c.functionStmt(n)
 	case *ast.Class:
 		c.classStmt(n)
 	case *ast.Global:
-		if c.fn == nil {
+		if c.current == nil {
 			c.errs.Add(n.Pos(), token.SyntaxError, "'global' outside function")
 			return
 		}
 		for _, name := range n.Names {
-			c.fn.globals[name] = true
+			c.current.globals[name] = true
 		}
 	case *ast.Nonlocal:
-		if c.fn == nil {
+		if c.current == nil {
 			c.errs.Add(n.Pos(), token.SyntaxError, "'nonlocal' outside function")
 			return
 		}
@@ -388,10 +388,10 @@ func (c *checker) stmt(s ast.Stmt) {
 				c.errs.Add(n.Pos(), token.NoBindingForNonlocal, "no binding for nonlocal %q found", name)
 				continue
 			}
-			c.fn.nonlocal[name] = true
+			c.current.nonlocal[name] = true
 		}
 	case *ast.Return:
-		c.ret(n)
+		c.returnStmt(n)
 	case *ast.Yield:
 		c.yieldStmt(n)
 	case *ast.Break:
@@ -466,17 +466,17 @@ func (c *checker) raiseStmt(n *ast.Raise) {
 
 func (c *checker) withStmt(n *ast.With) {
 	for _, item := range n.Items {
-		ct := c.expr(item.Context)
-		cls, ok := ct.(*types.Class)
+		receiver := c.expr(item.Context)
+		cls, ok := receiver.(*types.Class)
 		if !ok {
-			if ct != types.Invalid {
-				c.errs.Add(item.Pos(), token.UnsupportedFeature, "with requires a context manager, got %s", ct)
+			if receiver != types.Invalid {
+				c.errs.Add(item.Pos(), token.UnsupportedFeature, "with requires a context manager, got %s", receiver)
 			}
 			continue
 		}
 		info := c.classes[cls.Name]
-		enter := methodInfo(info, "__enter__")
-		exit := methodInfo(info, "__exit__")
+		enter := method(info, "__enter__")
+		exit := method(info, "__exit__")
 		if enter == nil || exit == nil {
 			c.errs.Add(item.Pos(), token.UnsupportedFeature, "%s is not a context manager", cls.Name)
 			continue
@@ -491,12 +491,12 @@ func (c *checker) withStmt(n *ast.With) {
 			name, ok := item.OptionalVars.(*ast.Name)
 			if !ok {
 				c.errs.Add(item.OptionalVars.Pos(), token.SyntaxError, "with target must be a name")
-			} else if c.fn != nil {
-				l := c.declareLocal(name.Name, enter.ret, name.Pos())
+			} else if c.current != nil {
+				l := c.declareLocal(name.Name, enter.result, name.Pos())
 				l.init = true
 				c.types[name] = l.typ
 			} else {
-				g := c.declare(name.Name, enter.ret, name.Pos())
+				g := c.declare(name.Name, enter.result, name.Pos())
 				g.init = true
 				c.types[name] = g.typ
 			}
@@ -507,8 +507,8 @@ func (c *checker) withStmt(n *ast.With) {
 
 func (c *checker) snapshotInits() (map[string]bool, map[string]bool) {
 	locals := map[string]bool{}
-	if c.fn != nil {
-		for name, l := range c.fn.locals {
+	if c.current != nil {
+		for name, l := range c.current.locals {
 			locals[name] = l.init
 		}
 	}
@@ -520,8 +520,8 @@ func (c *checker) snapshotInits() (map[string]bool, map[string]bool) {
 }
 
 func (c *checker) restoreInits(locals, globals map[string]bool) {
-	if c.fn != nil {
-		for name, l := range c.fn.locals {
+	if c.current != nil {
+		for name, l := range c.current.locals {
 			l.init = locals[name]
 		}
 	}
@@ -539,19 +539,18 @@ func (c *checker) deleteStmt(n *ast.Delete) {
 		case *ast.Name:
 			c.deleteName(t)
 		case *ast.Subscript:
-			ct := c.expr(t.X)
-			it := c.expr(t.Index)
-			switch ct.(type) {
+			receiver := c.expr(t.X)
+			index := c.expr(t.Index)
+			switch receiver.(type) {
 			case *types.List, *types.Dict:
-				c.indexResultType(t, ct, it)
+				c.indexResultType(t, receiver, index)
 			default:
-				if ct != types.Invalid {
-					c.errs.Add(t.Pos(), token.UnsupportedFeature, "cannot delete an item from %s", ct)
+				if receiver != types.Invalid {
+					c.errs.Add(t.Pos(), token.UnsupportedFeature, "cannot delete an item from %s", receiver)
 				}
 			}
 		case *ast.Attribute:
-			rt := c.expr(t.X)
-			c.fieldType(t, rt)
+			c.fieldType(t, c.expr(t.X))
 		default:
 			c.errs.Add(target.Pos(), token.SyntaxError, "cannot delete this expression")
 		}
@@ -559,12 +558,12 @@ func (c *checker) deleteStmt(n *ast.Delete) {
 }
 
 func (c *checker) deleteName(n *ast.Name) {
-	if c.fn != nil {
-		if c.fn.globals[n.Name] {
+	if c.current != nil {
+		if c.current.globals[n.Name] {
 			c.deleteGlobalName(n)
 			return
 		}
-		if l, ok := c.fn.locals[n.Name]; ok {
+		if l, ok := c.current.locals[n.Name]; ok {
 			if !l.init {
 				c.errs.Add(n.Pos(), token.UseBeforeDefinition, "name %q used before assignment", n.Name)
 			}
@@ -623,8 +622,8 @@ func (c *checker) bindCapture(name string, t types.Type, pos token.Pos) {
 	if name == "" || name == "_" {
 		return
 	}
-	if c.fn != nil {
-		if l, ok := c.fn.locals[name]; ok {
+	if c.current != nil {
+		if l, ok := c.current.locals[name]; ok {
 			if t != types.Invalid && l.typ != types.Invalid && !types.Equal(l.typ, t) {
 				c.errs.Add(pos, token.PatternError, "capture %q binds inconsistent types %s and %s", name, l.typ, t)
 			}
@@ -664,9 +663,9 @@ func (c *checker) checkPattern(p ast.Pattern, subjT types.Type) {
 			c.checkPattern(alt, subjT)
 		}
 	case *ast.ValuePattern:
-		vt := c.expr(pat.Value)
-		if vt != types.Invalid && subjT != types.Invalid && !types.Equal(vt, subjT) {
-			c.errs.Add(pat.Pos(), token.PatternError, "pattern value %s is not comparable to subject %s", vt, subjT)
+		value := c.expr(pat.Value)
+		if value != types.Invalid && subjT != types.Invalid && !types.Equal(value, subjT) {
+			c.errs.Add(pat.Pos(), token.PatternError, "pattern value %s is not comparable to subject %s", value, subjT)
 		}
 	case *ast.SequencePattern:
 		c.checkSequencePattern(pat, subjT)
@@ -791,7 +790,7 @@ func (c *checker) forStmt(n *ast.For) {
 	}
 	if tupleTarget, ok := n.Target.(*ast.TupleLit); ok {
 		c.bindForTupleTarget(tupleTarget, elem)
-	} else if c.fn != nil {
+	} else if c.current != nil {
 		l := c.declareLocal(target.Name, elem, target.Pos())
 		l.init = true
 		c.types[target] = l.typ
@@ -842,7 +841,7 @@ func (c *checker) bindForTupleTarget(target *ast.TupleLit, elem types.Type) {
 			c.errs.Add(e.Pos(), token.SyntaxError, "for tuple target must be a name")
 			continue
 		}
-		if c.fn != nil {
+		if c.current != nil {
 			l := c.declareLocal(name.Name, tuple.Elems[i], name.Pos())
 			l.init = true
 			c.types[name] = l.typ
@@ -874,15 +873,15 @@ func (c *checker) annAssign(n *ast.AnnAssign) {
 	t := c.resolveType(n.Ann)
 	var g *global
 	var l *local
-	if c.fn != nil {
+	if c.current != nil {
 		l = c.declareLocal(n.Target.Name, t, n.Pos())
 	} else {
 		g = c.declare(n.Target.Name, t, n.Pos())
 	}
 	if n.Value != nil {
-		vt := c.exprWithHint(n.Value, t)
-		if t != types.Invalid && vt != types.Invalid && !types.AssignableTo(vt, t) {
-			c.errs.Add(n.Value.Pos(), token.TypeMismatch, "cannot assign %s to %s %q", vt, t, n.Target.Name)
+		value := c.exprWithHint(n.Value, t)
+		if t != types.Invalid && value != types.Invalid && !types.AssignableTo(value, t) {
+			c.errs.Add(n.Value.Pos(), token.TypeMismatch, "cannot assign %s to %s %q", value, t, n.Target.Name)
 		}
 		if l != nil {
 			l.init = true
@@ -898,36 +897,36 @@ func (c *checker) assign(n *ast.Assign) {
 		c.assignTarget(n.Target, n.Value, n.Pos())
 		return
 	}
-	if c.fn == nil {
-		if _, isFunc := c.funcs[name.Name]; isFunc {
+	if c.current == nil {
+		if _, isFunc := c.functions[name.Name]; isFunc {
 			c.errs.Add(n.Pos(), token.TypeMismatch, "cannot assign to function %q", name.Name)
 			c.expr(n.Value)
 			return
 		}
 	}
-	vt := c.expr(n.Value)
-	if c.fn != nil {
+	value := c.expr(n.Value)
+	if c.current != nil {
 		switch {
-		case c.fn.globals[name.Name]:
-		case c.fn.nonlocal[name.Name]:
+		case c.current.globals[name.Name]:
+		case c.current.nonlocal[name.Name]:
 			cap := c.capture(name)
 			if cap == nil {
 				return
 			}
-			if cap.typ != types.Invalid && vt != types.Invalid && !types.AssignableTo(vt, cap.typ) {
-				c.errs.Add(n.Value.Pos(), token.TypeMismatch, "cannot assign %s to %s %q", vt, cap.typ, name.Name)
+			if cap.typ != types.Invalid && value != types.Invalid && !types.AssignableTo(value, cap.typ) {
+				c.errs.Add(n.Value.Pos(), token.TypeMismatch, "cannot assign %s to %s %q", value, cap.typ, name.Name)
 			}
 			cap.boxed = true
 			cap.src.boxed = true
 			c.types[name] = cap.typ
 			return
 		default:
-			l, declared := c.fn.locals[name.Name]
+			l, declared := c.current.locals[name.Name]
 			if !declared {
-				l = c.declareLocal(name.Name, vt, n.Pos())
+				l = c.declareLocal(name.Name, value, n.Pos())
 			}
-			if l.typ != types.Invalid && vt != types.Invalid && !types.AssignableTo(vt, l.typ) {
-				c.errs.Add(n.Value.Pos(), token.TypeMismatch, "cannot assign %s to %s %q", vt, l.typ, name.Name)
+			if l.typ != types.Invalid && value != types.Invalid && !types.AssignableTo(value, l.typ) {
+				c.errs.Add(n.Value.Pos(), token.TypeMismatch, "cannot assign %s to %s %q", value, l.typ, name.Name)
 			}
 			l.init = true
 			c.types[name] = l.typ
@@ -938,13 +937,13 @@ func (c *checker) assign(n *ast.Assign) {
 	if !declared {
 		// Whole-program inference: an unannotated global takes the type of its
 		// first assignment instead of requiring an annotation.
-		g = c.declare(name.Name, vt, n.Pos())
+		g = c.declare(name.Name, value, n.Pos())
 		g.init = true
-		c.types[name] = vt
+		c.types[name] = value
 		return
 	}
-	if g.typ != types.Invalid && vt != types.Invalid && !types.AssignableTo(vt, g.typ) {
-		c.errs.Add(n.Value.Pos(), token.TypeMismatch, "cannot assign %s to %s %q", vt, g.typ, name.Name)
+	if g.typ != types.Invalid && value != types.Invalid && !types.AssignableTo(value, g.typ) {
+		c.errs.Add(n.Value.Pos(), token.TypeMismatch, "cannot assign %s to %s %q", value, g.typ, name.Name)
 	}
 	g.init = true
 	c.types[name] = g.typ
@@ -953,32 +952,31 @@ func (c *checker) assign(n *ast.Assign) {
 func (c *checker) assignTarget(target ast.Expr, value ast.Expr, pos token.Pos) {
 	switch t := target.(type) {
 	case *ast.Subscript:
-		ct := c.expr(t.X)
-		it := c.expr(t.Index)
-		vt := c.expr(value)
-		elem := c.indexResultType(t, ct, it)
-		if elem != types.Invalid && vt != types.Invalid && !types.AssignableTo(vt, elem) {
-			c.errs.Add(value.Pos(), token.TypeMismatch, "cannot assign %s to indexed %s", vt, elem)
+		receiver := c.expr(t.X)
+		index := c.expr(t.Index)
+		valueType := c.expr(value)
+		elem := c.indexResultType(t, receiver, index)
+		if elem != types.Invalid && valueType != types.Invalid && !types.AssignableTo(valueType, elem) {
+			c.errs.Add(value.Pos(), token.TypeMismatch, "cannot assign %s to indexed %s", valueType, elem)
 		}
 	case *ast.Attribute:
-		rt := c.expr(t.X)
-		ft := c.fieldType(t, rt)
-		vt := c.expr(value)
-		if ft != types.Invalid && vt != types.Invalid && !types.AssignableTo(vt, ft) {
-			c.errs.Add(value.Pos(), token.TypeMismatch, "cannot assign %s to field %s", vt, ft)
+		receiver := c.expr(t.X)
+		field := c.fieldType(t, receiver)
+		valueType := c.expr(value)
+		if field != types.Invalid && valueType != types.Invalid && !types.AssignableTo(valueType, field) {
+			c.errs.Add(value.Pos(), token.TypeMismatch, "cannot assign %s to field %s", valueType, field)
 		}
 	case *ast.TupleLit:
-		vt := c.expr(value)
-		c.unpackAssign(t, vt, value.Pos())
+		c.unpackAssign(t, c.expr(value), value.Pos())
 	default:
 		c.errs.Add(pos, token.SyntaxError, "cannot assign to this expression")
 		c.expr(value)
 	}
 }
 
-func (c *checker) unpackAssign(target *ast.TupleLit, vt types.Type, pos token.Pos) {
+func (c *checker) unpackAssign(target *ast.TupleLit, value types.Type, pos token.Pos) {
 	var elems []types.Type
-	switch t := vt.(type) {
+	switch t := value.(type) {
 	case *types.Tuple:
 		elems = t.Elems
 	case *types.List:
@@ -987,8 +985,8 @@ func (c *checker) unpackAssign(target *ast.TupleLit, vt types.Type, pos token.Po
 			elems[i] = t.Elem
 		}
 	default:
-		if vt != types.Invalid {
-			c.errs.Add(pos, token.TypeMismatch, "cannot unpack %s", vt)
+		if value != types.Invalid {
+			c.errs.Add(pos, token.TypeMismatch, "cannot unpack %s", value)
 		}
 		return
 	}
@@ -1002,8 +1000,8 @@ func (c *checker) unpackAssign(target *ast.TupleLit, vt types.Type, pos token.Po
 			c.errs.Add(elem.Pos(), token.SyntaxError, "tuple unpack target must be a name")
 			continue
 		}
-		if c.fn != nil {
-			l, declared := c.fn.locals[name.Name]
+		if c.current != nil {
+			l, declared := c.current.locals[name.Name]
 			if !declared {
 				l = c.declareLocal(name.Name, elems[i], name.Pos())
 			}
@@ -1040,35 +1038,35 @@ func (c *checker) augAssign(n *ast.AugAssign) {
 			c.expr(n.Value)
 			return
 		}
-		rt := c.expr(attr.X)
-		ft := c.fieldType(attr, rt)
-		vt := c.expr(n.Value)
-		rt2 := c.binaryType(ft, n.Op, vt, n.Pos())
-		if rt2 != types.Invalid && ft != types.Invalid && !types.AssignableTo(rt2, ft) {
-			c.errs.Add(n.Pos(), token.TypeMismatch, "result %s is not assignable to field %s", rt2, ft)
+		receiver := c.expr(attr.X)
+		field := c.fieldType(attr, receiver)
+		value := c.expr(n.Value)
+		result := c.binaryType(field, n.Op, value, n.Pos())
+		if result != types.Invalid && field != types.Invalid && !types.AssignableTo(result, field) {
+			c.errs.Add(n.Pos(), token.TypeMismatch, "result %s is not assignable to field %s", result, field)
 		}
 		return
 	}
-	if c.fn != nil {
+	if c.current != nil {
 		switch {
-		case c.fn.globals[name.Name]:
-		case c.fn.nonlocal[name.Name]:
+		case c.current.globals[name.Name]:
+		case c.current.nonlocal[name.Name]:
 			cap := c.capture(name)
 			if cap == nil {
 				c.expr(n.Value)
 				return
 			}
 			c.types[name] = cap.typ
-			vt := c.expr(n.Value)
-			rt := c.binaryType(cap.typ, n.Op, vt, n.Pos())
-			if rt != types.Invalid && cap.typ != types.Invalid && !types.AssignableTo(rt, cap.typ) {
-				c.errs.Add(n.Pos(), token.TypeMismatch, "result %s is not assignable to %s %q", rt, cap.typ, name.Name)
+			value := c.expr(n.Value)
+			result := c.binaryType(cap.typ, n.Op, value, n.Pos())
+			if result != types.Invalid && cap.typ != types.Invalid && !types.AssignableTo(result, cap.typ) {
+				c.errs.Add(n.Pos(), token.TypeMismatch, "result %s is not assignable to %s %q", result, cap.typ, name.Name)
 			}
 			cap.boxed = true
 			cap.src.boxed = true
 			return
 		default:
-			l, declared := c.fn.locals[name.Name]
+			l, declared := c.current.locals[name.Name]
 			if !declared {
 				c.errs.Add(n.Pos(), token.UndefinedName, "name %q is not defined", name.Name)
 				c.expr(n.Value)
@@ -1078,10 +1076,10 @@ func (c *checker) augAssign(n *ast.AugAssign) {
 				c.errs.Add(n.Pos(), token.UseBeforeDefinition, "name %q used before assignment", name.Name)
 			}
 			c.types[name] = l.typ
-			vt := c.expr(n.Value)
-			rt := c.binaryType(l.typ, n.Op, vt, n.Pos())
-			if rt != types.Invalid && l.typ != types.Invalid && !types.AssignableTo(rt, l.typ) {
-				c.errs.Add(n.Pos(), token.TypeMismatch, "result %s is not assignable to %s %q", rt, l.typ, name.Name)
+			value := c.expr(n.Value)
+			result := c.binaryType(l.typ, n.Op, value, n.Pos())
+			if result != types.Invalid && l.typ != types.Invalid && !types.AssignableTo(result, l.typ) {
+				c.errs.Add(n.Pos(), token.TypeMismatch, "result %s is not assignable to %s %q", result, l.typ, name.Name)
 			}
 			l.init = true
 			return
@@ -1097,10 +1095,10 @@ func (c *checker) augAssign(n *ast.AugAssign) {
 		c.errs.Add(n.Pos(), token.UseBeforeDefinition, "name %q used before assignment", name.Name)
 	}
 	c.types[name] = g.typ
-	vt := c.expr(n.Value)
-	rt := c.binaryType(g.typ, n.Op, vt, n.Pos())
-	if rt != types.Invalid && g.typ != types.Invalid && !types.AssignableTo(rt, g.typ) {
-		c.errs.Add(n.Pos(), token.TypeMismatch, "result %s is not assignable to %s %q", rt, g.typ, name.Name)
+	value := c.expr(n.Value)
+	result := c.binaryType(g.typ, n.Op, value, n.Pos())
+	if result != types.Invalid && g.typ != types.Invalid && !types.AssignableTo(result, g.typ) {
+		c.errs.Add(n.Pos(), token.TypeMismatch, "result %s is not assignable to %s %q", result, g.typ, name.Name)
 	}
 	g.init = true
 }
@@ -1109,7 +1107,7 @@ func (c *checker) augAssign(n *ast.AugAssign) {
 // change on redeclaration.
 func (c *checker) declare(name string, t types.Type, pos token.Pos) *global {
 	if g, ok := c.globals[name]; ok {
-		if _, isFunc := c.funcs[name]; isFunc && t != types.Invalid {
+		if _, isFunc := c.functions[name]; isFunc && t != types.Invalid {
 			c.errs.Add(pos, token.TypeMismatch, "cannot redeclare function %q", name)
 			return g
 		}
@@ -1132,23 +1130,23 @@ func (c *checker) declare(name string, t types.Type, pos token.Pos) *global {
 }
 
 func (c *checker) declareLocal(name string, t types.Type, pos token.Pos) *local {
-	if l, ok := c.fn.locals[name]; ok {
+	if l, ok := c.current.locals[name]; ok {
 		if t != types.Invalid && l.typ != types.Invalid && !types.Equal(l.typ, t) {
 			c.errs.Add(pos, token.TypeMismatch, "cannot redeclare %q from %s to %s", name, l.typ, t)
 		}
 		return l
 	}
-	l := &local{typ: t, index: len(c.fn.params) + len(c.fn.order)}
-	c.fn.locals[name] = l
-	c.fn.order = append(c.fn.order, name)
+	l := &local{typ: t, index: len(c.current.params) + len(c.current.order)}
+	c.current.locals[name] = l
+	c.current.order = append(c.current.order, name)
 	return l
 }
 
-func (c *checker) declareFuncLocal(info *fn, pos token.Pos) {
+func (c *checker) declareFuncLocal(info *function, pos token.Pos) {
 	if info.local != nil {
 		return
 	}
-	info.local = c.declareLocal(info.name, types.NewCallable(srcTypes(info.params), info.ret), pos)
+	info.local = c.declareLocal(info.name, types.NewCallable(srcTypes(info.params), info.result), pos)
 }
 
 func (c *checker) declareFuncs(body []ast.Stmt) {
@@ -1157,7 +1155,7 @@ func (c *checker) declareFuncs(body []ast.Stmt) {
 		if !ok {
 			continue
 		}
-		if _, exists := c.funcs[f.Name.Name]; exists {
+		if _, exists := c.functions[f.Name.Name]; exists {
 			c.errs.Add(f.Name.Pos(), token.TypeMismatch, "cannot redeclare function %q", f.Name.Name)
 			continue
 		}
@@ -1169,29 +1167,29 @@ func (c *checker) declareFuncs(body []ast.Stmt) {
 			c.errs.Add(f.Name.Pos(), token.TypeMismatch, "cannot redeclare %q as a function", f.Name.Name)
 			continue
 		}
-		info := &fn{
+		info := &function{
 			name:      f.Name.Name,
 			generator: containsYield(f.Body),
 			locals:    map[string]*local{},
-			children:  map[string]*fn{},
+			children:  map[string]*function{},
 			captures:  map[string]*capture{},
 			globals:   map[string]bool{},
 			nonlocal:  map[string]bool{},
 		}
 		if f.Returns == nil {
-			info.inferRet = true
-			info.ret = types.None // refined from collected returns after the body
+			info.inferResult = true
+			info.result = types.None // refined from collected returns after the body
 		} else {
-			info.ret = c.resolveType(f.Returns)
+			info.result = c.resolveType(f.Returns)
 		}
 		for _, p := range f.Params {
-			info.params = append(info.params, param{name: p.Name.Name, typ: c.paramType(p)})
+			info.params = append(info.params, parameter{name: p.Name.Name, typ: c.paramType(p)})
 		}
 		info.body = f.Body
 		info.astParams = f.Params
 		info.specializable = specializable(info)
 		info.slot = c.declare(f.Name.Name, types.Invalid, f.Pos())
-		c.funcs[f.Name.Name] = info
+		c.functions[f.Name.Name] = info
 	}
 }
 
@@ -1210,15 +1208,15 @@ func (c *checker) declareClasses(body []ast.Stmt) {
 			c.errs.Add(cls.Name.Pos(), token.TypeMismatch, "cannot redeclare %q as a class", name)
 			continue
 		}
-		if _, exists := c.funcs[name]; exists {
+		if _, exists := c.functions[name]; exists {
 			c.errs.Add(cls.Name.Pos(), token.TypeMismatch, "cannot redeclare function %q as a class", name)
 			continue
 		}
-		c.classes[name] = &classInfo{
+		c.classes[name] = &class{
 			name:       name,
 			typ:        types.NewClass(name, nil),
 			fieldIndex: map[string]int{},
-			methods:    map[string]*fn{},
+			methods:    map[string]*function{},
 			methodBody: map[string][]ast.Stmt{},
 		}
 		c.classOrder = append(c.classOrder, name)
@@ -1256,12 +1254,12 @@ func (c *checker) declareBuiltinExceptions() {
 		{name: "message", typ: types.Str, index: 1},
 	}
 	for _, name := range builtinExceptionNames {
-		info := &classInfo{
+		info := &class{
 			name:       name,
 			typ:        types.NewClass(name, nil),
 			fields:     append([]classField(nil), fields...),
 			fieldIndex: map[string]int{"__classid": 0, "message": 1},
-			methods:    map[string]*fn{},
+			methods:    map[string]*function{},
 			methodBody: map[string][]ast.Stmt{},
 		}
 		c.classes[name] = info
@@ -1276,7 +1274,7 @@ func (c *checker) declareBuiltinExceptions() {
 }
 
 func (c *checker) computeClassIntervals() {
-	children := map[string][]*classInfo{}
+	children := map[string][]*class{}
 	for _, name := range c.classOrder {
 		info := c.classes[name]
 		if info == nil || info.base == nil {
@@ -1285,8 +1283,8 @@ func (c *checker) computeClassIntervals() {
 		children[info.base.name] = append(children[info.base.name], info)
 	}
 	next := 1
-	var dfs func(*classInfo)
-	dfs = func(info *classInfo) {
+	var dfs func(*class)
+	dfs = func(info *class) {
 		info.classID = next
 		info.low = next
 		next++
@@ -1349,7 +1347,7 @@ func (c *checker) classStmt(n *ast.Class) {
 	}
 }
 
-func (c *checker) exceptionClass(e ast.Expr) *classInfo {
+func (c *checker) exceptionClass(e ast.Expr) *class {
 	name, ok := e.(*ast.Name)
 	if !ok {
 		c.errs.Add(e.Pos(), token.UnsupportedFeature, "exception type must be a class name")
@@ -1382,7 +1380,7 @@ func (c *checker) isException(name string) bool {
 	return false
 }
 
-func methodInfo(info *classInfo, name string) *fn {
+func method(info *class, name string) *function {
 	for info != nil {
 		if method := info.methods[name]; method != nil {
 			return method
@@ -1392,7 +1390,7 @@ func methodInfo(info *classInfo, name string) *fn {
 	return nil
 }
 
-func (c *checker) classField(info *classInfo, n *ast.AnnAssign) {
+func (c *checker) classField(info *class, n *ast.AnnAssign) {
 	name := n.Target.Name
 	if _, exists := info.fieldIndex[name]; exists {
 		c.errs.Add(n.Target.Pos(), token.TypeMismatch, "cannot redeclare field %q", name)
@@ -1402,14 +1400,14 @@ func (c *checker) classField(info *classInfo, n *ast.AnnAssign) {
 	info.fieldIndex[name] = field.index
 	info.fields = append(info.fields, field)
 	if n.Value != nil {
-		vt := c.exprWithHint(n.Value, t)
-		if t != types.Invalid && vt != types.Invalid && !types.AssignableTo(vt, t) {
-			c.errs.Add(n.Value.Pos(), token.TypeMismatch, "cannot assign %s to field %s %q", vt, t, name)
+		value := c.exprWithHint(n.Value, t)
+		if t != types.Invalid && value != types.Invalid && !types.AssignableTo(value, t) {
+			c.errs.Add(n.Value.Pos(), token.TypeMismatch, "cannot assign %s to field %s %q", value, t, name)
 		}
 	}
 }
 
-func (c *checker) classMethod(info *classInfo, n *ast.Function) {
+func (c *checker) classMethod(info *class, n *ast.Function) {
 	if _, exists := info.methods[n.Name.Name]; exists {
 		c.errs.Add(n.Name.Pos(), token.TypeMismatch, "cannot redeclare method %q", n.Name.Name)
 		return
@@ -1418,7 +1416,7 @@ func (c *checker) classMethod(info *classInfo, n *ast.Function) {
 		c.errs.Add(n.Pos(), token.MissingAnnotation, "method %q needs self parameter", n.Name.Name)
 		return
 	}
-	params := make([]param, 0, len(n.Params))
+	params := make([]parameter, 0, len(n.Params))
 	for i, p := range n.Params {
 		pt := types.Type(info.typ)
 		if i > 0 {
@@ -1429,32 +1427,32 @@ func (c *checker) classMethod(info *classInfo, n *ast.Function) {
 				c.errs.Add(p.Ann.Pos(), token.TypeMismatch, "self must be %s, got %s", info.typ, pt)
 			}
 		}
-		params = append(params, param{name: p.Name.Name, typ: pt})
+		params = append(params, parameter{name: p.Name.Name, typ: pt})
 	}
-	inferRet := n.Returns == nil && n.Name.Name != "__init__"
-	ret := types.None
+	inferResult := n.Returns == nil && n.Name.Name != "__init__"
+	result := types.None
 	if n.Returns != nil {
-		ret = c.resolveType(n.Returns)
-		if n.Name.Name == "__init__" && ret != types.Invalid && !types.Equal(ret, types.None) {
-			c.errs.Add(n.Returns.Pos(), token.TypeMismatch, "__init__ must return None, got %s", ret)
+		result = c.resolveType(n.Returns)
+		if n.Name.Name == "__init__" && result != types.Invalid && !types.Equal(result, types.None) {
+			c.errs.Add(n.Returns.Pos(), token.TypeMismatch, "__init__ must return None, got %s", result)
 		}
 	}
-	info.methods[n.Name.Name] = &fn{
-		name:      info.name + "." + n.Name.Name,
-		params:    params,
-		ret:       ret,
-		inferRet:  inferRet,
-		generator: containsYield(n.Body),
-		locals:    map[string]*local{},
-		children:  map[string]*fn{},
-		captures:  map[string]*capture{},
-		globals:   map[string]bool{},
-		nonlocal:  map[string]bool{},
+	info.methods[n.Name.Name] = &function{
+		name:        info.name + "." + n.Name.Name,
+		params:      params,
+		result:      result,
+		inferResult: inferResult,
+		generator:   containsYield(n.Body),
+		locals:      map[string]*local{},
+		children:    map[string]*function{},
+		captures:    map[string]*capture{},
+		globals:     map[string]bool{},
+		nonlocal:    map[string]bool{},
 	}
 	info.methodBody[n.Name.Name] = n.Body
 }
 
-func (c *checker) checkDataclassDefaults(info *classInfo) {
+func (c *checker) checkDataclassDefaults(info *class) {
 	if !info.dataclass {
 		return
 	}
@@ -1478,7 +1476,7 @@ func classTypeFields(fields []classField) []types.Field {
 	return out
 }
 
-func (c *checker) nestedFuncs(info *fn, body []ast.Stmt) {
+func (c *checker) nestedFuncs(info *function, body []ast.Stmt) {
 	for _, s := range body {
 		f, ok := s.(*ast.Function)
 		if !ok {
@@ -1488,31 +1486,31 @@ func (c *checker) nestedFuncs(info *fn, body []ast.Stmt) {
 			c.errs.Add(f.Name.Pos(), token.TypeMismatch, "cannot redeclare function %q", f.Name.Name)
 			continue
 		}
-		child := &fn{
+		child := &function{
 			name:      f.Name.Name,
 			generator: containsYield(f.Body),
 			locals:    map[string]*local{},
 			parent:    info,
-			children:  map[string]*fn{},
+			children:  map[string]*function{},
 			captures:  map[string]*capture{},
 			globals:   map[string]bool{},
 			nonlocal:  map[string]bool{},
 		}
 		if f.Returns == nil {
-			child.inferRet = true
-			child.ret = types.None
+			child.inferResult = true
+			child.result = types.None
 		} else {
-			child.ret = c.resolveType(f.Returns)
+			child.result = c.resolveType(f.Returns)
 		}
 		for _, p := range f.Params {
-			child.params = append(child.params, param{name: p.Name.Name, typ: c.paramType(p)})
+			child.params = append(child.params, parameter{name: p.Name.Name, typ: c.paramType(p)})
 		}
 		info.children[f.Name.Name] = child
 		c.declareFuncLocal(child, f.Pos())
 	}
 }
 
-func srcTypes(params []param) []types.Type {
+func srcTypes(params []parameter) []types.Type {
 	out := make([]types.Type, len(params))
 	for i, p := range params {
 		out[i] = p.typ
@@ -1636,9 +1634,9 @@ func (c *checker) resolveType(e ast.Expr) types.Type {
 	return types.Invalid
 }
 
-func (c *checker) function(n *ast.Function) {
-	if c.fn != nil {
-		info := c.fn.children[n.Name.Name]
+func (c *checker) functionStmt(n *ast.Function) {
+	if c.current != nil {
+		info := c.current.children[n.Name.Name]
 		if info == nil {
 			return
 		}
@@ -1646,7 +1644,7 @@ func (c *checker) function(n *ast.Function) {
 		c.checkFunctionBody(n.Body, n.Params, info, n.Pos())
 		return
 	}
-	info := c.funcs[n.Name.Name]
+	info := c.functions[n.Name.Name]
 	if info == nil {
 		return
 	}
@@ -1654,9 +1652,9 @@ func (c *checker) function(n *ast.Function) {
 	c.checkFunctionBody(n.Body, n.Params, info, n.Pos())
 }
 
-func (c *checker) checkFunctionBody(body []ast.Stmt, params []*ast.Param, info *fn, pos token.Pos) {
-	prev := c.fn
-	c.fn = info
+func (c *checker) checkFunctionBody(body []ast.Stmt, params []*ast.Param, info *function, pos token.Pos) {
+	prev := c.current
+	c.current = info
 	c.nestedFuncs(info, body)
 	for i, p := range info.params {
 		if _, exists := info.locals[p.name]; exists {
@@ -1666,76 +1664,76 @@ func (c *checker) checkFunctionBody(body []ast.Stmt, params []*ast.Param, info *
 		info.locals[p.name] = &local{typ: p.typ, index: i, init: true}
 	}
 	if info.generator {
-		if _, ok := info.ret.(*types.Iterator); !ok && info.ret != types.Invalid {
-			c.errs.Add(pos, token.TypeMismatch, "generator function %q must return Iterator[T], got %s", info.name, info.ret)
+		if _, ok := info.result.(*types.Iterator); !ok && info.result != types.Invalid {
+			c.errs.Add(pos, token.TypeMismatch, "generator function %q must return Iterator[T], got %s", info.name, info.result)
 		}
 	}
 	c.checkBlock(body)
-	if info.inferRet {
+	if info.inferResult {
 		// Infer the return type as the join of every return expression's type;
 		// a body with no value-returns is None.
 		if len(info.returns) == 0 {
-			info.ret = types.None
+			info.result = types.None
 		} else {
-			ret := info.returns[0]
-			for _, rt := range info.returns[1:] {
-				ret = types.Join(ret, rt)
+			result := info.returns[0]
+			for _, next := range info.returns[1:] {
+				result = types.Join(result, next)
 			}
-			info.ret = ret
+			info.result = result
 		}
 	}
-	if !info.generator && !types.Equal(info.ret, types.None) && !blockReturns(body) {
-		c.errs.Add(pos, token.TypeMismatch, "function %q may fall through without returning %s", info.name, info.ret)
+	if !info.generator && !types.Equal(info.result, types.None) && !blockReturns(body) {
+		c.errs.Add(pos, token.TypeMismatch, "function %q may fall through without returning %s", info.name, info.result)
 	}
-	c.fn = prev
+	c.current = prev
 }
 
-func (c *checker) ret(n *ast.Return) {
-	if c.fn == nil {
+func (c *checker) returnStmt(n *ast.Return) {
+	if c.current == nil {
 		c.errs.Add(n.Pos(), token.SyntaxError, "'return' outside function")
 		if n.Value != nil {
 			c.expr(n.Value)
 		}
 		return
 	}
-	if c.fn.generator {
+	if c.current.generator {
 		if n.Value != nil {
 			c.errs.Add(n.Pos(), token.TypeMismatch, "generator function cannot return a value")
 			c.expr(n.Value)
 		}
 		return
 	}
-	rt := types.Type(types.None)
+	result := types.Type(types.None)
 	if n.Value != nil {
-		if c.fn.inferRet {
-			rt = c.expr(n.Value)
+		if c.current.inferResult {
+			result = c.expr(n.Value)
 		} else {
-			rt = c.exprWithHint(n.Value, c.fn.ret)
+			result = c.exprWithHint(n.Value, c.current.result)
 		}
 	}
-	if c.fn.inferRet {
+	if c.current.inferResult {
 		// Return type is being inferred: collect this branch's type instead of
 		// checking against a fixed annotation.
-		c.fn.returns = append(c.fn.returns, rt)
+		c.current.returns = append(c.current.returns, result)
 		return
 	}
-	if c.fn.ret != types.Invalid && rt != types.Invalid && !types.AssignableTo(rt, c.fn.ret) {
-		c.errs.Add(n.Pos(), token.TypeMismatch, "cannot return %s from function returning %s", rt, c.fn.ret)
+	if c.current.result != types.Invalid && result != types.Invalid && !types.AssignableTo(result, c.current.result) {
+		c.errs.Add(n.Pos(), token.TypeMismatch, "cannot return %s from function returning %s", result, c.current.result)
 	}
 }
 
 func (c *checker) yieldStmt(n *ast.Yield) {
-	if c.fn == nil {
+	if c.current == nil {
 		c.errs.Add(n.Pos(), token.SyntaxError, "'yield' outside function")
 		if n.Value != nil {
 			c.expr(n.Value)
 		}
 		return
 	}
-	iter, ok := c.fn.ret.(*types.Iterator)
+	iter, ok := c.current.result.(*types.Iterator)
 	if !ok {
-		if c.fn.ret != types.Invalid {
-			c.errs.Add(n.Pos(), token.TypeMismatch, "yield in function returning %s; expected Iterator[T]", c.fn.ret)
+		if c.current.result != types.Invalid {
+			c.errs.Add(n.Pos(), token.TypeMismatch, "yield in function returning %s; expected Iterator[T]", c.current.result)
 		}
 		if n.Value != nil {
 			c.expr(n.Value)
@@ -1849,7 +1847,7 @@ func containsYield(body []ast.Stmt) bool {
 // and is not a generator. Whether a given instantiation actually type-checks is
 // decided at the call site, which rolls back and falls back to the union/Any
 // body on any error.
-func specializable(info *fn) bool {
+func specializable(info *function) bool {
 	if info.generator {
 		return false
 	}
@@ -1864,35 +1862,35 @@ func specializable(info *fn) bool {
 	return false
 }
 
-// specialize returns the monomorphic instantiation of fn for the given concrete
+// specialize returns the monomorphic instantiation of function for the given concrete
 // argument tuple, creating it on first use. It returns nil — falling back to the
 // single union/Any-typed body — when the function is not specializable, an
 // argument is not concrete, the per-function cap is reached, the instantiation
 // recurses, or re-checking the reachable body under the concrete types produces
 // any error.
-func (c *checker) specialize(info *fn, argTypes []types.Type) *specialization {
+func (c *checker) specialize(info *function, argTypes []types.Type) *specialization {
 	if !info.specializable {
 		return nil
 	}
-	cparams := make([]param, len(info.params))
-	ptypes := make([]types.Type, len(info.params))
+	params := make([]parameter, len(info.params))
+	signature := make([]types.Type, len(info.params))
 	for i, p := range info.params {
-		at := argTypes[i]
+		arg := argTypes[i]
 		if _, isU := p.typ.(*types.Union); isU || types.IsAny(p.typ) {
-			if !concrete(at) {
+			if !concrete(arg) {
 				return nil
 			}
-			cparams[i] = param{name: p.name, typ: at}
+			params[i] = parameter{name: p.name, typ: arg}
 		} else {
-			if at == types.Invalid || !types.AssignableTo(at, p.typ) {
+			if arg == types.Invalid || !types.AssignableTo(arg, p.typ) {
 				return nil
 			}
-			cparams[i] = param{name: p.name, typ: p.typ}
+			params[i] = parameter{name: p.name, typ: p.typ}
 		}
-		ptypes[i] = cparams[i].typ
+		signature[i] = params[i].typ
 	}
 
-	key := specKey(ptypes)
+	key := specKey(signature)
 	for _, s := range info.instances {
 		if s.key == key {
 			return s
@@ -1906,22 +1904,22 @@ func (c *checker) specialize(info *fn, argTypes []types.Type) *specialization {
 		return nil
 	}
 
-	clone := &fn{
-		name:      info.name + "$" + key,
-		params:    cparams,
-		inferRet:  info.inferRet,
-		ret:       info.ret,
-		generator: info.generator,
-		body:      info.body,
-		astParams: info.astParams,
-		locals:    map[string]*local{},
-		children:  map[string]*fn{},
-		captures:  map[string]*capture{},
-		globals:   map[string]bool{},
-		nonlocal:  map[string]bool{},
+	clone := &function{
+		name:        info.name + "$" + key,
+		params:      params,
+		inferResult: info.inferResult,
+		result:      info.result,
+		generator:   info.generator,
+		body:        info.body,
+		astParams:   info.astParams,
+		locals:      map[string]*local{},
+		children:    map[string]*function{},
+		captures:    map[string]*capture{},
+		globals:     map[string]bool{},
+		nonlocal:    map[string]bool{},
 	}
-	if clone.inferRet {
-		clone.ret = types.None
+	if clone.inferResult {
+		clone.result = types.None
 	}
 
 	errMark := len(c.errs)
@@ -1939,7 +1937,7 @@ func (c *checker) specialize(info *fn, argTypes []types.Type) *specialization {
 		c.errs = c.errs[:errMark] // discard: this tuple cannot specialize
 		return nil
 	}
-	spec := &specialization{key: key, params: ptypes, info: clone, types: itypes, calls: icalls}
+	spec := &specialization{key: key, params: signature, info: clone, types: itypes, calls: icalls}
 	info.instances = append(info.instances, spec)
 	return spec
 }
@@ -2021,16 +2019,16 @@ func (c *checker) typeOf(e ast.Expr, hint types.Type) types.Type {
 		elem := c.compElem(n.Clauses, n.Elem)
 		return types.NewList(elem)
 	case *ast.DictComp:
-		var kt, vt types.Type
+		var key, value types.Type
 		c.compClauses(n.Clauses, func() {
-			kt = c.expr(n.Key)
-			vt = c.expr(n.Value)
+			key = c.expr(n.Key)
+			value = c.expr(n.Value)
 		})
-		if !hashableKey(kt) {
-			c.errs.Add(n.Key.Pos(), token.UnsupportedType, "dict key type %s is not supported", kt)
+		if !hashableKey(key) {
+			c.errs.Add(n.Key.Pos(), token.UnsupportedType, "dict key type %s is not supported", key)
 			return types.Invalid
 		}
-		return types.NewDict(kt, vt)
+		return types.NewDict(key, value)
 	case *ast.SetComp:
 		elem := c.compElem(n.Clauses, n.Elem)
 		if !hashableKey(elem) {
@@ -2039,9 +2037,9 @@ func (c *checker) typeOf(e ast.Expr, hint types.Type) types.Type {
 		}
 		return types.NewSet(elem)
 	case *ast.Subscript:
-		ct := c.expr(n.X)
-		it := c.expr(n.Index)
-		return c.indexResultType(n, ct, it)
+		receiver := c.expr(n.X)
+		index := c.expr(n.Index)
+		return c.indexResultType(n, receiver, index)
 	case *ast.Attribute:
 		return c.fieldType(n, c.expr(n.X))
 	case *ast.FString:
@@ -2054,8 +2052,8 @@ func (c *checker) typeOf(e ast.Expr, hint types.Type) types.Type {
 
 func (c *checker) listType(n *ast.ListLit, hint types.Type) types.Type {
 	if len(n.Elems) == 0 {
-		if lt, ok := hint.(*types.List); ok {
-			return lt
+		if list, ok := hint.(*types.List); ok {
+			return list
 		}
 		c.errs.Add(n.Pos(), token.UnsupportedType, "empty list needs list[T] annotation")
 		return types.Invalid
@@ -2079,41 +2077,41 @@ func (c *checker) dictType(n *ast.DictLit, hint types.Type) types.Type {
 		c.errs.Add(n.Pos(), token.UnsupportedType, "empty dict needs dict[K, V] annotation")
 		return types.Invalid
 	}
-	kt := c.expr(n.Keys[0])
-	vt := c.expr(n.Values[0])
+	key := c.expr(n.Keys[0])
+	value := c.expr(n.Values[0])
 	for i := 1; i < len(n.Keys); i++ {
 		k := c.expr(n.Keys[i])
 		v := c.expr(n.Values[i])
-		if kt != types.Invalid && k != types.Invalid && !types.Equal(kt, k) {
-			c.errs.Add(n.Keys[i].Pos(), token.TypeMismatch, "dict keys must have same type: %s and %s", kt, k)
+		if key != types.Invalid && k != types.Invalid && !types.Equal(key, k) {
+			c.errs.Add(n.Keys[i].Pos(), token.TypeMismatch, "dict keys must have same type: %s and %s", key, k)
 			return types.Invalid
 		}
-		if vt != types.Invalid && v != types.Invalid && !types.Equal(vt, v) {
-			c.errs.Add(n.Values[i].Pos(), token.TypeMismatch, "dict values must have same type: %s and %s", vt, v)
+		if value != types.Invalid && v != types.Invalid && !types.Equal(value, v) {
+			c.errs.Add(n.Values[i].Pos(), token.TypeMismatch, "dict values must have same type: %s and %s", value, v)
 			return types.Invalid
 		}
 	}
-	if !hashableKey(kt) {
-		c.errs.Add(n.Keys[0].Pos(), token.UnsupportedType, "dict key type %s is not supported", kt)
+	if !hashableKey(key) {
+		c.errs.Add(n.Keys[0].Pos(), token.UnsupportedType, "dict key type %s is not supported", key)
 		return types.Invalid
 	}
-	return types.NewDict(kt, vt)
+	return types.NewDict(key, value)
 }
 
 func hashableKey(t types.Type) bool {
 	return types.Equal(t, types.Int) || types.Equal(t, types.Float) || types.Equal(t, types.Bool) || types.Equal(t, types.Str)
 }
 
-func (c *checker) indexResultType(n *ast.Subscript, ct, it types.Type) types.Type {
-	switch t := ct.(type) {
+func (c *checker) indexResultType(n *ast.Subscript, receiver, index types.Type) types.Type {
+	switch t := receiver.(type) {
 	case *types.List:
-		if it != types.Invalid && !types.Equal(it, types.Int) {
-			c.errs.Add(n.Index.Pos(), token.TypeMismatch, "list index must be int, got %s", it)
+		if index != types.Invalid && !types.Equal(index, types.Int) {
+			c.errs.Add(n.Index.Pos(), token.TypeMismatch, "list index must be int, got %s", index)
 		}
 		return t.Elem
 	case *types.Dict:
-		if it != types.Invalid && !types.AssignableTo(it, t.Key) {
-			c.errs.Add(n.Index.Pos(), token.TypeMismatch, "dict key must be %s, got %s", t.Key, it)
+		if index != types.Invalid && !types.AssignableTo(index, t.Key) {
+			c.errs.Add(n.Index.Pos(), token.TypeMismatch, "dict key must be %s, got %s", t.Key, index)
 		}
 		return t.Value
 	case *types.Tuple:
@@ -2127,24 +2125,24 @@ func (c *checker) indexResultType(n *ast.Subscript, ct, it types.Type) types.Typ
 		c.errs.Add(n.Index.Pos(), token.UnsupportedFeature, "tuple index must be a constant int")
 		return types.Invalid
 	default:
-		if types.Equal(ct, types.Str) {
-			if it != types.Invalid && !types.Equal(it, types.Int) {
-				c.errs.Add(n.Index.Pos(), token.TypeMismatch, "str index must be int, got %s", it)
+		if types.Equal(receiver, types.Str) {
+			if index != types.Invalid && !types.Equal(index, types.Int) {
+				c.errs.Add(n.Index.Pos(), token.TypeMismatch, "str index must be int, got %s", index)
 			}
 			return types.Str
 		}
-		if ct != types.Invalid {
-			c.errs.Add(n.Pos(), token.NotIndexable, "%s is not indexable", ct)
+		if receiver != types.Invalid {
+			c.errs.Add(n.Pos(), token.NotIndexable, "%s is not indexable", receiver)
 		}
 		return types.Invalid
 	}
 }
 
-func (c *checker) fieldType(n *ast.Attribute, recv types.Type) types.Type {
-	cls, ok := recv.(*types.Class)
+func (c *checker) fieldType(n *ast.Attribute, receiver types.Type) types.Type {
+	cls, ok := receiver.(*types.Class)
 	if !ok {
-		if recv != types.Invalid {
-			c.errs.Add(n.Pos(), token.UnsupportedFeature, "attribute %s on %s is not supported", n.Name, recv)
+		if receiver != types.Invalid {
+			c.errs.Add(n.Pos(), token.UnsupportedFeature, "attribute %s on %s is not supported", n.Name, receiver)
 		}
 		return types.Invalid
 	}
@@ -2208,11 +2206,11 @@ func (c *checker) nameType(n *ast.Name) types.Type {
 	if t, ok := c.narrowed[n.Name]; ok {
 		return t
 	}
-	if c.fn != nil {
-		if c.fn.globals[n.Name] {
+	if c.current != nil {
+		if c.current.globals[n.Name] {
 			return c.global(n)
 		}
-		if l, ok := c.fn.locals[n.Name]; ok {
+		if l, ok := c.current.locals[n.Name]; ok {
 			if !l.init {
 				c.errs.Add(n.Pos(), token.UseBeforeDefinition, "name %q used before assignment", n.Name)
 			}
@@ -2222,11 +2220,11 @@ func (c *checker) nameType(n *ast.Name) types.Type {
 			return cap.typ
 		}
 	}
-	if fn, ok := c.funcs[n.Name]; ok {
-		if !fn.slot.init {
+	if info, ok := c.functions[n.Name]; ok {
+		if !info.slot.init {
 			c.errs.Add(n.Pos(), token.UseBeforeDefinition, "function %q used before definition", n.Name)
 		}
-		return types.NewCallable(srcTypes(fn.params), fn.ret)
+		return types.NewCallable(srcTypes(info.params), info.result)
 	}
 	if _, ok := c.classes[n.Name]; ok {
 		c.errs.Add(n.Pos(), token.UnsupportedFeature, "class value %q is not supported", n.Name)
@@ -2248,8 +2246,8 @@ func (c *checker) global(n *ast.Name) types.Type {
 }
 
 func (c *checker) findEnclosingLocal(name string) *local {
-	for fn := c.fn.parent; fn != nil; fn = fn.parent {
-		if l, ok := fn.locals[name]; ok {
+	for scope := c.current.parent; scope != nil; scope = scope.parent {
+		if l, ok := scope.locals[name]; ok {
 			return l
 		}
 	}
@@ -2257,45 +2255,45 @@ func (c *checker) findEnclosingLocal(name string) *local {
 }
 
 func (c *checker) capture(n *ast.Name) *capture {
-	if c.fn == nil {
+	if c.current == nil {
 		return nil
 	}
-	if cap, ok := c.fn.captures[n.Name]; ok {
+	if cap, ok := c.current.captures[n.Name]; ok {
 		return cap
 	}
-	for fn := c.fn.parent; fn != nil; fn = fn.parent {
-		if l, ok := fn.locals[n.Name]; ok {
-			if c.fn.parent != fn {
-				ensureCapture(c.fn.parent, n.Name, l)
+	for scope := c.current.parent; scope != nil; scope = scope.parent {
+		if l, ok := scope.locals[n.Name]; ok {
+			if c.current.parent != scope {
+				ensureCapture(c.current.parent, n.Name, l)
 			}
-			cap := &capture{name: n.Name, typ: l.typ, index: len(c.fn.capOrder), src: l, boxed: l.boxed}
-			c.fn.captures[n.Name] = cap
-			c.fn.capOrder = append(c.fn.capOrder, n.Name)
+			cap := &capture{name: n.Name, typ: l.typ, index: len(c.current.capOrder), src: l, boxed: l.boxed}
+			c.current.captures[n.Name] = cap
+			c.current.capOrder = append(c.current.capOrder, n.Name)
 			return cap
 		}
 	}
-	if c.fn.nonlocal[n.Name] {
+	if c.current.nonlocal[n.Name] {
 		c.errs.Add(n.Pos(), token.NoBindingForNonlocal, "no binding for nonlocal %q found", n.Name)
 		return nil
 	}
 	return nil
 }
 
-func ensureCapture(fn *fn, name string, src *local) {
-	if fn == nil {
+func ensureCapture(current *function, name string, src *local) {
+	if current == nil {
 		return
 	}
-	if _, ok := fn.locals[name]; ok {
+	if _, ok := current.locals[name]; ok {
 		return
 	}
-	if _, ok := fn.captures[name]; ok {
+	if _, ok := current.captures[name]; ok {
 		return
 	}
-	if fn.parent != nil {
-		ensureCapture(fn.parent, name, src)
+	if current.parent != nil {
+		ensureCapture(current.parent, name, src)
 	}
-	fn.captures[name] = &capture{name: name, typ: src.typ, index: len(fn.capOrder), src: src, boxed: src.boxed}
-	fn.capOrder = append(fn.capOrder, name)
+	current.captures[name] = &capture{name: name, typ: src.typ, index: len(current.capOrder), src: src, boxed: src.boxed}
+	current.capOrder = append(current.capOrder, name)
 }
 
 func (c *checker) lambda(n *ast.LambdaExpr, hint types.Type) types.Type {
@@ -2308,22 +2306,22 @@ func (c *checker) lambda(n *ast.LambdaExpr, hint types.Type) types.Type {
 		c.errs.Add(n.Pos(), token.ArityMismatch, "lambda expects %d parameter types, got %d", len(n.Params), len(callable.Params))
 		return types.Invalid
 	}
-	info := &fn{
+	info := &function{
 		name:     "<lambda>",
-		ret:      callable.Return,
+		result:   callable.Return,
 		locals:   map[string]*local{},
-		parent:   c.fn,
-		children: map[string]*fn{},
+		parent:   c.current,
+		children: map[string]*function{},
 		captures: map[string]*capture{},
 		globals:  map[string]bool{},
 		nonlocal: map[string]bool{},
 	}
 	for i, p := range n.Params {
-		info.params = append(info.params, param{name: p.Name.Name, typ: callable.Params[i]})
+		info.params = append(info.params, parameter{name: p.Name.Name, typ: callable.Params[i]})
 		p.Ann = typeExpr(p.Pos(), callable.Params[i])
 	}
-	prev := c.fn
-	c.fn = info
+	prev := c.current
+	c.current = info
 	for i, p := range info.params {
 		info.locals[p.name] = &local{typ: p.typ, index: i, init: true}
 	}
@@ -2331,7 +2329,7 @@ func (c *checker) lambda(n *ast.LambdaExpr, hint types.Type) types.Type {
 	if bt != types.Invalid && callable.Return != types.Invalid && !types.AssignableTo(bt, callable.Return) {
 		c.errs.Add(n.Body.Pos(), token.TypeMismatch, "cannot return %s from lambda returning %s", bt, callable.Return)
 	}
-	c.fn = prev
+	c.current = prev
 	c.lambdas[n] = info
 	return callable
 }
@@ -2434,75 +2432,75 @@ func (c *checker) unaryType(n *ast.UnaryExpr) types.Type {
 }
 
 func (c *checker) binary(n *ast.BinaryExpr) types.Type {
-	lt := c.expr(n.X)
-	rt := c.expr(n.Y)
-	return c.binaryType(lt, n.Op, rt, n.Pos())
+	left := c.expr(n.X)
+	right := c.expr(n.Y)
+	return c.binaryType(left, n.Op, right, n.Pos())
 }
 
 // binaryType applies the arithmetic/bitwise/shift typing rules
 // (docs/spec/04-static-semantics.md). Mixed int/float and bool arithmetic are
 // rejected; `str + str` is the only non-numeric case.
-func (c *checker) binaryType(lt types.Type, op token.Type, rt types.Type, pos token.Pos) types.Type {
-	if lt == types.Invalid || rt == types.Invalid {
+func (c *checker) binaryType(left types.Type, op token.Type, right types.Type, pos token.Pos) types.Type {
+	if left == types.Invalid || right == types.Invalid {
 		return types.Invalid
 	}
 	switch op {
 	case token.PLUS:
-		if types.Equal(lt, types.Str) && types.Equal(rt, types.Str) {
+		if types.Equal(left, types.Str) && types.Equal(right, types.Str) {
 			return types.Str
 		}
-		if ll, ok := lt.(*types.List); ok && types.AssignableTo(rt, lt) {
-			return types.NewList(ll.Elem)
+		if list, ok := left.(*types.List); ok && types.AssignableTo(right, left) {
+			return types.NewList(list.Elem)
 		}
-		return c.arith(lt, op, rt, pos)
+		return c.arith(left, op, right, pos)
 	case token.STAR:
-		if types.Equal(lt, types.Str) && types.Equal(rt, types.Int) {
+		if types.Equal(left, types.Str) && types.Equal(right, types.Int) {
 			return types.Str
 		}
-		if ll, ok := lt.(*types.List); ok && types.Equal(rt, types.Int) {
-			return types.NewList(ll.Elem)
+		if list, ok := left.(*types.List); ok && types.Equal(right, types.Int) {
+			return types.NewList(list.Elem)
 		}
-		return c.arith(lt, op, rt, pos)
+		return c.arith(left, op, right, pos)
 	case token.MINUS, token.DOUBLESLASH, token.PERCENT, token.DOUBLESTAR:
-		return c.arith(lt, op, rt, pos)
+		return c.arith(left, op, right, pos)
 	case token.SLASH:
-		if types.Equal(lt, types.Int) && types.Equal(rt, types.Int) {
+		if types.Equal(left, types.Int) && types.Equal(right, types.Int) {
 			return types.Float
 		}
-		if types.Equal(lt, types.Float) && types.Equal(rt, types.Float) {
+		if types.Equal(left, types.Float) && types.Equal(right, types.Float) {
 			return types.Float
 		}
-		return c.mismatch(op, lt, rt, pos)
+		return c.mismatch(op, left, right, pos)
 	case token.AMP, token.PIPE, token.CARET, token.LSHIFT, token.RSHIFT:
-		if types.Equal(lt, types.Int) && types.Equal(rt, types.Int) {
+		if types.Equal(left, types.Int) && types.Equal(right, types.Int) {
 			return types.Int
 		}
-		return c.mismatch(op, lt, rt, pos)
+		return c.mismatch(op, left, right, pos)
 	default:
 		return types.Invalid
 	}
 }
 
-func (c *checker) arith(lt types.Type, op token.Type, rt types.Type, pos token.Pos) types.Type {
-	if types.Equal(lt, types.Int) && types.Equal(rt, types.Int) {
+func (c *checker) arith(left types.Type, op token.Type, right types.Type, pos token.Pos) types.Type {
+	if types.Equal(left, types.Int) && types.Equal(right, types.Int) {
 		return types.Int
 	}
-	if types.Equal(lt, types.Float) && types.Equal(rt, types.Float) {
+	if types.Equal(left, types.Float) && types.Equal(right, types.Float) {
 		return types.Float
 	}
-	return c.mismatch(op, lt, rt, pos)
+	return c.mismatch(op, left, right, pos)
 }
 
-func (c *checker) mismatch(op token.Type, lt, rt types.Type, pos token.Pos) types.Type {
-	c.errs.Add(pos, token.TypeMismatch, "unsupported operand type(s) for %s: %s and %s", op, lt, rt)
+func (c *checker) mismatch(op token.Type, left, right types.Type, pos token.Pos) types.Type {
+	c.errs.Add(pos, token.TypeMismatch, "unsupported operand type(s) for %s: %s and %s", op, left, right)
 	return types.Invalid
 }
 
 func (c *checker) boolOpType(n *ast.BoolOp) types.Type {
-	lt := c.expr(n.X)
-	rt := c.expr(n.Y)
-	if (!types.Equal(lt, types.Bool) && lt != types.Invalid) || (!types.Equal(rt, types.Bool) && rt != types.Invalid) {
-		c.errs.Add(n.Pos(), token.TypeMismatch, "'%s' requires bool operands, got %s and %s", n.Op, lt, rt)
+	left := c.expr(n.X)
+	right := c.expr(n.Y)
+	if (!types.Equal(left, types.Bool) && left != types.Invalid) || (!types.Equal(right, types.Bool) && right != types.Invalid) {
+		c.errs.Add(n.Pos(), token.TypeMismatch, "'%s' requires bool operands, got %s and %s", n.Op, left, right)
 	}
 	return types.Bool
 }
@@ -2510,35 +2508,35 @@ func (c *checker) boolOpType(n *ast.BoolOp) types.Type {
 func (c *checker) compareType(n *ast.Compare) types.Type {
 	prev := c.expr(n.X)
 	for i, op := range n.Ops {
-		rt := c.expr(n.Comparators[i])
-		c.checkComparable(op, prev, rt, n.Pos())
-		prev = rt
+		right := c.expr(n.Comparators[i])
+		c.checkComparable(op, prev, right, n.Pos())
+		prev = right
 	}
 	return types.Bool
 }
 
-func (c *checker) checkComparable(op token.Type, lt, rt types.Type, pos token.Pos) {
-	if lt == types.Invalid || rt == types.Invalid {
+func (c *checker) checkComparable(op token.Type, left, right types.Type, pos token.Pos) {
+	if left == types.Invalid || right == types.Invalid {
 		return
 	}
 	if op == token.IS || op == token.ISNOT {
-		if !identityComparable(lt) || !identityComparable(rt) {
-			c.errs.Add(pos, token.TypeMismatch, "'%s' requires reference operands, got %s and %s", op, lt, rt)
+		if !identityComparable(left) || !identityComparable(right) {
+			c.errs.Add(pos, token.TypeMismatch, "'%s' requires reference operands, got %s and %s", op, left, right)
 		}
 		return
 	}
 	if op == token.IN || op == token.NOTIN {
-		if !containsType(lt, rt) {
-			c.errs.Add(pos, token.NotIterable, "'%s' requires container RHS, got %s in %s", op, lt, rt)
+		if !containsType(left, right) {
+			c.errs.Add(pos, token.NotIterable, "'%s' requires container RHS, got %s in %s", op, left, right)
 		}
 		return
 	}
-	if types.Equal(lt, types.None) || types.Equal(rt, types.None) {
+	if types.Equal(left, types.None) || types.Equal(right, types.None) {
 		c.errs.Add(pos, token.UnsupportedFeature, "comparing to None uses 'is'")
 		return
 	}
-	if !types.Equal(lt, rt) {
-		c.errs.Add(pos, token.NotComparable, "'%s' not supported between instances of %s and %s", op, lt, rt)
+	if !types.Equal(left, right) {
+		c.errs.Add(pos, token.NotComparable, "'%s' not supported between instances of %s and %s", op, left, right)
 	}
 }
 
@@ -2606,29 +2604,29 @@ func (c *checker) callType(n *ast.CallExpr) types.Type {
 	if cls, ok := c.classes[name.Name]; ok {
 		return c.constructorCallType(n, cls, argTypes)
 	}
-	if fn, ok := c.funcs[name.Name]; ok {
-		if c.fn == nil && !fn.slot.init {
+	if info, ok := c.functions[name.Name]; ok {
+		if c.current == nil && !info.slot.init {
 			c.errs.Add(name.Pos(), token.UseBeforeDefinition, "function %q used before definition", name.Name)
 			return types.Invalid
 		}
-		if len(argTypes) != len(fn.params) {
-			c.errs.Add(n.Pos(), token.ArityMismatch, "%s() takes exactly %d arguments (%d given)", name.Name, len(fn.params), len(argTypes))
+		if len(argTypes) != len(info.params) {
+			c.errs.Add(n.Pos(), token.ArityMismatch, "%s() takes exactly %d arguments (%d given)", name.Name, len(info.params), len(argTypes))
 			return types.Invalid
 		}
-		if spec := c.specialize(fn, argTypes); spec != nil {
+		if spec := c.specialize(info, argTypes); spec != nil {
 			c.callSpec[n] = spec
-			return spec.info.ret
+			return spec.info.result
 		}
-		for i, at := range argTypes {
-			pt := fn.params[i].typ
-			if at != types.Invalid && pt != types.Invalid && !types.AssignableTo(at, pt) {
-				c.errs.Add(n.Args[i].Pos(), token.TypeMismatch, "%s() argument %d must be %s, got %s", name.Name, i+1, pt, at)
+		for i, arg := range argTypes {
+			pt := info.params[i].typ
+			if arg != types.Invalid && pt != types.Invalid && !types.AssignableTo(arg, pt) {
+				c.errs.Add(n.Args[i].Pos(), token.TypeMismatch, "%s() argument %d must be %s, got %s", name.Name, i+1, pt, arg)
 			}
 		}
-		return fn.ret
+		return info.result
 	}
-	if c.fn != nil {
-		if l, ok := c.fn.locals[name.Name]; ok {
+	if c.current != nil {
+		if l, ok := c.current.locals[name.Name]; ok {
 			return c.callableCallType(n, l.typ)
 		}
 		if cap := c.capture(name); cap != nil {
@@ -2642,7 +2640,7 @@ func (c *checker) callType(n *ast.CallExpr) types.Type {
 		c.errs.Add(name.Pos(), token.UndefinedName, "name %q is not defined", name.Name)
 		return types.Invalid
 	}
-	rt, ok := builtinReturn(name.Name, argTypes)
+	result, ok := builtinReturn(name.Name, argTypes)
 	if !ok {
 		if min, max, arity := builtinArity(name.Name); arity && (len(argTypes) < min || len(argTypes) > max) {
 			if min == max {
@@ -2658,26 +2656,26 @@ func (c *checker) callType(n *ast.CallExpr) types.Type {
 	if name.Name == "range" && len(n.Args) == 3 && isConstIntLiteral(n.Args[2]) && constIntValue(n.Args[2]) == 0 {
 		c.errs.Add(n.Args[2].Pos(), token.SyntaxError, "range() step must not be zero")
 	}
-	return rt
+	return result
 }
 
-func (c *checker) constructorCallType(n *ast.CallExpr, cls *classInfo, argTypes []types.Type) types.Type {
+func (c *checker) constructorCallType(n *ast.CallExpr, cls *class, argTypes []types.Type) types.Type {
 	params, minArgs := constructorParams(cls)
 	if len(argTypes) < minArgs || len(argTypes) > len(params) {
 		c.errs.Add(n.Pos(), token.ArityMismatch, "%s() takes %d to %d arguments (%d given)", cls.name, minArgs, len(params), len(argTypes))
 		return types.Invalid
 	}
-	for i, at := range argTypes {
+	for i, arg := range argTypes {
 		pt := params[i]
-		if at != types.Invalid && pt != types.Invalid && !types.AssignableTo(at, pt) {
-			c.errs.Add(n.Args[i].Pos(), token.TypeMismatch, "%s() argument %d must be %s, got %s", cls.name, i+1, pt, at)
+		if arg != types.Invalid && pt != types.Invalid && !types.AssignableTo(arg, pt) {
+			c.errs.Add(n.Args[i].Pos(), token.TypeMismatch, "%s() argument %d must be %s, got %s", cls.name, i+1, pt, arg)
 		}
 	}
 	return cls.typ
 }
 
-func constructorParams(cls *classInfo) ([]types.Type, int) {
-	if isExceptionInfo(cls) {
+func constructorParams(cls *class) ([]types.Type, int) {
+	if isException(cls) {
 		return []types.Type{types.Str}, 0
 	}
 	if init := cls.methods["__init__"]; init != nil {
@@ -2701,7 +2699,7 @@ func constructorParams(cls *classInfo) ([]types.Type, int) {
 	return params, minArgs
 }
 
-func isExceptionInfo(info *classInfo) bool {
+func isException(info *class) bool {
 	for info != nil {
 		if info.name == "BaseException" {
 			return true
@@ -2711,11 +2709,11 @@ func isExceptionInfo(info *classInfo) bool {
 	return false
 }
 
-func (c *checker) callableCallType(n *ast.CallExpr, fnType types.Type) types.Type {
-	callable, ok := fnType.(*types.Callable)
+func (c *checker) callableCallType(n *ast.CallExpr, value types.Type) types.Type {
+	callable, ok := value.(*types.Callable)
 	if !ok {
-		if fnType != types.Invalid {
-			c.errs.Add(n.Pos(), token.TypeMismatch, "%s is not callable", fnType)
+		if value != types.Invalid {
+			c.errs.Add(n.Pos(), token.TypeMismatch, "%s is not callable", value)
 		}
 		for _, arg := range n.Args {
 			c.expr(arg)
@@ -2727,9 +2725,9 @@ func (c *checker) callableCallType(n *ast.CallExpr, fnType types.Type) types.Typ
 		return types.Invalid
 	}
 	for i, arg := range n.Args {
-		at := c.expr(arg)
-		if at != types.Invalid && callable.Params[i] != types.Invalid && !types.AssignableTo(at, callable.Params[i]) {
-			c.errs.Add(arg.Pos(), token.TypeMismatch, "callable argument %d must be %s, got %s", i+1, callable.Params[i], at)
+		got := c.expr(arg)
+		if got != types.Invalid && callable.Params[i] != types.Invalid && !types.AssignableTo(got, callable.Params[i]) {
+			c.errs.Add(arg.Pos(), token.TypeMismatch, "callable argument %d must be %s, got %s", i+1, callable.Params[i], got)
 		}
 	}
 	return callable.Return
@@ -2749,20 +2747,20 @@ func builtinArity(name string) (min int, max int, ok bool) {
 }
 
 func (c *checker) methodCallType(n *ast.CallExpr, attr *ast.Attribute) types.Type {
-	recv := c.expr(attr.X)
+	receiver := c.expr(attr.X)
 	args := make([]types.Type, len(n.Args))
 	for i, a := range n.Args {
 		args[i] = c.expr(a)
 	}
-	switch t := recv.(type) {
+	switch t := receiver.(type) {
 	case *types.Class:
 		info := c.classes[t.Name]
 		if info == nil {
 			return types.Invalid
 		}
-		method := methodInfo(info, attr.Name)
+		method := method(info, attr.Name)
 		if method == nil {
-			c.errs.Add(n.Pos(), token.UnsupportedFeature, "method %s on %s is not supported", attr.Name, recv)
+			c.errs.Add(n.Pos(), token.UnsupportedFeature, "method %s on %s is not supported", attr.Name, receiver)
 			return types.Invalid
 		}
 		params := srcTypes(method.params)
@@ -2773,12 +2771,12 @@ func (c *checker) methodCallType(n *ast.CallExpr, attr *ast.Attribute) types.Typ
 			c.errs.Add(n.Pos(), token.ArityMismatch, "%s.%s() takes exactly %d arguments (%d given)", info.name, attr.Name, len(params), len(args))
 			return types.Invalid
 		}
-		for i, at := range args {
-			if at != types.Invalid && params[i] != types.Invalid && !types.AssignableTo(at, params[i]) {
-				c.errs.Add(n.Args[i].Pos(), token.TypeMismatch, "%s.%s() argument %d must be %s, got %s", info.name, attr.Name, i+1, params[i], at)
+		for i, got := range args {
+			if got != types.Invalid && params[i] != types.Invalid && !types.AssignableTo(got, params[i]) {
+				c.errs.Add(n.Args[i].Pos(), token.TypeMismatch, "%s.%s() argument %d must be %s, got %s", info.name, attr.Name, i+1, params[i], got)
 			}
 		}
-		return method.ret
+		return method.result
 	case *types.List:
 		switch attr.Name {
 		case "append":
@@ -2816,7 +2814,7 @@ func (c *checker) methodCallType(n *ast.CallExpr, attr *ast.Attribute) types.Typ
 			}
 		}
 	default:
-		if types.Equal(recv, types.Str) {
+		if types.Equal(receiver, types.Str) {
 			switch attr.Name {
 			case "upper", "lower":
 				if len(args) == 0 {
@@ -2839,7 +2837,7 @@ func (c *checker) methodCallType(n *ast.CallExpr, attr *ast.Attribute) types.Typ
 			}
 		}
 	}
-	c.errs.Add(n.Pos(), token.UnsupportedFeature, "method %s on %s is not supported", attr.Name, recv)
+	c.errs.Add(n.Pos(), token.UnsupportedFeature, "method %s on %s is not supported", attr.Name, receiver)
 	return types.Invalid
 }
 

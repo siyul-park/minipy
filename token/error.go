@@ -78,12 +78,12 @@ func (l ErrorList) Err() error {
 
 // Error renders every diagnostic, one per line.
 func (l ErrorList) Error() string {
-	var sb strings.Builder
+	var builder strings.Builder
 	for i, e := range l {
 		if i > 0 {
-			sb.WriteByte('\n')
+			builder.WriteByte('\n')
 		}
-		sb.WriteString(e.Error())
+		builder.WriteString(e.Error())
 	}
-	return sb.String()
+	return builder.String()
 }

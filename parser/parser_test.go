@@ -75,9 +75,9 @@ func TestParse(t *testing.T) {
 	t.Run("union in function signature and nested generic", func(t *testing.T) {
 		mod, err := parse("def f(a: int | None) -> bool | None:\n    return True\n")
 		require.NoError(t, err)
-		fn := mod.Body[0].(*ast.Function)
-		require.IsType(t, &ast.UnionType{}, fn.Params[0].Ann)
-		require.IsType(t, &ast.UnionType{}, fn.Returns)
+		function := mod.Body[0].(*ast.Function)
+		require.IsType(t, &ast.UnionType{}, function.Params[0].Ann)
+		require.IsType(t, &ast.UnionType{}, function.Returns)
 
 		mod, err = parse("xs: list[int | str]\n")
 		require.NoError(t, err)
@@ -88,9 +88,9 @@ func TestParse(t *testing.T) {
 	t.Run("optional parameter and return annotations", func(t *testing.T) {
 		mod, err := parse("def identity(x):\n    return x\n")
 		require.NoError(t, err)
-		fn := mod.Body[0].(*ast.Function)
-		require.Nil(t, fn.Params[0].Ann)
-		require.Nil(t, fn.Returns)
+		function := mod.Body[0].(*ast.Function)
+		require.Nil(t, function.Params[0].Ann)
+		require.Nil(t, function.Returns)
 	})
 
 	t.Run("plain and augmented assignment", func(t *testing.T) {
@@ -257,22 +257,22 @@ else:
     return x + y
 `)
 		require.NoError(t, err)
-		fn := mod.Body[0].(*ast.Function)
-		require.Equal(t, "add", fn.Name.Name)
-		require.Len(t, fn.Params, 2)
-		require.Equal(t, "x", fn.Params[0].Name.Name)
-		require.Equal(t, "int", fn.Params[0].Ann.(*ast.Name).Name)
-		require.Equal(t, "int", fn.Returns.(*ast.Name).Name)
-		ret := fn.Body[0].(*ast.Return)
-		require.Equal(t, token.PLUS, ret.Value.(*ast.BinaryExpr).Op)
+		function := mod.Body[0].(*ast.Function)
+		require.Equal(t, "add", function.Name.Name)
+		require.Len(t, function.Params, 2)
+		require.Equal(t, "x", function.Params[0].Name.Name)
+		require.Equal(t, "int", function.Params[0].Ann.(*ast.Name).Name)
+		require.Equal(t, "int", function.Returns.(*ast.Name).Name)
+		result := function.Body[0].(*ast.Return)
+		require.Equal(t, token.PLUS, result.Value.(*ast.BinaryExpr).Op)
 	})
 
 	t.Run("decorated function", func(t *testing.T) {
 		mod, err := parse("@staticmethod\ndef f() -> None:\n    return\n")
 		require.NoError(t, err)
-		fn := mod.Body[0].(*ast.Function)
-		require.Equal(t, "staticmethod", fn.Decorators[0].Name)
-		require.Nil(t, fn.Body[0].(*ast.Return).Value)
+		function := mod.Body[0].(*ast.Function)
+		require.Equal(t, "staticmethod", function.Decorators[0].Name)
+		require.Nil(t, function.Body[0].(*ast.Return).Value)
 	})
 
 	t.Run("displays, subscript, method, f-string", func(t *testing.T) {
@@ -338,10 +338,10 @@ class Point(Base):
     yield
 `)
 		require.NoError(t, err)
-		fn := mod.Body[0].(*ast.Function)
-		require.Equal(t, "Iterator", fn.Returns.(*ast.Subscript).X.(*ast.Name).Name)
-		require.Equal(t, int64(1), fn.Body[0].(*ast.Yield).Value.(*ast.IntLit).Value)
-		require.Nil(t, fn.Body[1].(*ast.Yield).Value)
+		function := mod.Body[0].(*ast.Function)
+		require.Equal(t, "Iterator", function.Returns.(*ast.Subscript).X.(*ast.Name).Name)
+		require.Equal(t, int64(1), function.Body[0].(*ast.Yield).Value.(*ast.IntLit).Value)
+		require.Nil(t, function.Body[1].(*ast.Yield).Value)
 	})
 
 	t.Run("comprehensions and set display", func(t *testing.T) {
@@ -406,9 +406,9 @@ class Point(Base):
 		require.Equal(t, "others", mp.Rest)
 		require.Len(t, mp.Keys, 1)
 
-		cp := m.Cases[3].Pattern.(*ast.ClassPattern)
-		require.Len(t, cp.Args, 1)
-		require.Equal(t, []string{"y"}, cp.KwNames)
+		pattern := m.Cases[3].Pattern.(*ast.ClassPattern)
+		require.Len(t, pattern.Args, 1)
+		require.Equal(t, []string{"y"}, pattern.KwNames)
 
 		require.IsType(t, &ast.OrPattern{}, m.Cases[4].Pattern)
 

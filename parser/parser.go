@@ -495,11 +495,7 @@ func (p *Parser) parseSimpleStmt() ast.Stmt {
 	case token.RETURN:
 		t := p.cur()
 		p.advance()
-		var value ast.Expr
-		if !p.at(token.SEMICOLON) && !p.at(token.NEWLINE) && !p.at(token.EOF) {
-			value = p.parseExpression()
-		}
-		return &ast.Return{Base: ast.Base{Position: t.Pos}, Value: value}
+		return &ast.Return{Base: ast.Base{Position: t.Pos}, Value: p.parseOptionalExpression()}
 	case token.YIELD:
 		t := p.cur()
 		p.advance()
@@ -508,11 +504,7 @@ func (p *Parser) parseSimpleStmt() ast.Stmt {
 			p.skipToStmtEnd()
 			return nil
 		}
-		var value ast.Expr
-		if !p.at(token.SEMICOLON) && !p.at(token.NEWLINE) && !p.at(token.EOF) {
-			value = p.parseExpression()
-		}
-		return &ast.Yield{Base: ast.Base{Position: t.Pos}, Value: value}
+		return &ast.Yield{Base: ast.Base{Position: t.Pos}, Value: p.parseOptionalExpression()}
 	case token.RAISE:
 		return p.parseRaise()
 	case token.GLOBAL:
@@ -572,11 +564,14 @@ func (p *Parser) parseSimpleStmt() ast.Stmt {
 func (p *Parser) parseRaise() ast.Stmt {
 	t := p.cur()
 	p.advance()
-	var exc ast.Expr
-	if !p.at(token.SEMICOLON) && !p.at(token.NEWLINE) && !p.at(token.EOF) {
-		exc = p.parseExpression()
+	return &ast.Raise{Base: ast.Base{Position: t.Pos}, Exc: p.parseOptionalExpression()}
+}
+
+func (p *Parser) parseOptionalExpression() ast.Expr {
+	if p.atStmtEnd() {
+		return nil
 	}
-	return &ast.Raise{Base: ast.Base{Position: t.Pos}, Exc: exc}
+	return p.parseExpression()
 }
 
 // parseAnnAssign parses `NAME ':' type ['=' expression]`.
@@ -853,16 +848,16 @@ func (p *Parser) parseNamePattern() ast.Pattern {
 // parseClassPattern parses `Class(pos..., name=kw...)` after the class name.
 func (p *Parser) parseClassPattern(class ast.Expr, pos token.Pos) ast.Pattern {
 	p.expect(token.LPAREN)
-	cp := &ast.ClassPattern{Base: ast.Base{Position: pos}, Class: class}
+	pattern := &ast.ClassPattern{Base: ast.Base{Position: pos}, Class: class}
 	for !p.at(token.RPAREN) && !p.at(token.EOF) {
 		if p.cur().Type == token.NAME && p.peek(1).Type == token.ASSIGN {
 			name := p.cur().Literal
 			p.advance() // NAME
 			p.advance() // '='
-			cp.KwNames = append(cp.KwNames, name)
-			cp.Kw = append(cp.Kw, p.parseOrPattern())
+			pattern.KwNames = append(pattern.KwNames, name)
+			pattern.Kw = append(pattern.Kw, p.parseOrPattern())
 		} else {
-			cp.Args = append(cp.Args, p.parseOrPattern())
+			pattern.Args = append(pattern.Args, p.parseOrPattern())
 		}
 		if !p.at(token.COMMA) {
 			break
@@ -870,7 +865,7 @@ func (p *Parser) parseClassPattern(class ast.Expr, pos token.Pos) ast.Pattern {
 		p.advance()
 	}
 	p.expect(token.RPAREN)
-	return cp
+	return pattern
 }
 
 // parseSequencePattern parses a bracketed/parenthesized sequence pattern. A
@@ -1024,14 +1019,14 @@ func (p *Parser) parseCallableType(base *ast.Name) ast.Expr {
 	}
 	p.expect(token.RBRACKET)
 	p.expect(token.COMMA)
-	ret := p.parseType()
+	result := p.parseType()
 	p.expect(token.RBRACKET)
 	return &ast.Subscript{
 		Base: ast.Base{Position: pos},
 		X:    base,
 		Index: &ast.TupleLit{Base: ast.Base{Position: pos}, Elems: []ast.Expr{
 			&ast.TupleLit{Base: ast.Base{Position: pos}, Elems: params},
-			ret,
+			result,
 		}},
 	}
 }
@@ -1226,8 +1221,8 @@ func (p *Parser) parsePrimary() ast.Expr {
 	}
 }
 
-// parseCall parses `fn(arg, arg, ...)` (positional args only).
-func (p *Parser) parseCall(fn ast.Expr) ast.Expr {
+// parseCall parses `callee(arg, arg, ...)` (positional args only).
+func (p *Parser) parseCall(callee ast.Expr) ast.Expr {
 	pos := p.cur().Pos
 	p.advance() // (
 	var args []ast.Expr
@@ -1240,7 +1235,7 @@ func (p *Parser) parseCall(fn ast.Expr) ast.Expr {
 		break
 	}
 	p.expect(token.RPAREN)
-	return &ast.CallExpr{Base: ast.Base{Position: pos}, Fn: fn, Args: args}
+	return &ast.CallExpr{Base: ast.Base{Position: pos}, Fn: callee, Args: args}
 }
 
 func (p *Parser) parseAtom() ast.Expr {
@@ -1608,6 +1603,10 @@ func (p *Parser) peek(n int) token.Token {
 
 func (p *Parser) at(tt token.Type) bool {
 	return p.cur().Type == tt
+}
+
+func (p *Parser) atStmtEnd() bool {
+	return p.at(token.SEMICOLON) || p.at(token.NEWLINE) || p.at(token.EOF)
 }
 
 // advance consumes the current token. EOF is never consumed, so cur stays at

@@ -37,27 +37,27 @@ type config struct {
 // package-level Compile convenience function while keeping options reusable for
 // one source stream.
 type Compiler struct {
-	src      []byte
-	err      error
-	cfg      config
-	prog     *program.Builder
-	code     target
-	types    map[ast.Expr]types.Type
-	globals  map[string]*global
-	funcs    map[string]*fn
-	classes  map[string]*classInfo
-	lambdas  map[*ast.LambdaExpr]*fn
-	callSpec map[*ast.CallExpr]*specialization
-	locals   map[string]*local
-	fn       *fn
-	temps    map[string]int
-	host     *hostFuncs
-	consts   map[*interp.HostFunction]int
-	loops    []loopLabels // enclosing-loop branch targets, innermost last
-	finally  []finallyFrame
-	excepts  []int
-	next     int
-	boxed    map[*local]bool
+	src       []byte
+	err       error
+	config    config
+	prog      *program.Builder
+	code      target
+	types     map[ast.Expr]types.Type
+	globals   map[string]*global
+	functions map[string]*function
+	classes   map[string]*class
+	lambdas   map[*ast.LambdaExpr]*function
+	callSpec  map[*ast.CallExpr]*specialization
+	locals    map[string]*local
+	current   *function
+	temps     map[string]int
+	host      *host
+	consts    map[*interp.HostFunction]int
+	loops     []loopLabels // enclosing-loop branch targets, innermost last
+	finally   []finallyFrame
+	excepts   []int
+	next      int
+	boxed     map[*local]bool
 }
 
 // loopLabels are the branch targets for the loop currently being lowered: cont
@@ -117,9 +117,9 @@ func WithOptimizationLevel(level optimize.Level) Option {
 
 // New returns a Compiler over source read from r.
 func New(r io.Reader, opts ...Option) *Compiler {
-	cfg := defaultConfig()
+	config := defaultConfig()
 	for _, opt := range opts {
-		opt(&cfg)
+		opt(&config)
 	}
 	src, err := io.ReadAll(r)
 	if err != nil {
@@ -127,7 +127,7 @@ func New(r io.Reader, opts ...Option) *Compiler {
 		// failure as a regular error.
 		src = []byte{}
 	}
-	return &Compiler{src: src, err: err, cfg: cfg}
+	return &Compiler{src: src, err: err, config: config}
 }
 
 func defaultConfig() config {
@@ -136,24 +136,24 @@ func defaultConfig() config {
 
 // init resets per-compile lowering state. Compiler is reusable; each
 // Compile call gets a fresh builder, symbol tables, loop stack, and host cache.
-func (c *Compiler) init(b *program.Builder, types map[ast.Expr]types.Type, globals map[string]*global, funcs map[string]*fn, classes map[string]*classInfo, lambdas map[*ast.LambdaExpr]*fn, callSpec map[*ast.CallExpr]*specialization, host *hostFuncs) {
+func (c *Compiler) init(b *program.Builder, check *checker, host *host) {
 	c.prog = b
 	c.code = mainTarget(b)
-	c.types = types
-	c.globals = globals
-	c.funcs = funcs
-	c.classes = classes
-	c.lambdas = lambdas
-	c.callSpec = callSpec
+	c.types = check.types
+	c.globals = check.globals
+	c.functions = check.functions
+	c.classes = check.classes
+	c.lambdas = check.lambdas
+	c.callSpec = check.callSpec
 	c.locals = nil
-	c.fn = nil
+	c.current = nil
 	c.temps = map[string]int{}
 	c.host = host
 	c.consts = map[*interp.HostFunction]int{}
 	c.loops = nil
 	c.finally = nil
 	c.excepts = nil
-	c.next = len(globals)
+	c.next = len(check.globals)
 	c.boxed = map[*local]bool{}
 }
 
@@ -221,9 +221,9 @@ func (c *Compiler) Compile() (*program.Program, error) {
 		return nil, err
 	}
 
-	host := newHostFuncs(c.cfg.out, chk.classes)
+	host := newHost(c.config.out, chk.classes)
 	b := program.NewBuilder()
-	c.init(b, chk.types, chk.globals, chk.funcs, chk.classes, chk.lambdas, chk.callSpec, host)
+	c.init(b, chk, host)
 	c.module(mod)
 
 	prog, err := b.Build()
@@ -233,7 +233,7 @@ func (c *Compiler) Compile() (*program.Program, error) {
 
 	typesPool := append([]vmtypes.Type(nil), prog.Types...)
 	handlers := append([]instr.Handler(nil), prog.Handlers...)
-	optimized, err := optimize.NewOptimizer(c.cfg.level).Optimize(prog)
+	optimized, err := optimize.NewOptimizer(c.config.level).Optimize(prog)
 	if err != nil {
 		return nil, fmt.Errorf("optimize program: %w", err)
 	}
@@ -310,13 +310,13 @@ func (c *Compiler) stmt(s ast.Stmt) {
 	case *ast.For:
 		c.emitFor(n)
 	case *ast.Function:
-		c.function(n)
+		c.functionStmt(n)
 	case *ast.Class:
 		c.classStmt(n)
 	case *ast.Global, *ast.Nonlocal:
 		// scope declarations affect checking only
 	case *ast.Return:
-		c.ret(n)
+		c.returnStmt(n)
 	case *ast.Yield:
 		c.yield(n)
 	case *ast.Break:
@@ -633,7 +633,7 @@ func (c *Compiler) emitRaise(n *ast.Raise) {
 	}
 	if call, ok := n.Exc.(*ast.CallExpr); ok {
 		if name, ok := call.Fn.(*ast.Name); ok {
-			if cls := c.classes[name.Name]; cls != nil && isExceptionInfo(cls) {
+			if cls := c.classes[name.Name]; cls != nil && isException(cls) {
 				c.emitExceptionInstance(cls, call.Args)
 				c.emit(instr.I32_CONST, uint64(vmtypes.ErrorCodeNone))
 				c.emit(instr.ERROR_NEW)
@@ -648,7 +648,7 @@ func (c *Compiler) emitRaise(n *ast.Raise) {
 	c.emit(instr.THROW)
 }
 
-func (c *Compiler) emitExceptionInstance(cls *classInfo, args []ast.Expr) {
+func (c *Compiler) emitExceptionInstance(cls *class, args []ast.Expr) {
 	c.emit(instr.STRUCT_NEW_DEFAULT, c.typeIndex(cls.typ))
 	c.emit(instr.DUP)
 	c.emit(instr.I32_CONST, 0)
@@ -668,10 +668,11 @@ func (c *Compiler) emitWith(n *ast.With) {
 	var emit func(int)
 	emit = func(i int) {
 		item := n.Items[i]
+		name := c.types[item.Context].(*types.Class).Name
 		ctxSlot := c.tmp()
 		c.expr(item.Context)
 		c.emit(instr.GLOBAL_SET, uint64(ctxSlot))
-		owner, enter := c.methodOwner(c.types[item.Context].(*types.Class).Name, "__enter__")
+		owner, enter := c.methodOwner(name, "__enter__")
 		c.emit(instr.GLOBAL_GET, uint64(ctxSlot))
 		c.funcValue(enter, owner.methodBody["__enter__"])
 		c.emit(instr.CALL)
@@ -680,8 +681,7 @@ func (c *Compiler) emitWith(n *ast.With) {
 		} else {
 			c.emit(instr.DROP)
 		}
-		_, exit := c.methodOwner(c.types[item.Context].(*types.Class).Name, "__exit__")
-		exitOwner, _ := c.methodOwner(c.types[item.Context].(*types.Class).Name, "__exit__")
+		exitOwner, exit := c.methodOwner(name, "__exit__")
 		c.emitTryFinally(func() {
 			if i+1 < len(n.Items) {
 				emit(i + 1)
@@ -698,10 +698,10 @@ func (c *Compiler) emitWith(n *ast.With) {
 	emit(0)
 }
 
-func (c *Compiler) methodOwner(name, method string) (*classInfo, *fn) {
+func (c *Compiler) methodOwner(name, method string) (*class, *function) {
 	for info := c.classes[name]; info != nil; info = info.base {
-		if fn := info.methods[method]; fn != nil {
-			return info, fn
+		if found := info.methods[method]; found != nil {
+			return info, found
 		}
 	}
 	return nil, nil
@@ -956,8 +956,8 @@ func (c *Compiler) get(name string) {
 			return
 		}
 	}
-	if c.fn != nil {
-		if cap, ok := c.fn.captures[name]; ok {
+	if c.current != nil {
+		if cap, ok := c.current.captures[name]; ok {
 			c.emit(instr.UPVAL_GET, uint64(cap.index))
 			if cap.boxed || cap.src.boxed {
 				c.emit(instr.REF_GET)
@@ -991,8 +991,8 @@ func (c *Compiler) set(name string) {
 			return
 		}
 	}
-	if c.fn != nil {
-		if cap, ok := c.fn.captures[name]; ok {
+	if c.current != nil {
+		if cap, ok := c.current.captures[name]; ok {
 			c.emit(instr.UPVAL_GET, uint64(cap.index))
 			c.emit(instr.SWAP)
 			if cap.boxed || cap.src.boxed {
@@ -1040,8 +1040,8 @@ func (c *Compiler) typ(name string) types.Type {
 			return l.typ
 		}
 	}
-	if c.fn != nil {
-		if cap, ok := c.fn.captures[name]; ok {
+	if c.current != nil {
+		if cap, ok := c.current.captures[name]; ok {
 			return cap.typ
 		}
 	}
@@ -1224,12 +1224,12 @@ func (c *Compiler) setLoopTarget(target ast.Expr) {
 	}
 }
 
-func (c *Compiler) function(n *ast.Function) {
-	info := c.funcInfo(n)
+func (c *Compiler) functionStmt(n *ast.Function) {
+	info := c.function(n)
 	if info == nil {
 		return
 	}
-	if c.fn == nil && info.specializable {
+	if c.current == nil && info.specializable {
 		// Emit each monomorphic instantiation as its own function constant; the
 		// Any-typed body below still goes to the global slot as the fallback.
 		for _, spec := range info.instances {
@@ -1237,7 +1237,7 @@ func (c *Compiler) function(n *ast.Function) {
 		}
 	}
 	c.funcValue(info, n.Body)
-	if c.fn != nil {
+	if c.current != nil {
 		c.set(n.Name.Name)
 		return
 	}
@@ -1256,13 +1256,13 @@ func (c *Compiler) buildSpec(spec *specialization) {
 	info := spec.info
 	fb := vmtypes.NewFunctionBuilder(&vmtypes.FunctionType{
 		Params:  vmParams(info),
-		Returns: vmReturns(info.ret),
+		Returns: vmReturns(info.result),
 	})
 	fb.WithLocals(vmLocals(info)...)
 
 	child := *c
 	child.code = fnTarget(fb)
-	child.fn = info
+	child.current = info
 	child.locals = info.locals
 	child.types = spec.types
 	child.callSpec = spec.calls
@@ -1292,24 +1292,24 @@ func (c *Compiler) buildCallSpecs(calls map[*ast.CallExpr]*specialization) {
 	}
 }
 
-func (c *Compiler) funcInfo(n *ast.Function) *fn {
-	if c.fn != nil {
-		return c.fn.children[n.Name.Name]
+func (c *Compiler) function(n *ast.Function) *function {
+	if c.current != nil {
+		return c.current.children[n.Name.Name]
 	}
-	return c.funcs[n.Name.Name]
+	return c.functions[n.Name.Name]
 }
 
-func (c *Compiler) funcValue(info *fn, body []ast.Stmt) {
+func (c *Compiler) funcValue(info *function, body []ast.Stmt) {
 	fb := vmtypes.NewFunctionBuilder(&vmtypes.FunctionType{
 		Params:  vmParams(info),
-		Returns: vmReturns(info.ret),
+		Returns: vmReturns(info.result),
 	})
 	fb.WithLocals(vmLocals(info)...)
 	fb.WithCaptures(vmCaps(info)...)
 
 	child := *c
 	child.code = fnTarget(fb)
-	child.fn = info
+	child.current = info
 	child.locals = info.locals
 	child.loops = nil
 	child.finally = nil
@@ -1322,7 +1322,7 @@ func (c *Compiler) funcValue(info *fn, body []ast.Stmt) {
 		c.next = child.next
 	}
 
-	fn, err := fb.Build()
+	function, err := fb.Build()
 	if err != nil {
 		panic(err)
 	}
@@ -1330,7 +1330,7 @@ func (c *Compiler) funcValue(info *fn, body []ast.Stmt) {
 		cap := info.captures[name]
 		c.emitCapture(cap)
 	}
-	c.constGet(fn)
+	c.constGet(function)
 	if len(info.capOrder) > 0 {
 		c.emit(instr.CLOSURE_NEW)
 	}
@@ -1348,7 +1348,7 @@ func (c *Compiler) emitCapture(cap *capture) {
 	c.get(cap.name)
 }
 
-func (c *Compiler) ret(n *ast.Return) {
+func (c *Compiler) returnStmt(n *ast.Return) {
 	if n.Value != nil {
 		c.expr(n.Value)
 	} else {
@@ -1373,7 +1373,7 @@ func (c *Compiler) emitNoneReturn() {
 	c.emit(instr.RETURN)
 }
 
-func vmParams(info *fn) []vmtypes.Type {
+func vmParams(info *function) []vmtypes.Type {
 	out := make([]vmtypes.Type, 0, len(info.params))
 	for _, p := range info.params {
 		out = append(out, p.typ.VM())
@@ -1381,7 +1381,7 @@ func vmParams(info *fn) []vmtypes.Type {
 	return out
 }
 
-func vmLocals(info *fn) []vmtypes.Type {
+func vmLocals(info *function) []vmtypes.Type {
 	out := make([]vmtypes.Type, 0, len(info.order))
 	for _, name := range info.order {
 		l := info.locals[name]
@@ -1394,7 +1394,7 @@ func vmLocals(info *fn) []vmtypes.Type {
 	return out
 }
 
-func vmCaps(info *fn) []vmtypes.Type {
+func vmCaps(info *function) []vmtypes.Type {
 	out := make([]vmtypes.Type, 0, len(info.capOrder))
 	for _, name := range info.capOrder {
 		cap := info.captures[name]
@@ -1736,15 +1736,15 @@ func (c *Compiler) fstringPart(part ast.FStringPart) {
 }
 
 func staticFStringFormat(parts []ast.FStringPart) (string, bool) {
-	var sb strings.Builder
+	var builder strings.Builder
 	for _, part := range parts {
 		text, ok := part.(*ast.FStringText)
 		if !ok {
 			return "", false
 		}
-		sb.WriteString(text.Value)
+		builder.WriteString(text.Value)
 	}
-	return sb.String(), true
+	return builder.String(), true
 }
 
 // ifExp lowers the conditional expression `body if cond else orelse`
@@ -1785,59 +1785,59 @@ func (c *Compiler) unary(x *ast.UnaryExpr) {
 	}
 }
 
-// emitBinary lowers a binary operation. emitL/emitR push the operands; the
+// emitBinary lowers a binary operation. pushLeft/pushRight push the operands; the
 // operator and operand types decide the opcode sequence. The handful of ops that
 // need more than one opcode or a host call are special-cased; the rest map to a
 // single opcode via simpleBinOp.
-func (c *Compiler) emitBinary(op token.Type, lt, rt types.Type, emitL, emitR func()) {
+func (c *Compiler) emitBinary(op token.Type, left, right types.Type, pushLeft, pushRight func()) {
 	switch op {
 	case token.SLASH: // true division always yields float
-		emitL()
-		if lt == types.Int {
+		pushLeft()
+		if left == types.Int {
 			c.emit(instr.I64_TO_F64_S)
 		}
-		emitR()
-		if lt == types.Int {
+		pushRight()
+		if left == types.Int {
 			c.emit(instr.I64_TO_F64_S)
 		}
 		c.emit(instr.F64_DIV)
 	case token.DOUBLESLASH:
-		emitL()
-		emitR()
-		if lt == types.Int {
+		pushLeft()
+		pushRight()
+		if left == types.Int {
 			c.emit(instr.I64_DIV_S)
 		} else {
 			c.emit(instr.F64_DIV)
 			c.emit(instr.F64_FLOOR)
 		}
 	case token.PERCENT:
-		emitL()
-		emitR()
-		if lt == types.Int {
+		pushLeft()
+		pushRight()
+		if left == types.Int {
 			c.emit(instr.I64_REM_S)
 		} else {
 			c.emit(instr.F64_MOD)
 		}
 	case token.DOUBLESTAR:
-		emitL()
-		emitR()
-		if lt == types.Int {
+		pushLeft()
+		pushRight()
+		if left == types.Int {
 			c.callHost(c.host.powInt)
 		} else {
 			c.callHost(c.host.powFloat)
 		}
 	case token.PLUS:
-		emitL()
-		emitR()
-		if lt == types.Str {
+		pushLeft()
+		pushRight()
+		if left == types.Str {
 			c.emit(instr.STRING_CONCAT)
 		} else {
-			c.emit(simpleBinOp(op, lt))
+			c.emit(simpleBinOp(op, left))
 		}
 	default:
-		emitL()
-		emitR()
-		c.emit(simpleBinOp(op, lt))
+		pushLeft()
+		pushRight()
+		c.emit(simpleBinOp(op, left))
 	}
 }
 
@@ -1894,16 +1894,16 @@ func (c *Compiler) compare(x *ast.Compare) {
 	c.bind(end)
 }
 
-func (c *Compiler) emitCmp(l ast.Expr, op token.Type, r ast.Expr) {
-	c.expr(l)
-	c.expr(r)
-	c.emitCmpStack(op, c.types[l], c.types[r])
+func (c *Compiler) emitCmp(left ast.Expr, op token.Type, right ast.Expr) {
+	c.expr(left)
+	c.expr(right)
+	c.emitCmpStack(op, c.types[left], c.types[right])
 }
 
-func (c *Compiler) emitCmpStack(op token.Type, lt types.Type, rt types.Type) {
+func (c *Compiler) emitCmpStack(op token.Type, left types.Type, right types.Type) {
 	if op == token.IN || op == token.NOTIN {
 		c.emit(instr.SWAP)
-		c.containsType(op, lt, rt)
+		c.containsType(op, left, right)
 		return
 	}
 	if op == token.IS || op == token.ISNOT {
@@ -1913,23 +1913,23 @@ func (c *Compiler) emitCmpStack(op token.Type, lt types.Type, rt types.Type) {
 		}
 		return
 	}
-	c.emit(cmpOpcode(op, lt))
+	c.emit(cmpOpcode(op, left))
 }
 
-func (c *Compiler) contains(op token.Type, l ast.Expr, r ast.Expr) {
-	c.containsType(op, c.types[l], c.types[r])
+func (c *Compiler) contains(op token.Type, left ast.Expr, right ast.Expr) {
+	c.containsType(op, c.types[left], c.types[right])
 }
 
-func (c *Compiler) containsType(op token.Type, lt types.Type, rt types.Type) {
-	switch rt.(type) {
+func (c *Compiler) containsType(op token.Type, left types.Type, right types.Type) {
+	switch right.(type) {
 	case *types.Dict:
 		c.emit(instr.MAP_LOOKUP)
 		c.emit(instr.SWAP)
 		c.emit(instr.DROP)
 	case *types.List:
-		c.callHost(c.host.listContains(lt, rt))
+		c.callHost(c.host.listContains(left, right))
 	default:
-		if types.Equal(rt, types.Str) {
+		if types.Equal(right, types.Str) {
 			c.callHost(c.host.strContains)
 		}
 	}
@@ -1967,7 +1967,7 @@ func (c *Compiler) call(x *ast.CallExpr) {
 			c.construct(x, cls)
 			return
 		}
-		if fn, ok := c.funcs[name.Name]; ok {
+		if info, ok := c.functions[name.Name]; ok {
 			for _, arg := range x.Args {
 				c.expr(arg)
 			}
@@ -1976,7 +1976,7 @@ func (c *Compiler) call(x *ast.CallExpr) {
 				c.emit(instr.CALL)
 				return
 			}
-			c.emit(instr.GLOBAL_GET, uint64(fn.slot.index))
+			c.emit(instr.GLOBAL_GET, uint64(info.slot.index))
 			c.emit(instr.CALL)
 			return
 		}
@@ -1999,10 +1999,10 @@ func (c *Compiler) call(x *ast.CallExpr) {
 	}
 
 	var arg ast.Expr
-	var at types.Type
+	var typ types.Type
 	if len(x.Args) > 0 {
 		arg = x.Args[0]
-		at = c.types[arg]
+		typ = c.types[arg]
 	}
 
 	switch name.Name {
@@ -2011,12 +2011,12 @@ func (c *Compiler) call(x *ast.CallExpr) {
 		c.callHostVoid(c.host.print)
 	case "str":
 		c.expr(arg)
-		if at != types.Str {
+		if typ != types.Str {
 			c.callHost(c.host.str)
 		}
 	case "int":
 		c.expr(arg)
-		switch at {
+		switch typ {
 		case types.Float:
 			c.emit(instr.F64_TO_I64_S)
 		case types.Bool:
@@ -2026,7 +2026,7 @@ func (c *Compiler) call(x *ast.CallExpr) {
 		}
 	case "float":
 		c.expr(arg)
-		switch at {
+		switch typ {
 		case types.Int:
 			c.emit(instr.I64_TO_F64_S)
 		case types.Bool:
@@ -2036,7 +2036,7 @@ func (c *Compiler) call(x *ast.CallExpr) {
 		}
 	case "bool":
 		c.expr(arg)
-		switch at {
+		switch typ {
 		case types.Int:
 			c.emit(instr.I64_CONST, 0)
 			c.emit(instr.I64_NE)
@@ -2048,7 +2048,7 @@ func (c *Compiler) call(x *ast.CallExpr) {
 			c.emit(instr.I32_CONST, 0)
 			c.emit(instr.I32_NE)
 		default:
-			switch t := at.(type) {
+			switch t := typ.(type) {
 			case *types.List:
 				c.emit(instr.ARRAY_LEN)
 				c.emit(instr.I32_CONST, 0)
@@ -2070,7 +2070,7 @@ func (c *Compiler) call(x *ast.CallExpr) {
 			}
 		}
 	case "abs":
-		if at == types.Int {
+		if typ == types.Int {
 			c.absInt(arg)
 		} else {
 			c.expr(arg)
@@ -2078,13 +2078,13 @@ func (c *Compiler) call(x *ast.CallExpr) {
 		}
 	case "len":
 		c.expr(arg)
-		switch at.(type) {
+		switch typ.(type) {
 		case *types.List:
 			c.emit(instr.ARRAY_LEN)
 		case *types.Dict, *types.Set:
 			c.emit(instr.MAP_LEN)
 		case *types.Tuple:
-			c.emit(instr.I32_CONST, uint64(len(at.(*types.Tuple).Elems)))
+			c.emit(instr.I32_CONST, uint64(len(typ.(*types.Tuple).Elems)))
 		default:
 			c.emit(instr.STRING_LEN)
 		}
@@ -2099,14 +2099,14 @@ func (c *Compiler) call(x *ast.CallExpr) {
 	case "range":
 		c.rangeCall(x)
 	case "iter":
-		c.iterCall(arg, at)
+		c.iterCall(arg, typ)
 	case "next":
 		c.nextCall(arg)
 	}
 }
 
-func (c *Compiler) construct(x *ast.CallExpr, cls *classInfo) {
-	if isExceptionInfo(cls) {
+func (c *Compiler) construct(x *ast.CallExpr, cls *class) {
+	if isException(cls) {
 		c.emitExceptionInstance(cls, x.Args)
 		return
 	}
@@ -2130,7 +2130,7 @@ func (c *Compiler) construct(x *ast.CallExpr, cls *classInfo) {
 	}
 }
 
-func (c *Compiler) applyFieldDefaults(cls *classInfo) {
+func (c *Compiler) applyFieldDefaults(cls *class) {
 	for _, field := range cls.fields {
 		if field.value == nil {
 			continue
@@ -2160,19 +2160,19 @@ func (c *Compiler) rangeCall(x *ast.CallExpr) {
 	c.callHost(c.host.rangeIter)
 }
 
-func (c *Compiler) iterCall(arg ast.Expr, at types.Type) {
-	if _, ok := at.(*types.Iterator); ok {
+func (c *Compiler) iterCall(arg ast.Expr, typ types.Type) {
+	if _, ok := typ.(*types.Iterator); ok {
 		c.expr(arg)
 		return
 	}
 	c.expr(arg)
-	switch at.(type) {
+	switch typ.(type) {
 	case *types.Dict, *types.Set:
 		c.emit(instr.MAP_ITER)
 	case *types.List:
-		c.callHost(c.host.listIter(at))
+		c.callHost(c.host.listIter(typ))
 	default:
-		if types.Equal(at, types.Str) {
+		if types.Equal(typ, types.Str) {
 			c.callHost(c.host.strIter())
 		}
 	}
@@ -2324,15 +2324,15 @@ func (c *Compiler) emitArrayDelete() {
 }
 
 // callHost emits a call to a value-returning host function.
-func (c *Compiler) callHost(fn *interp.HostFunction) {
-	c.emit(instr.CONST_GET, uint64(c.constOf(fn)))
+func (c *Compiler) callHost(function *interp.HostFunction) {
+	c.emit(instr.CONST_GET, uint64(c.constOf(function)))
 	c.emit(instr.CALL)
 }
 
 // callHostVoid emits a call to a void host function, padding a REF_NULL so the
 // expression still leaves exactly one value on the stack.
-func (c *Compiler) callHostVoid(fn *interp.HostFunction) {
-	c.emit(instr.CONST_GET, uint64(c.constOf(fn)))
+func (c *Compiler) callHostVoid(function *interp.HostFunction) {
+	c.emit(instr.CONST_GET, uint64(c.constOf(function)))
 	c.emit(instr.CALL)
 	c.emit(instr.REF_NULL)
 }
@@ -2340,12 +2340,12 @@ func (c *Compiler) callHostVoid(fn *interp.HostFunction) {
 // constOf interns a host function once and returns its constant-pool index,
 // keyed by pointer identity to avoid the builder's value-based deduplication
 // merging two host functions that share a signature.
-func (c *Compiler) constOf(fn *interp.HostFunction) int {
-	if idx, ok := c.consts[fn]; ok {
+func (c *Compiler) constOf(function *interp.HostFunction) int {
+	if idx, ok := c.consts[function]; ok {
 		return idx
 	}
-	idx := c.prog.Const(fn)
-	c.consts[fn] = idx
+	idx := c.prog.Const(function)
+	c.consts[function] = idx
 	return idx
 }
 

@@ -109,14 +109,14 @@ func NewSet(elem Type) Type {
 
 // NewTuple returns the tuple type with the given element types.
 func NewTuple(elems ...Type) Type {
-	cp := append([]Type(nil), elems...)
-	return &Tuple{Elems: cp}
+	copied := append([]Type(nil), elems...)
+	return &Tuple{Elems: copied}
 }
 
 // NewClass returns the class type with the given name and fields.
 func NewClass(name string, fields []Field) *Class {
-	cp := append([]Field(nil), fields...)
-	return &Class{Name: name, Fields: cp}
+	copied := append([]Field(nil), fields...)
+	return &Class{Name: name, Fields: copied}
 }
 
 // NewIterator returns the iterator type with the given element type.
@@ -125,8 +125,8 @@ func NewIterator(elem Type) Type {
 }
 
 // NewCallable returns the callable type with the given parameter and return types.
-func NewCallable(params []Type, ret Type) Type {
-	return &Callable{Params: append([]Type(nil), params...), Return: ret}
+func NewCallable(params []Type, result Type) Type {
+	return &Callable{Params: append([]Type(nil), params...), Return: result}
 }
 
 // NewUnion returns the normalized union of the given members. Nested unions are
@@ -226,14 +226,6 @@ func Join(a, b Type) Type {
 		return Any
 	}
 	return NewUnion(a, b)
-}
-
-// Narrow returns the positive narrowing of u to t — the type inside a branch
-// where flow proved the value is a t (e.g. isinstance(x, t) true). When t is a
-// member of u (or u is Any), the result is t; otherwise t is returned unchanged
-// since the guard established it.
-func Narrow(u, t Type) Type {
-	return t
 }
 
 // Without returns u with member t removed — the negative narrowing used in the
@@ -505,11 +497,11 @@ func (t *Callable) String() string {
 			params[i] = param.String()
 		}
 	}
-	ret := "<invalid>"
+	result := "<invalid>"
 	if t.Return != nil {
-		ret = t.Return.String()
+		result = t.Return.String()
 	}
-	return "Callable[[" + strings.Join(params, ", ") + "], " + ret + "]"
+	return "Callable[[" + strings.Join(params, ", ") + "], " + result + "]"
 }
 func (*Callable) IsNumeric() bool { return false }
 func (t *Callable) VM() vmtypes.Type {

@@ -1139,11 +1139,11 @@ func opcode(prog *program.Program, op instr.Opcode) bool {
 		}
 	}
 	for _, constant := range prog.Constants {
-		fn, ok := constant.(*vmtypes.Function)
+		function, ok := constant.(*vmtypes.Function)
 		if !ok {
 			continue
 		}
-		for _, ins := range instr.Unmarshal(fn.Code) {
+		for _, ins := range instr.Unmarshal(function.Code) {
 			if ins.Opcode() == op {
 				return true
 			}
@@ -1156,11 +1156,11 @@ func ops(t *testing.T, constants []vmtypes.Value, ops ...instr.Opcode) {
 	t.Helper()
 	seen := map[instr.Opcode]bool{}
 	for _, constant := range constants {
-		fn, ok := constant.(*vmtypes.Function)
+		function, ok := constant.(*vmtypes.Function)
 		if !ok {
 			continue
 		}
-		for _, ins := range instr.Unmarshal(fn.Code) {
+		for _, ins := range instr.Unmarshal(function.Code) {
 			seen[ins.Opcode()] = true
 		}
 	}
@@ -1169,26 +1169,26 @@ func ops(t *testing.T, constants []vmtypes.Value, ops ...instr.Opcode) {
 	}
 }
 
-func requireFuncParam(t *testing.T, constants []vmtypes.Value, param vmtypes.Type, wantOps bool, ops ...instr.Opcode) {
+func requireFuncParam(t *testing.T, constants []vmtypes.Value, parameter vmtypes.Type, wantOps bool, ops ...instr.Opcode) {
 	t.Helper()
 	for _, constant := range constants {
-		fn, ok := constant.(*vmtypes.Function)
-		if !ok || len(fn.Typ.Params) != 1 || !fn.Typ.Params[0].Equals(param) {
+		function, ok := constant.(*vmtypes.Function)
+		if !ok || len(function.Typ.Params) != 1 || !function.Typ.Params[0].Equals(parameter) {
 			continue
 		}
 		if len(ops) == 0 {
 			return
 		}
 		seen := map[instr.Opcode]bool{}
-		for _, ins := range instr.Unmarshal(fn.Code) {
+		for _, ins := range instr.Unmarshal(function.Code) {
 			seen[ins.Opcode()] = true
 		}
 		for _, op := range ops {
-			require.Equalf(t, wantOps, seen[op], "function with param %s opcode %s", param, op)
+			require.Equalf(t, wantOps, seen[op], "function with parameter %s opcode %s", parameter, op)
 		}
 		return
 	}
-	t.Fatalf("expected function constant with param %s", param)
+	t.Fatalf("expected function constant with parameter %s", parameter)
 }
 
 func TestCompileErrors(t *testing.T) {

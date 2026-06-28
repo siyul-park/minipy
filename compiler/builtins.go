@@ -14,14 +14,14 @@ import (
 	vmtypes "github.com/siyul-park/minivm/types"
 )
 
-// hostFuncs holds the minivm host functions backing builtins. print
+// host holds the minivm host functions backing builtins. print
 // writes to the configured sink; the rest are helpers for conversions and the
 // operators with no single opcode.
 //
 // pow stays a host function: it needs a loop with temporaries, and minivm has
 // no native exponentiation opcode. Float modulo lowers to the native F64_MOD
 // opcode instead (see compiler.go's PERCENT case).
-type hostFuncs struct {
+type host struct {
 	print       *interp.HostFunction
 	str         *interp.HostFunction
 	rangeIter   *interp.HostFunction
@@ -131,10 +131,10 @@ func (it *boxedIterator) Refs() []vmtypes.Ref {
 	return refs
 }
 
-func (h *hostFuncs) dictGet(recv, ret types.Type) *interp.HostFunction {
-	dt := recv.(*types.Dict)
+func (h *host) dictGet(receiver, result types.Type) *interp.HostFunction {
+	dict := receiver.(*types.Dict)
 	return interp.NewHostFunction(
-		&vmtypes.FunctionType{Params: []vmtypes.Type{recv.VM(), dt.Key.VM(), ret.VM()}, Returns: []vmtypes.Type{ret.VM()}},
+		&vmtypes.FunctionType{Params: []vmtypes.Type{receiver.VM(), dict.Key.VM(), result.VM()}, Returns: []vmtypes.Type{result.VM()}},
 		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
 			if val, ok := mapGet(i, params[0], params[1]); ok {
 				return []vmtypes.Boxed{val}, nil
@@ -144,20 +144,20 @@ func (h *hostFuncs) dictGet(recv, ret types.Type) *interp.HostFunction {
 	)
 }
 
-func (h *hostFuncs) dictValues(recv, ret types.Type) *interp.HostFunction {
+func (h *host) dictValues(receiver, result types.Type) *interp.HostFunction {
 	return interp.NewHostFunction(
-		&vmtypes.FunctionType{Params: []vmtypes.Type{recv.VM()}, Returns: []vmtypes.Type{ret.VM()}},
+		&vmtypes.FunctionType{Params: []vmtypes.Type{receiver.VM()}, Returns: []vmtypes.Type{result.VM()}},
 		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
 			_, vals := mapEntries(i, params[0])
-			return allocArray(i, ret.VM().(*vmtypes.ArrayType), vals)
+			return allocArray(i, result.VM().(*vmtypes.ArrayType), vals)
 		},
 	)
 }
 
-func (h *hostFuncs) dictItems(recv, ret types.Type) *interp.HostFunction {
-	tupleType := ret.(*types.List).Elem.VM().(*vmtypes.StructType)
+func (h *host) dictItems(receiver, result types.Type) *interp.HostFunction {
+	tupleType := result.(*types.List).Elem.VM().(*vmtypes.StructType)
 	return interp.NewHostFunction(
-		&vmtypes.FunctionType{Params: []vmtypes.Type{recv.VM()}, Returns: []vmtypes.Type{ret.VM()}},
+		&vmtypes.FunctionType{Params: []vmtypes.Type{receiver.VM()}, Returns: []vmtypes.Type{result.VM()}},
 		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
 			keys, vals := mapEntries(i, params[0])
 			items := make([]vmtypes.Boxed, 0, len(keys))
@@ -168,17 +168,17 @@ func (h *hostFuncs) dictItems(recv, ret types.Type) *interp.HostFunction {
 				}
 				items = append(items, vmtypes.BoxRef(addr))
 			}
-			return allocArray(i, ret.VM().(*vmtypes.ArrayType), items)
+			return allocArray(i, result.VM().(*vmtypes.ArrayType), items)
 		},
 	)
 }
 
-// dictRest returns a new dict holding recv minus the keys in the second
+// dictRest returns a new dict holding receiver minus the keys in the second
 // argument. It backs mapping-pattern `**rest` captures.
-func (h *hostFuncs) dictRest(recv types.Type) *interp.HostFunction {
-	keys := types.NewList(recv.(*types.Dict).Key)
+func (h *host) dictRest(receiver types.Type) *interp.HostFunction {
+	keys := types.NewList(receiver.(*types.Dict).Key)
 	return interp.NewHostFunction(
-		&vmtypes.FunctionType{Params: []vmtypes.Type{recv.VM(), keys.VM()}, Returns: []vmtypes.Type{recv.VM()}},
+		&vmtypes.FunctionType{Params: []vmtypes.Type{receiver.VM(), keys.VM()}, Returns: []vmtypes.Type{receiver.VM()}},
 		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
 			src, err := i.Load(params[0].Ref())
 			if err != nil {
@@ -231,9 +231,9 @@ func mapSet(m vmtypes.Value, key, val vmtypes.Boxed) {
 	}
 }
 
-func (h *hostFuncs) listContains(elem, recv types.Type) *interp.HostFunction {
+func (h *host) listContains(elem, receiver types.Type) *interp.HostFunction {
 	return interp.NewHostFunction(
-		&vmtypes.FunctionType{Params: []vmtypes.Type{recv.VM(), elem.VM()}, Returns: []vmtypes.Type{vmtypes.TypeI32}},
+		&vmtypes.FunctionType{Params: []vmtypes.Type{receiver.VM(), elem.VM()}, Returns: []vmtypes.Type{vmtypes.TypeI32}},
 		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
 			_, elems := arrayElems(i, params[0])
 			for _, elem := range elems {
@@ -246,11 +246,11 @@ func (h *hostFuncs) listContains(elem, recv types.Type) *interp.HostFunction {
 	)
 }
 
-func (h *hostFuncs) enumerate(ret types.Type) *interp.HostFunction {
-	list := ret.(*types.List)
+func (h *host) enumerate(result types.Type) *interp.HostFunction {
+	list := result.(*types.List)
 	tupleType := list.Elem.VM().(*vmtypes.StructType)
 	return interp.NewHostFunction(
-		&vmtypes.FunctionType{Params: []vmtypes.Type{types.NewList(list.Elem.(*types.Tuple).Elems[1]).VM()}, Returns: []vmtypes.Type{ret.VM()}},
+		&vmtypes.FunctionType{Params: []vmtypes.Type{types.NewList(list.Elem.(*types.Tuple).Elems[1]).VM()}, Returns: []vmtypes.Type{result.VM()}},
 		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
 			_, elems := arrayElems(i, params[0])
 			out := make([]vmtypes.Boxed, 0, len(elems))
@@ -261,17 +261,17 @@ func (h *hostFuncs) enumerate(ret types.Type) *interp.HostFunction {
 				}
 				out = append(out, vmtypes.BoxRef(addr))
 			}
-			return allocArray(i, ret.VM().(*vmtypes.ArrayType), out)
+			return allocArray(i, result.VM().(*vmtypes.ArrayType), out)
 		},
 	)
 }
 
-func (h *hostFuncs) zip(ret types.Type) *interp.HostFunction {
-	list := ret.(*types.List)
+func (h *host) zip(result types.Type) *interp.HostFunction {
+	list := result.(*types.List)
 	tupleType := list.Elem.VM().(*vmtypes.StructType)
 	tuple := list.Elem.(*types.Tuple)
 	return interp.NewHostFunction(
-		&vmtypes.FunctionType{Params: []vmtypes.Type{types.NewList(tuple.Elems[0]).VM(), types.NewList(tuple.Elems[1]).VM()}, Returns: []vmtypes.Type{ret.VM()}},
+		&vmtypes.FunctionType{Params: []vmtypes.Type{types.NewList(tuple.Elems[0]).VM(), types.NewList(tuple.Elems[1]).VM()}, Returns: []vmtypes.Type{result.VM()}},
 		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
 			_, a := arrayElems(i, params[0])
 			_, b := arrayElems(i, params[1])
@@ -287,12 +287,12 @@ func (h *hostFuncs) zip(ret types.Type) *interp.HostFunction {
 				}
 				out = append(out, vmtypes.BoxRef(addr))
 			}
-			return allocArray(i, ret.VM().(*vmtypes.ArrayType), out)
+			return allocArray(i, result.VM().(*vmtypes.ArrayType), out)
 		},
 	)
 }
 
-func (h *hostFuncs) listIter(arg types.Type) *interp.HostFunction {
+func (h *host) listIter(arg types.Type) *interp.HostFunction {
 	return interp.NewHostFunction(
 		&vmtypes.FunctionType{Params: []vmtypes.Type{arg.VM()}, Returns: []vmtypes.Type{vmtypes.TypeRef}},
 		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
@@ -306,7 +306,7 @@ func (h *hostFuncs) listIter(arg types.Type) *interp.HostFunction {
 	)
 }
 
-func (h *hostFuncs) strIter() *interp.HostFunction {
+func (h *host) strIter() *interp.HostFunction {
 	return interp.NewHostFunction(
 		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeString}, Returns: []vmtypes.Type{vmtypes.TypeRef}},
 		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
@@ -328,7 +328,7 @@ func (h *hostFuncs) strIter() *interp.HostFunction {
 	)
 }
 
-func (h *hostFuncs) format(t types.Type) *interp.HostFunction {
+func (h *host) format(t types.Type) *interp.HostFunction {
 	return interp.NewHostFunction(
 		&vmtypes.FunctionType{Params: []vmtypes.Type{t.VM(), vmtypes.TypeString}, Returns: []vmtypes.Type{vmtypes.TypeString}},
 		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
@@ -462,11 +462,11 @@ func isContainer(t types.Type) bool {
 	}
 }
 
-// newHostFuncs builds the host-function set, binding print's output to out.
-func newHostFuncs(out io.Writer, classes map[string]*classInfo) *hostFuncs {
+// newHost builds the host-function set, binding print's output to out.
+func newHost(out io.Writer, classes map[string]*class) *host {
 	excType := classes["BaseException"].typ.VM().(*vmtypes.StructType)
 	classID := func(name string) int64 { return int64(classes[name].classID) }
-	return &hostFuncs{
+	return &host{
 		print: interp.NewHostFunction(
 			&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeRef}, Returns: nil},
 			func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
