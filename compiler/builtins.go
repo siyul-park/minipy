@@ -36,6 +36,7 @@ type host struct {
 	strJoin     *interp.HostFunction
 	strFind     *interp.HostFunction
 	strContains *interp.HostFunction
+	strSlice    *interp.HostFunction
 	excInstance *interp.HostFunction
 }
 
@@ -242,6 +243,66 @@ func (h *host) listContains(elem, receiver types.Type) *interp.HostFunction {
 				}
 			}
 			return []vmtypes.Boxed{vmtypes.BoxI32(0)}, nil
+		},
+	)
+}
+
+func (h *host) listSlice(receiver types.Type) *interp.HostFunction {
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: []vmtypes.Type{receiver.VM(), vmtypes.TypeI64, vmtypes.TypeI64, vmtypes.TypeI64}, Returns: []vmtypes.Type{receiver.VM()}},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			typ, elems := arrayElems(i, params[0])
+			indexes, err := sliceIndexes(len(elems), loadI64(i, params[1]), loadI64(i, params[2]), loadI64(i, params[3]))
+			if err != nil {
+				return nil, err
+			}
+			out := make([]vmtypes.Boxed, 0, len(indexes))
+			for _, idx := range indexes {
+				out = append(out, elems[idx])
+			}
+			return allocArray(i, typ, out)
+		},
+	)
+}
+
+func (h *host) listExtend(receiver types.Type) *interp.HostFunction {
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: []vmtypes.Type{receiver.VM(), receiver.VM()}, Returns: []vmtypes.Type{receiver.VM()}},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			typ, left := arrayElems(i, params[0])
+			_, right := arrayElems(i, params[1])
+			out := append(left, right...)
+			return allocArray(i, typ, out)
+		},
+	)
+}
+
+func (h *host) dictMerge(receiver types.Type) *interp.HostFunction {
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: []vmtypes.Type{receiver.VM(), receiver.VM()}, Returns: []vmtypes.Type{receiver.VM()}},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			src, err := i.Load(params[0].Ref())
+			if err != nil {
+				return nil, err
+			}
+			mt, ok := src.Type().(*vmtypes.MapType)
+			if !ok {
+				return nil, fmt.Errorf("dict merge on non-map value")
+			}
+			leftKeys, leftVals := mapEntries(i, params[0])
+			rightKeys, rightVals := mapEntries(i, params[1])
+			out := vmtypes.NewMapForType(mt, len(leftKeys)+len(rightKeys))
+			for idx, key := range leftKeys {
+				mapSet(out, key, leftVals[idx])
+			}
+			for idx, key := range rightKeys {
+				mapSet(out, key, rightVals[idx])
+			}
+			addr, err := i.Alloc(out)
+			if err != nil {
+				return nil, err
+			}
+			return []vmtypes.Boxed{vmtypes.BoxRef(addr)}, nil
 		},
 	)
 }
@@ -574,6 +635,21 @@ func newHost(out io.Writer, classes map[string]*class) *host {
 				return []vmtypes.Boxed{vmtypes.BoxI64(int64(strings.Index(loadStr(i, params[0]), loadStr(i, params[1]))))}, nil
 			},
 		),
+		strSlice: interp.NewHostFunction(
+			&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeString, vmtypes.TypeI64, vmtypes.TypeI64, vmtypes.TypeI64}, Returns: []vmtypes.Type{vmtypes.TypeString}},
+			func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+				runes := []rune(loadStr(i, params[0]))
+				indexes, err := sliceIndexes(len(runes), loadI64(i, params[1]), loadI64(i, params[2]), loadI64(i, params[3]))
+				if err != nil {
+					return nil, err
+				}
+				var b strings.Builder
+				for _, idx := range indexes {
+					b.WriteRune(runes[idx])
+				}
+				return allocString(i, b.String())
+			},
+		),
 		strContains: interp.NewHostFunction(
 			&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeString, vmtypes.TypeString}, Returns: []vmtypes.Type{vmtypes.TypeI32}},
 			func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
@@ -734,6 +810,77 @@ func loadI64(i *interp.Interpreter, v vmtypes.Boxed) int64 {
 		return 0
 	}
 	return v.I64()
+}
+
+const omittedSliceBound = math.MinInt64
+
+func sliceIndexes(length int, rawStart, rawStop, rawStep int64) ([]int, error) {
+	step := rawStep
+	if step == omittedSliceBound {
+		step = 1
+	}
+	if step == 0 {
+		return nil, fmt.Errorf("slice step cannot be zero")
+	}
+	startOmitted := rawStart == omittedSliceBound
+	stopOmitted := rawStop == omittedSliceBound
+	start, stop := int(rawStart), int(rawStop)
+	if step > 0 {
+		if startOmitted {
+			start = 0
+		} else if start < 0 {
+			start += length
+		}
+		if stopOmitted {
+			stop = length
+		} else if stop < 0 {
+			stop += length
+		}
+		if start < 0 {
+			start = 0
+		}
+		if start > length {
+			start = length
+		}
+		if stop < 0 {
+			stop = 0
+		}
+		if stop > length {
+			stop = length
+		}
+		var out []int
+		for i := start; i < stop; i += int(step) {
+			out = append(out, i)
+		}
+		return out, nil
+	}
+	if startOmitted {
+		start = length - 1
+	} else if start < 0 {
+		start += length
+	}
+	if stopOmitted {
+		stop = -1
+	} else if stop < 0 {
+		stop += length
+	}
+	if start < -1 {
+		start = -1
+	}
+	if start >= length {
+		start = length - 1
+	}
+	if stop < -1 {
+		stop = -1
+	}
+	if stop >= length {
+		stop = length - 1
+	}
+	var out []int
+	for i := start; i > stop; i += int(step) {
+		out = append(out, i)
+	}
+	return out, nil
 }
 
 func allocArray(i *interp.Interpreter, typ *vmtypes.ArrayType, elems []vmtypes.Boxed) ([]vmtypes.Boxed, error) {

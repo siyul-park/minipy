@@ -91,32 +91,86 @@ type For struct {
 	Iter   Expr
 	Body   []Stmt
 	Orelse []Stmt
+	Async  bool
 }
 
 // Param is a function parameter with an optional inferred type annotation.
+type ParamKind int
+
+const (
+	ParamNormal ParamKind = iota
+	ParamPosOnly
+	ParamKwOnly
+)
+
 type Param struct {
 	Base
-	Name *Name
-	Ann  Expr
+	Name    *Name
+	Ann     Expr
+	Default Expr
+	Kind    ParamKind
+	Vararg  bool
+	Kwarg   bool
 }
 
 // Function is `def Name(Params) -> Returns: Body`.
 type Function struct {
 	Base
-	Name       *Name
-	Params     []*Param
-	Returns    Expr
-	Decorators []*Name
-	Body       []Stmt
+	Name           *Name
+	Params         []*Param
+	Returns        Expr
+	Decorators     []*Name
+	DecoratorExprs []Expr
+	Body           []Stmt
+	Async          bool
 }
 
 // Class is `class Name[(Base)]: Body`.
 type Class struct {
 	Base
-	Name       *Name
-	BaseClass  *Name
-	Decorators []*Name
-	Body       []Stmt
+	Name           *Name
+	BaseClass      *Name
+	Bases          []Expr
+	Keywords       []*Keyword
+	Decorators     []*Name
+	DecoratorExprs []Expr
+	Body           []Stmt
+}
+
+// Keyword is a keyword argument in a call or class header. Name is empty for
+// `**expr`.
+type Keyword struct {
+	Base
+	Name  string
+	Value Expr
+}
+
+// ImportAlias is one imported name, optionally renamed with `as`.
+type ImportAlias struct {
+	Base
+	Name string
+	As   string
+}
+
+// Import is `import a [as b], ...`.
+type Import struct {
+	Base
+	Names []*ImportAlias
+}
+
+// ImportFrom is `from module import name [as alias], ...`.
+type ImportFrom struct {
+	Base
+	Module string
+	Names  []*ImportAlias
+	Level  int
+}
+
+// TypeAlias is Python 3.13's soft-keyword `type Name = expr`.
+type TypeAlias struct {
+	Base
+	Name  *Name
+	Value Expr
 }
 
 // Global is a `global x, y` declaration inside a function.
@@ -179,12 +233,14 @@ type ExceptHandler struct {
 	Type Expr
 	Name string
 	Body []Stmt
+	Star bool
 }
 
 // Raise is `raise [Exc]`. Exc is nil for a bare re-raise.
 type Raise struct {
 	Base
-	Exc Expr
+	Exc   Expr
+	Cause Expr
 }
 
 // With is `with Items: Body`.
@@ -192,6 +248,7 @@ type With struct {
 	Base
 	Items []*WithItem
 	Body  []Stmt
+	Async bool
 }
 
 // WithItem is one context manager item, optionally bound by `as`.
@@ -371,8 +428,11 @@ type Compare struct {
 // CallExpr is a function call `function(args...)`.
 type CallExpr struct {
 	Base
-	Fn   Expr
-	Args []Expr
+	Fn       Expr
+	Args     []Expr
+	Keywords []*Keyword
+	StarArgs []Expr
+	Kwargs   Expr
 }
 
 // Attribute is `x.name`.
@@ -387,6 +447,47 @@ type Subscript struct {
 	Base
 	X     Expr
 	Index Expr
+}
+
+// Slice is `lower:upper[:step]` inside a subscript.
+type Slice struct {
+	Base
+	Lower Expr
+	Upper Expr
+	Step  Expr
+}
+
+// Starred is `*expr` in displays, calls, or assignment targets.
+type Starred struct {
+	Base
+	X Expr
+}
+
+// NamedExpr is `(target := value)`.
+type NamedExpr struct {
+	Base
+	Target *Name
+	Value  Expr
+}
+
+// AwaitExpr is `await expr` (parse-only until scheduler/runtime support lands).
+type AwaitExpr struct {
+	Base
+	X Expr
+}
+
+// YieldExpr is `yield expr` in expression position.
+type YieldExpr struct {
+	Base
+	Value Expr
+	From  bool
+}
+
+// GeneratorExp is `(elem for ...)`.
+type GeneratorExp struct {
+	Base
+	Elem    Expr
+	Clauses []*Comprehension
 }
 
 // UnionType is a union annotation `A | B | C`. It appears only in annotation
@@ -421,6 +522,7 @@ type Comprehension struct {
 	Target *Name
 	Iter   Expr
 	Ifs    []Expr
+	Async  bool
 }
 
 // ListComp is `[elem for ...]`.
@@ -481,28 +583,31 @@ type FStringExpr struct {
 // Pos returns the position of the node's first token.
 func (b Base) Pos() token.Pos { return b.Position }
 
-func (*AnnAssign) stmtNode() {}
-func (*Assign) stmtNode()    {}
-func (*AugAssign) stmtNode() {}
-func (*ExprStmt) stmtNode()  {}
-func (*If) stmtNode()        {}
-func (*While) stmtNode()     {}
-func (*For) stmtNode()       {}
-func (*Function) stmtNode()  {}
-func (*Class) stmtNode()     {}
-func (*Global) stmtNode()    {}
-func (*Nonlocal) stmtNode()  {}
-func (*Return) stmtNode()    {}
-func (*Yield) stmtNode()     {}
-func (*Break) stmtNode()     {}
-func (*Continue) stmtNode()  {}
-func (*Pass) stmtNode()      {}
-func (*Delete) stmtNode()    {}
-func (*Assert) stmtNode()    {}
-func (*Match) stmtNode()     {}
-func (*Try) stmtNode()       {}
-func (*Raise) stmtNode()     {}
-func (*With) stmtNode()      {}
+func (*AnnAssign) stmtNode()  {}
+func (*Assign) stmtNode()     {}
+func (*AugAssign) stmtNode()  {}
+func (*ExprStmt) stmtNode()   {}
+func (*If) stmtNode()         {}
+func (*While) stmtNode()      {}
+func (*For) stmtNode()        {}
+func (*Function) stmtNode()   {}
+func (*Class) stmtNode()      {}
+func (*Import) stmtNode()     {}
+func (*ImportFrom) stmtNode() {}
+func (*TypeAlias) stmtNode()  {}
+func (*Global) stmtNode()     {}
+func (*Nonlocal) stmtNode()   {}
+func (*Return) stmtNode()     {}
+func (*Yield) stmtNode()      {}
+func (*Break) stmtNode()      {}
+func (*Continue) stmtNode()   {}
+func (*Pass) stmtNode()       {}
+func (*Delete) stmtNode()     {}
+func (*Assert) stmtNode()     {}
+func (*Match) stmtNode()      {}
+func (*Try) stmtNode()        {}
+func (*Raise) stmtNode()      {}
+func (*With) stmtNode()       {}
 
 func (*WildcardPattern) patternNode() {}
 func (*CapturePattern) patternNode()  {}
@@ -514,30 +619,36 @@ func (*ClassPattern) patternNode()    {}
 func (*OrPattern) patternNode()       {}
 func (*AsPattern) patternNode()       {}
 
-func (*Name) exprNode()       {}
-func (*LambdaExpr) exprNode() {}
-func (*IntLit) exprNode()     {}
-func (*FloatLit) exprNode()   {}
-func (*StrLit) exprNode()     {}
-func (*BoolLit) exprNode()    {}
-func (*NoneLit) exprNode()    {}
-func (*UnaryExpr) exprNode()  {}
-func (*BinaryExpr) exprNode() {}
-func (*BoolOp) exprNode()     {}
-func (*Compare) exprNode()    {}
-func (*CallExpr) exprNode()   {}
-func (*IfExp) exprNode()      {}
-func (*Attribute) exprNode()  {}
-func (*Subscript) exprNode()  {}
-func (*UnionType) exprNode()  {}
-func (*ListLit) exprNode()    {}
-func (*DictLit) exprNode()    {}
-func (*SetLit) exprNode()     {}
-func (*ListComp) exprNode()   {}
-func (*DictComp) exprNode()   {}
-func (*SetComp) exprNode()    {}
-func (*TupleLit) exprNode()   {}
-func (*FString) exprNode()    {}
+func (*Name) exprNode()         {}
+func (*LambdaExpr) exprNode()   {}
+func (*IntLit) exprNode()       {}
+func (*FloatLit) exprNode()     {}
+func (*StrLit) exprNode()       {}
+func (*BoolLit) exprNode()      {}
+func (*NoneLit) exprNode()      {}
+func (*UnaryExpr) exprNode()    {}
+func (*BinaryExpr) exprNode()   {}
+func (*BoolOp) exprNode()       {}
+func (*Compare) exprNode()      {}
+func (*CallExpr) exprNode()     {}
+func (*IfExp) exprNode()        {}
+func (*Attribute) exprNode()    {}
+func (*Subscript) exprNode()    {}
+func (*Slice) exprNode()        {}
+func (*Starred) exprNode()      {}
+func (*NamedExpr) exprNode()    {}
+func (*AwaitExpr) exprNode()    {}
+func (*YieldExpr) exprNode()    {}
+func (*GeneratorExp) exprNode() {}
+func (*UnionType) exprNode()    {}
+func (*ListLit) exprNode()      {}
+func (*DictLit) exprNode()      {}
+func (*SetLit) exprNode()       {}
+func (*ListComp) exprNode()     {}
+func (*DictComp) exprNode()     {}
+func (*SetComp) exprNode()      {}
+func (*TupleLit) exprNode()     {}
+func (*FString) exprNode()      {}
 
 func (*FStringText) fstringPartNode() {}
 func (*FStringExpr) fstringPartNode() {}

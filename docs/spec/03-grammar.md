@@ -1,8 +1,22 @@
-# minipy — Grammar (the subset)
+# minipy — Grammar
 
-This is minipy's grammar: a reduction of the full Python 3.13 PEG
-([reference](../reference/python-grammar.md)). Every rule here is a restriction of
-an upstream rule — minipy adds **no** new syntax.
+This is minipy's grammar relative to the full Python 3.13 PEG
+([reference](../reference/python-grammar.md)). minipy adds **no** new syntax.
+The compiler has two support tiers:
+
+| Tier | Meaning |
+|---|---|
+| **Compiled** | Parsed, type-checked, and lowered to minivm. |
+| **Parse-only** | Parsed into AST, then rejected by checker/compiler with `UnsupportedFeature` until runtime support lands. |
+
+Parse-only coverage currently includes module/scheduler forms (`import`,
+`from import`, `async def`, `async for`, `async with`, `await`, async
+comprehensions) and high-compatibility syntax that still needs runtime/type
+lowering (`*args`, `**kwargs`, dynamic starred calls, `**kwargs` calls, matrix
+multiply, decorator expressions, multiple class bases and class keywords,
+`yield` expressions, and `except*`). See
+[`../compat-python-3.13.md`](../compat-python-3.13.md) for the current
+feature-by-feature matrix.
 
 Each construct is tagged with the milestone that introduces it
 (see [`../roadmap.md`](../roadmap.md)): `[M0]`…`[M10]`. Forms not yet assigned to
@@ -207,12 +221,10 @@ type-check as `bool`.
 
 ## Deferred forms (rejected until milestone)
 
-`async`/`await`, `yield from`, `*`/`**` unpacking in calls and displays outside
-M9 pattern rest positions, starred assignment targets, slicing with step
-(`a[i:j:k]`), generator expressions as bare args, `Union[A,B]` (non-None, M10),
-keyword-only / positional-only markers, multiple inheritance, decorators with
-arguments, nested-tuple `for` targets (beyond M3 flat unpack), set/frozenset
-literals before M4, `complex`/`bytes` literals (per [`01-lexical.md`](01-lexical.md)).
+`async`/`await`, `yield from`, dynamic `*`/`**` call unpacking, multiple
+inheritance, decorators with arguments, nested-tuple `for` targets (beyond M3
+flat unpack), `frozenset` literals, and `complex`/`bytes` literals (per
+[`01-lexical.md`](01-lexical.md)).
 
 Each rejected form reports `UnsupportedFeature` with the construct name and a
 pointer to the planned milestone. A form with no milestone yet remains queued for

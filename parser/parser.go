@@ -45,10 +45,7 @@ var compoundStmt = map[token.Type]string{
 	token.FINALLY: "'finally' exceptions",
 }
 
-var simpleKeywordStmt = map[token.Type]string{
-	token.IMPORT: "'import' modules",
-	token.FROM:   "'from' modules",
-}
+var simpleKeywordStmt = map[token.Type]string{}
 
 // New returns a Parser over source read from r. No input is read until Parse
 // pulls tokens from the lexer.
@@ -111,6 +108,8 @@ func (p *Parser) parseStatement() []ast.Stmt {
 		return []ast.Stmt{p.parseClass(nil)}
 	case token.AT:
 		return []ast.Stmt{p.parseDecorated()}
+	case token.ASYNC:
+		return []ast.Stmt{p.parseAsyncStatement()}
 	case token.ELIF, token.ELSE:
 		p.errs.Add(p.cur().Pos, token.SyntaxError, "'%s' without a matching 'if'", p.cur().Type)
 		p.skipLine()
@@ -127,6 +126,33 @@ func (p *Parser) parseStatement() []ast.Stmt {
 		return []ast.Stmt{p.parseMatch()}
 	}
 	return p.parseSimpleLine()
+}
+
+func (p *Parser) parseAsyncStatement() ast.Stmt {
+	pos := p.cur().Pos
+	p.advance() // async
+	switch p.cur().Type {
+	case token.DEF:
+		fn := p.parseFunction(nil).(*ast.Function)
+		fn.Async = true
+		fn.Base.Position = pos
+		return fn
+	case token.FOR:
+		fr := p.parseFor().(*ast.For)
+		fr.Async = true
+		fr.Base.Position = pos
+		return fr
+	case token.WITH:
+		w := p.parseWith().(*ast.With)
+		w.Async = true
+		w.Base.Position = pos
+		return w
+	default:
+		p.errs.Add(pos, token.SyntaxError, "expected 'def', 'for', or 'with' after async")
+		p.skipLine()
+		p.skipBlock()
+		return nil
+	}
 }
 
 // parseBlock parses the suite after a compound header's ':' — either an inline
@@ -231,6 +257,11 @@ func (p *Parser) parseTry() ast.Stmt {
 func (p *Parser) parseExceptHandler() *ast.ExceptHandler {
 	pos := p.cur().Pos
 	p.advance() // except
+	star := false
+	if p.at(token.STAR) {
+		star = true
+		p.advance()
+	}
 	var typ ast.Expr
 	var name string
 	if !p.at(token.COLON) {
@@ -241,7 +272,7 @@ func (p *Parser) parseExceptHandler() *ast.ExceptHandler {
 		}
 	}
 	body := p.parseBlock()
-	return &ast.ExceptHandler{Base: ast.Base{Position: pos}, Type: typ, Name: name, Body: body}
+	return &ast.ExceptHandler{Base: ast.Base{Position: pos}, Type: typ, Name: name, Body: body, Star: star}
 }
 
 // parseWith parses `with item (, item)*: block`.
@@ -272,34 +303,37 @@ func (p *Parser) parseWith() ast.Stmt {
 // or class definition. Decorator expressions beyond bare names are deferred.
 func (p *Parser) parseDecorated() ast.Stmt {
 	var decorators []*ast.Name
+	var decoratorExprs []ast.Expr
 	for p.at(token.AT) {
-		pos := p.cur().Pos
 		p.advance()
-		if !p.at(token.NAME) {
-			p.errs.Add(p.cur().Pos, token.UnsupportedFeature, "decorators must be bare names")
-			p.skipLine()
-			continue
-		}
-		name := &ast.Name{Base: ast.Base{Position: p.cur().Pos}, Name: p.cur().Literal}
-		decorators = append(decorators, name)
-		p.advance()
-		if p.at(token.LPAREN) || p.at(token.DOT) {
-			p.errs.Add(pos, token.UnsupportedFeature, "call-form and dotted decorators arrive later")
-			p.skipLine()
-			continue
+		expr := p.parseExpression()
+		decoratorExprs = append(decoratorExprs, expr)
+		if name, ok := expr.(*ast.Name); ok {
+			decorators = append(decorators, name)
 		}
 		p.expectLineEnd()
 	}
 	switch p.cur().Type {
 	case token.DEF:
-		return p.parseFunction(decorators)
+		fn := p.parseFunction(decorators).(*ast.Function)
+		fn.DecoratorExprs = decoratorExprs
+		return fn
 	case token.CLASS:
 		for _, dec := range decorators {
 			if dec.Name != "dataclass" {
 				p.errs.Add(dec.Pos(), token.UnsupportedFeature, "class decorator @%s is not supported", dec.Name)
 			}
 		}
-		return p.parseClass(decorators)
+		cls := p.parseClass(decorators).(*ast.Class)
+		cls.DecoratorExprs = decoratorExprs
+		return cls
+	case token.ASYNC:
+		stmt := p.parseAsyncStatement()
+		if fn, ok := stmt.(*ast.Function); ok {
+			fn.Decorators = decorators
+			fn.DecoratorExprs = decoratorExprs
+		}
+		return stmt
 	default:
 		p.errs.Add(p.cur().Pos, token.SyntaxError, "expected def or class after decorator")
 		p.skipLine()
@@ -340,22 +374,50 @@ func (p *Parser) parseParams() []*ast.Param {
 	if p.at(token.RPAREN) || p.at(token.EOF) {
 		return params
 	}
+	kind := ast.ParamNormal
 	for {
-		nameTok := p.expect(token.NAME)
-		name := &ast.Name{Base: ast.Base{Position: nameTok.Pos}, Name: nameTok.Literal}
-		var ann ast.Expr
-		// Parameter annotations are optional: an unannotated parameter is solved
-		// by whole-program inference (and self never needs one).
-		if p.at(token.COLON) {
+		switch p.cur().Type {
+		case token.SLASH:
+			for _, param := range params {
+				if param.Kind == ast.ParamNormal {
+					param.Kind = ast.ParamPosOnly
+				}
+			}
 			p.advance()
-			ann = p.parseType()
-		}
-		if p.at(token.ASSIGN) {
-			p.errs.Add(p.cur().Pos, token.UnsupportedFeature, "default parameter values are not supported")
+			if p.at(token.COMMA) {
+				p.advance()
+			}
+			continue
+		case token.STAR:
+			pos := p.cur().Pos
 			p.advance()
-			p.parseExpression()
+			kind = ast.ParamKwOnly
+			if p.at(token.COMMA) {
+				p.advance()
+				continue
+			}
+			param := p.parseParam(ast.ParamNormal)
+			param.Base.Position = pos
+			param.Vararg = true
+			params = append(params, param)
+			if !p.at(token.COMMA) {
+				return params
+			}
+			p.advance()
+			continue
+		case token.DOUBLESTAR:
+			pos := p.cur().Pos
+			p.advance()
+			param := p.parseParam(ast.ParamKwOnly)
+			param.Base.Position = pos
+			param.Kwarg = true
+			params = append(params, param)
+			if p.at(token.COMMA) {
+				p.advance()
+			}
+			return params
 		}
-		params = append(params, &ast.Param{Base: ast.Base{Position: nameTok.Pos}, Name: name, Ann: ann})
+		params = append(params, p.parseParam(kind))
 		if !p.at(token.COMMA) {
 			break
 		}
@@ -367,6 +429,24 @@ func (p *Parser) parseParams() []*ast.Param {
 	return params
 }
 
+func (p *Parser) parseParam(kind ast.ParamKind) *ast.Param {
+	nameTok := p.expect(token.NAME)
+	name := &ast.Name{Base: ast.Base{Position: nameTok.Pos}, Name: nameTok.Literal}
+	var ann ast.Expr
+	// Parameter annotations are optional: an unannotated parameter is solved
+	// by whole-program inference (and self never needs one).
+	if p.at(token.COLON) {
+		p.advance()
+		ann = p.parseType()
+	}
+	var def ast.Expr
+	if p.at(token.ASSIGN) {
+		p.advance()
+		def = p.parseExpression()
+	}
+	return &ast.Param{Base: ast.Base{Position: nameTok.Pos}, Name: name, Ann: ann, Default: def, Kind: kind}
+}
+
 // parseClass parses `class NAME[(Base)]: class_block`.
 func (p *Parser) parseClass(decorators []*ast.Name) ast.Stmt {
 	pos := p.cur().Pos
@@ -374,20 +454,38 @@ func (p *Parser) parseClass(decorators []*ast.Name) ast.Stmt {
 	nameTok := p.expect(token.NAME)
 	name := &ast.Name{Base: ast.Base{Position: nameTok.Pos}, Name: nameTok.Literal}
 	var base *ast.Name
+	var bases []ast.Expr
+	var keywords []*ast.Keyword
 	if p.at(token.LPAREN) {
 		p.advance()
-		baseTok := p.expect(token.NAME)
-		base = &ast.Name{Base: ast.Base{Position: baseTok.Pos}, Name: baseTok.Literal}
-		if p.at(token.COMMA) {
-			p.errs.Add(p.cur().Pos, token.UnsupportedFeature, "multiple inheritance is not supported")
-			for !p.at(token.RPAREN) && !p.at(token.EOF) {
+		for !p.at(token.RPAREN) && !p.at(token.EOF) {
+			if p.cur().Type == token.NAME && p.peek(1).Type == token.ASSIGN {
+				key := p.cur()
 				p.advance()
+				p.advance()
+				keywords = append(keywords, &ast.Keyword{Base: ast.Base{Position: key.Pos}, Name: key.Literal, Value: p.parseExpression()})
+			} else if p.at(token.DOUBLESTAR) {
+				key := p.cur()
+				p.advance()
+				keywords = append(keywords, &ast.Keyword{Base: ast.Base{Position: key.Pos}, Value: p.parseExpression()})
+			} else {
+				expr := p.parseExpression()
+				bases = append(bases, expr)
+				if base == nil {
+					if name, ok := expr.(*ast.Name); ok {
+						base = name
+					}
+				}
 			}
+			if !p.at(token.COMMA) {
+				break
+			}
+			p.advance()
 		}
 		p.expect(token.RPAREN)
 	}
 	body := p.parseClassBlock()
-	return &ast.Class{Base: ast.Base{Position: pos}, Name: name, BaseClass: base, Decorators: decorators, Body: body}
+	return &ast.Class{Base: ast.Base{Position: pos}, Name: name, BaseClass: base, Bases: bases, Keywords: keywords, Decorators: decorators, Body: body}
 }
 
 func (p *Parser) parseClassBlock() []ast.Stmt {
@@ -519,6 +617,10 @@ func (p *Parser) parseSimpleStmt() ast.Stmt {
 		return p.parseDelete()
 	case token.ASSERT:
 		return p.parseAssert()
+	case token.IMPORT:
+		return p.parseImport()
+	case token.FROM:
+		return p.parseImportFrom()
 	}
 
 	if msg, ok := simpleKeywordStmt[p.cur().Type]; ok {
@@ -529,6 +631,9 @@ func (p *Parser) parseSimpleStmt() ast.Stmt {
 
 	if p.at(token.NAME) && p.peek(1).Type == token.COLON {
 		return p.parseAnnAssign()
+	}
+	if p.at(token.NAME) && p.cur().Literal == "type" && p.peek(1).Type == token.NAME {
+		return p.parseTypeAlias()
 	}
 
 	pos := p.cur().Pos
@@ -545,10 +650,22 @@ func (p *Parser) parseSimpleStmt() ast.Stmt {
 
 	switch {
 	case p.at(token.ASSIGN):
-		p.advance()
-		value := p.parseExpression()
-		p.requireTarget(target)
-		return &ast.Assign{Base: ast.Base{Position: pos}, Target: target, Value: value}
+		targets := []ast.Expr{target}
+		for p.at(token.ASSIGN) {
+			p.advance()
+			value := p.parseExpression()
+			if p.at(token.ASSIGN) {
+				p.requireTarget(value)
+				targets = append(targets, value)
+				continue
+			}
+			for _, target := range targets {
+				p.requireTarget(target)
+			}
+			assign := &ast.Assign{Base: ast.Base{Position: pos}, Target: targets[0], Value: value}
+			return assign
+		}
+		return nil
 	case augAssign[p.cur().Type] != token.ILLEGAL:
 		op := augAssign[p.cur().Type]
 		p.advance()
@@ -564,7 +681,13 @@ func (p *Parser) parseSimpleStmt() ast.Stmt {
 func (p *Parser) parseRaise() ast.Stmt {
 	t := p.cur()
 	p.advance()
-	return &ast.Raise{Base: ast.Base{Position: t.Pos}, Exc: p.parseOptionalExpression()}
+	exc := p.parseOptionalExpression()
+	var cause ast.Expr
+	if p.at(token.FROM) {
+		p.advance()
+		cause = p.parseExpression()
+	}
+	return &ast.Raise{Base: ast.Base{Position: t.Pos}, Exc: exc, Cause: cause}
 }
 
 func (p *Parser) parseOptionalExpression() ast.Expr {
@@ -626,6 +749,87 @@ func (p *Parser) parseAssert() ast.Stmt {
 		msg = p.parseExpression()
 	}
 	return &ast.Assert{Base: ast.Base{Position: t.Pos}, Test: test, Msg: msg}
+}
+
+func (p *Parser) parseImport() ast.Stmt {
+	pos := p.cur().Pos
+	p.advance()
+	return &ast.Import{Base: ast.Base{Position: pos}, Names: p.parseImportAliases()}
+}
+
+func (p *Parser) parseImportFrom() ast.Stmt {
+	pos := p.cur().Pos
+	p.advance()
+	level := 0
+	for p.at(token.DOT) {
+		level++
+		p.advance()
+	}
+	var parts []string
+	if p.at(token.NAME) {
+		parts = append(parts, p.cur().Literal)
+		p.advance()
+		for p.at(token.DOT) && p.peek(1).Type == token.NAME {
+			p.advance()
+			parts = append(parts, p.expect(token.NAME).Literal)
+		}
+	}
+	p.expect(token.IMPORT)
+	var names []*ast.ImportAlias
+	if p.at(token.STAR) {
+		names = append(names, &ast.ImportAlias{Base: ast.Base{Position: p.cur().Pos}, Name: "*"})
+		p.advance()
+	} else {
+		if p.at(token.LPAREN) {
+			p.advance()
+			names = p.parseImportAliases()
+			p.expect(token.RPAREN)
+		} else {
+			names = p.parseImportAliases()
+		}
+	}
+	return &ast.ImportFrom{Base: ast.Base{Position: pos}, Module: strings.Join(parts, "."), Names: names, Level: level}
+}
+
+func (p *Parser) parseImportAliases() []*ast.ImportAlias {
+	var names []*ast.ImportAlias
+	for !p.atStmtEnd() && !p.at(token.RPAREN) {
+		pos := p.cur().Pos
+		name := p.parseDottedName()
+		alias := &ast.ImportAlias{Base: ast.Base{Position: pos}, Name: name}
+		if p.at(token.AS) {
+			p.advance()
+			alias.As = p.expect(token.NAME).Literal
+		}
+		names = append(names, alias)
+		if !p.at(token.COMMA) {
+			break
+		}
+		p.advance()
+		if p.atStmtEnd() || p.at(token.RPAREN) {
+			break
+		}
+	}
+	return names
+}
+
+func (p *Parser) parseDottedName() string {
+	var parts []string
+	parts = append(parts, p.expect(token.NAME).Literal)
+	for p.at(token.DOT) && p.peek(1).Type == token.NAME {
+		p.advance()
+		parts = append(parts, p.expect(token.NAME).Literal)
+	}
+	return strings.Join(parts, ".")
+}
+
+func (p *Parser) parseTypeAlias() ast.Stmt {
+	pos := p.cur().Pos
+	p.advance() // type
+	nameTok := p.expect(token.NAME)
+	name := &ast.Name{Base: ast.Base{Position: nameTok.Pos}, Name: nameTok.Literal}
+	p.expect(token.ASSIGN)
+	return &ast.TypeAlias{Base: ast.Base{Position: pos}, Name: name, Value: p.parseExpression()}
 }
 
 // isMatchHeader decides whether a line beginning with the soft keyword `match`
@@ -926,8 +1130,15 @@ func (p *Parser) parseFlatTupleTarget() ast.Expr {
 	pos := p.cur().Pos
 	var elems []ast.Expr
 	for {
-		t := p.expect(token.NAME)
-		elems = append(elems, &ast.Name{Base: ast.Base{Position: t.Pos}, Name: t.Literal})
+		if p.at(token.STAR) {
+			star := p.cur()
+			p.advance()
+			t := p.expect(token.NAME)
+			elems = append(elems, &ast.Starred{Base: ast.Base{Position: star.Pos}, X: &ast.Name{Base: ast.Base{Position: t.Pos}, Name: t.Literal}})
+		} else {
+			t := p.expect(token.NAME)
+			elems = append(elems, &ast.Name{Base: ast.Base{Position: t.Pos}, Name: t.Literal})
+		}
 		if !p.at(token.COMMA) {
 			break
 		}
@@ -1037,6 +1248,14 @@ func (p *Parser) parseExpression() ast.Expr {
 	if p.at(token.LAMBDA) {
 		return p.parseLambda()
 	}
+	if p.at(token.YIELD) {
+		return p.parseYieldExpr()
+	}
+	if p.at(token.AWAIT) {
+		pos := p.cur().Pos
+		p.advance()
+		return &ast.AwaitExpr{Base: ast.Base{Position: pos}, X: p.parsePrimary()}
+	}
 	x := p.parseDisjunction()
 	if p.at(token.IF) {
 		p.advance()
@@ -1045,7 +1264,32 @@ func (p *Parser) parseExpression() ast.Expr {
 		orelse := p.parseExpression()
 		return &ast.IfExp{Base: ast.Base{Position: x.Pos()}, Body: x, Cond: cond, Orelse: orelse}
 	}
+	if p.at(token.WALRUS) {
+		pos := p.cur().Pos
+		p.advance()
+		name, ok := x.(*ast.Name)
+		if !ok {
+			p.errs.Add(x.Pos(), token.SyntaxError, "named expression target must be a name")
+			return x
+		}
+		return &ast.NamedExpr{Base: ast.Base{Position: pos}, Target: name, Value: p.parseExpression()}
+	}
 	return x
+}
+
+func (p *Parser) parseYieldExpr() ast.Expr {
+	pos := p.cur().Pos
+	p.advance()
+	from := false
+	if p.at(token.FROM) {
+		from = true
+		p.advance()
+	}
+	var value ast.Expr
+	if !p.atStmtEnd() && !p.at(token.RPAREN) && !p.at(token.COMMA) {
+		value = p.parseExpression()
+	}
+	return &ast.YieldExpr{Base: ast.Base{Position: pos}, Value: value, From: from}
 }
 
 func (p *Parser) parseLambda() ast.Expr {
@@ -1158,6 +1402,7 @@ var binPrec = map[token.Type]int{
 	token.SLASH:       6,
 	token.DOUBLESLASH: 6,
 	token.PERCENT:     6,
+	token.AT:          6,
 }
 
 // parseBinary parses left-associative binary operators by precedence climbing.
@@ -1212,7 +1457,7 @@ func (p *Parser) parsePrimary() ast.Expr {
 		case token.LBRACKET:
 			pos := p.cur().Pos
 			p.advance()
-			idx := p.parseExpression()
+			idx := p.parseSubscriptIndex(pos)
 			p.expect(token.RBRACKET)
 			x = &ast.Subscript{Base: ast.Base{Position: pos}, X: x, Index: idx}
 		default:
@@ -1221,13 +1466,53 @@ func (p *Parser) parsePrimary() ast.Expr {
 	}
 }
 
+func (p *Parser) parseSubscriptIndex(pos token.Pos) ast.Expr {
+	var lower ast.Expr
+	if !p.at(token.COLON) && !p.at(token.RBRACKET) {
+		lower = p.parseExpression()
+	}
+	if !p.at(token.COLON) {
+		return lower
+	}
+	p.advance()
+	var upper ast.Expr
+	if !p.at(token.COLON) && !p.at(token.RBRACKET) {
+		upper = p.parseExpression()
+	}
+	var step ast.Expr
+	if p.at(token.COLON) {
+		p.advance()
+		if !p.at(token.RBRACKET) {
+			step = p.parseExpression()
+		}
+	}
+	return &ast.Slice{Base: ast.Base{Position: pos}, Lower: lower, Upper: upper, Step: step}
+}
+
 // parseCall parses `callee(arg, arg, ...)` (positional args only).
 func (p *Parser) parseCall(callee ast.Expr) ast.Expr {
 	pos := p.cur().Pos
 	p.advance() // (
 	var args []ast.Expr
+	var keywords []*ast.Keyword
+	var starArgs []ast.Expr
+	var kwargs ast.Expr
 	for !p.at(token.RPAREN) && !p.at(token.EOF) {
-		args = append(args, p.parseExpression())
+		switch {
+		case p.at(token.STAR):
+			p.advance()
+			starArgs = append(starArgs, p.parseExpression())
+		case p.at(token.DOUBLESTAR):
+			p.advance()
+			kwargs = p.parseExpression()
+		case p.cur().Type == token.NAME && p.peek(1).Type == token.ASSIGN:
+			key := p.cur()
+			p.advance()
+			p.advance()
+			keywords = append(keywords, &ast.Keyword{Base: ast.Base{Position: key.Pos}, Name: key.Literal, Value: p.parseExpression()})
+		default:
+			args = append(args, p.parseExpression())
+		}
 		if p.at(token.COMMA) {
 			p.advance()
 			continue
@@ -1235,7 +1520,7 @@ func (p *Parser) parseCall(callee ast.Expr) ast.Expr {
 		break
 	}
 	p.expect(token.RPAREN)
-	return &ast.CallExpr{Base: ast.Base{Position: pos}, Fn: callee, Args: args}
+	return &ast.CallExpr{Base: ast.Base{Position: pos}, Fn: callee, Args: args, Keywords: keywords, StarArgs: starArgs, Kwargs: kwargs}
 }
 
 func (p *Parser) parseAtom() ast.Expr {
@@ -1307,6 +1592,11 @@ func (p *Parser) parseGroup() ast.Expr {
 		return &ast.TupleLit{Base: ast.Base{Position: pos}}
 	}
 	inner := p.parseExpression()
+	if p.at(token.FOR) || p.at(token.ASYNC) {
+		clauses := p.parseComprehensionClauses()
+		p.expect(token.RPAREN)
+		return &ast.GeneratorExp{Base: ast.Base{Position: pos}, Elem: inner, Clauses: clauses}
+	}
 	if !p.at(token.COMMA) {
 		p.expect(token.RPAREN)
 		return inner
@@ -1328,8 +1618,8 @@ func (p *Parser) parseList() ast.Expr {
 	p.advance()
 	var elems []ast.Expr
 	for !p.at(token.RBRACKET) && !p.at(token.EOF) {
-		elem := p.parseExpression()
-		if p.at(token.FOR) {
+		elem := p.parseStarredExpression()
+		if p.at(token.FOR) || p.at(token.ASYNC) {
 			clauses := p.parseComprehensionClauses()
 			p.expect(token.RBRACKET)
 			return &ast.ListComp{Base: ast.Base{Position: pos}, Elem: elem, Clauses: clauses}
@@ -1344,14 +1634,34 @@ func (p *Parser) parseList() ast.Expr {
 	return &ast.ListLit{Base: ast.Base{Position: pos}, Elems: elems}
 }
 
+func (p *Parser) parseStarredExpression() ast.Expr {
+	if p.at(token.STAR) {
+		pos := p.cur().Pos
+		p.advance()
+		return &ast.Starred{Base: ast.Base{Position: pos}, X: p.parseExpression()}
+	}
+	return p.parseExpression()
+}
+
 func (p *Parser) parseDict() ast.Expr {
 	pos := p.cur().Pos
 	p.advance()
 	var keys, values []ast.Expr
 	for !p.at(token.RBRACE) && !p.at(token.EOF) {
-		key := p.parseExpression()
+		if p.at(token.DOUBLESTAR) {
+			pos := p.cur().Pos
+			p.advance()
+			keys = append(keys, &ast.Starred{Base: ast.Base{Position: pos}, X: p.parseExpression()})
+			values = append(values, nil)
+			if !p.at(token.COMMA) {
+				break
+			}
+			p.advance()
+			continue
+		}
+		key := p.parseStarredExpression()
 		if !p.at(token.COLON) {
-			if p.at(token.FOR) {
+			if p.at(token.FOR) || p.at(token.ASYNC) {
 				clauses := p.parseComprehensionClauses()
 				p.expect(token.RBRACE)
 				return &ast.SetComp{Base: ast.Base{Position: pos}, Elem: key, Clauses: clauses}
@@ -1362,8 +1672,8 @@ func (p *Parser) parseDict() ast.Expr {
 				if p.at(token.RBRACE) || p.at(token.EOF) {
 					break
 				}
-				elem := p.parseExpression()
-				if p.at(token.FOR) {
+				elem := p.parseStarredExpression()
+				if p.at(token.FOR) || p.at(token.ASYNC) {
 					clauses := p.parseComprehensionClauses()
 					p.expect(token.RBRACE)
 					return &ast.SetComp{Base: ast.Base{Position: pos}, Elem: elem, Clauses: clauses}
@@ -1376,7 +1686,7 @@ func (p *Parser) parseDict() ast.Expr {
 		p.advance()
 		keys = append(keys, key)
 		value := p.parseExpression()
-		if p.at(token.FOR) {
+		if p.at(token.FOR) || p.at(token.ASYNC) {
 			clauses := p.parseComprehensionClauses()
 			p.expect(token.RBRACE)
 			return &ast.DictComp{Base: ast.Base{Position: pos}, Key: key, Value: value, Clauses: clauses}
@@ -1393,8 +1703,13 @@ func (p *Parser) parseDict() ast.Expr {
 
 func (p *Parser) parseComprehensionClauses() []*ast.Comprehension {
 	var clauses []*ast.Comprehension
-	for p.at(token.FOR) {
+	for p.at(token.FOR) || p.at(token.ASYNC) {
 		pos := p.cur().Pos
+		async := false
+		if p.at(token.ASYNC) {
+			async = true
+			p.advance()
+		}
 		p.advance()
 		t := p.expect(token.NAME)
 		target := &ast.Name{Base: ast.Base{Position: t.Pos}, Name: t.Literal}
@@ -1405,7 +1720,7 @@ func (p *Parser) parseComprehensionClauses() []*ast.Comprehension {
 			p.advance()
 			ifs = append(ifs, p.parseDisjunction())
 		}
-		clauses = append(clauses, &ast.Comprehension{Base: ast.Base{Position: pos}, Target: target, Iter: iter, Ifs: ifs})
+		clauses = append(clauses, &ast.Comprehension{Base: ast.Base{Position: pos}, Target: target, Iter: iter, Ifs: ifs, Async: async})
 	}
 	return clauses
 }

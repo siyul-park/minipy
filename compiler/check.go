@@ -24,8 +24,12 @@ type local struct {
 }
 
 type parameter struct {
-	name string
-	typ  types.Type
+	name         string
+	typ          types.Type
+	defaultValue ast.Expr
+	kind         ast.ParamKind
+	vararg       bool
+	kwarg        bool
 }
 
 type function struct {
@@ -66,6 +70,7 @@ type specialization struct {
 	info     *function
 	types    map[ast.Expr]types.Type
 	calls    map[*ast.CallExpr]*specialization
+	args     map[*ast.CallExpr][]ast.Expr
 	emitted  bool
 	emitting bool
 }
@@ -108,6 +113,7 @@ type checker struct {
 	globals    map[string]*global
 	functions  map[string]*function
 	classes    map[string]*class
+	aliases    map[string]types.Type
 	lambdas    map[*ast.LambdaExpr]*function
 	order      []string
 	classOrder []string
@@ -124,6 +130,7 @@ type checker struct {
 	// callSpec maps a call site to the specialization it links to; specActive
 	// guards against unbounded re-instantiation of recursive specializations.
 	callSpec   map[*ast.CallExpr]*specialization
+	callArgs   map[*ast.CallExpr][]ast.Expr
 	specActive map[string]bool
 }
 
@@ -133,10 +140,12 @@ func newChecker() *checker {
 		globals:    map[string]*global{},
 		functions:  map[string]*function{},
 		classes:    map[string]*class{},
+		aliases:    map[string]types.Type{},
 		lambdas:    map[*ast.LambdaExpr]*function{},
 		narrowed:   map[string]types.Type{},
 		temps:      map[string]types.Type{},
 		callSpec:   map[*ast.CallExpr]*specialization{},
+		callArgs:   map[*ast.CallExpr][]ast.Expr{},
 		specActive: map[string]bool{},
 	}
 	c.declareBuiltinExceptions()
@@ -370,6 +379,15 @@ func (c *checker) stmt(s ast.Stmt) {
 		c.functionStmt(n)
 	case *ast.Class:
 		c.classStmt(n)
+	case *ast.Import:
+		c.errs.Add(n.Pos(), token.UnsupportedFeature, "import is parse-only until module loading lands")
+	case *ast.ImportFrom:
+		c.errs.Add(n.Pos(), token.UnsupportedFeature, "from import is parse-only until module loading lands")
+	case *ast.TypeAlias:
+		t := c.resolveType(n.Value)
+		if t != types.Invalid {
+			c.aliases[n.Name.Name] = t
+		}
 	case *ast.Global:
 		if c.current == nil {
 			c.errs.Add(n.Pos(), token.SyntaxError, "'global' outside function")
@@ -423,6 +441,9 @@ func (c *checker) tryStmt(n *ast.Try) {
 	locals, globals := c.snapshotInits()
 	c.checkBlock(n.Body)
 	for _, h := range n.Handlers {
+		if h.Star {
+			c.errs.Add(h.Pos(), token.UnsupportedFeature, "except* is not supported yet")
+		}
 		ht := c.handlerType(h)
 		if h.Name != "" {
 			c.bindCapture(h.Name, ht, h.Pos())
@@ -448,6 +469,9 @@ func (c *checker) handlerType(h *ast.ExceptHandler) types.Type {
 }
 
 func (c *checker) raiseStmt(n *ast.Raise) {
+	if n.Cause != nil {
+		c.expr(n.Cause)
+	}
 	if n.Exc == nil {
 		if c.excepts == 0 {
 			c.errs.Add(n.Pos(), token.SyntaxError, "bare raise outside except")
@@ -465,6 +489,9 @@ func (c *checker) raiseStmt(n *ast.Raise) {
 }
 
 func (c *checker) withStmt(n *ast.With) {
+	if n.Async {
+		c.errs.Add(n.Pos(), token.UnsupportedFeature, "async with is parse-only until scheduler support lands")
+	}
 	for _, item := range n.Items {
 		receiver := c.expr(item.Context)
 		cls, ok := receiver.(*types.Class)
@@ -782,6 +809,9 @@ func (c *checker) whileStmt(n *ast.While) {
 // forStmt checks `for TARGET in ITERABLE`. The target is auto-declared to the
 // iterable element type; its body runs inside a loop for break/continue.
 func (c *checker) forStmt(n *ast.For) {
+	if n.Async {
+		c.errs.Add(n.Pos(), token.UnsupportedFeature, "async for is parse-only until scheduler support lands")
+	}
 	target := forTargetName(n.Target)
 	iter := c.expr(n.Iter)
 	elem := iterableElem(iter)
@@ -952,6 +982,11 @@ func (c *checker) assign(n *ast.Assign) {
 func (c *checker) assignTarget(target ast.Expr, value ast.Expr, pos token.Pos) {
 	switch t := target.(type) {
 	case *ast.Subscript:
+		if _, ok := t.Index.(*ast.Slice); ok {
+			c.errs.Add(t.Index.Pos(), token.UnsupportedFeature, "slice assignment is not supported yet")
+			c.expr(value)
+			return
+		}
 		receiver := c.expr(t.X)
 		index := c.expr(t.Index)
 		valueType := c.expr(value)
@@ -976,10 +1011,12 @@ func (c *checker) assignTarget(target ast.Expr, value ast.Expr, pos token.Pos) {
 
 func (c *checker) unpackAssign(target *ast.TupleLit, value types.Type, pos token.Pos) {
 	var elems []types.Type
+	var listElem types.Type
 	switch t := value.(type) {
 	case *types.Tuple:
 		elems = t.Elems
 	case *types.List:
+		listElem = t.Elem
 		elems = make([]types.Type, len(target.Elems))
 		for i := range elems {
 			elems[i] = t.Elem
@@ -990,43 +1027,102 @@ func (c *checker) unpackAssign(target *ast.TupleLit, value types.Type, pos token
 		}
 		return
 	}
-	if len(elems) != len(target.Elems) {
+	star := tupleStarIndex(target)
+	if star == -2 {
+		c.errs.Add(target.Pos(), token.SyntaxError, "multiple starred targets in assignment")
+		return
+	}
+	if star < 0 && len(elems) != len(target.Elems) {
 		c.errs.Add(pos, token.ArityMismatch, "unpack needs %d values, got %d", len(target.Elems), len(elems))
 		return
 	}
+	if star >= 0 && len(elems) < len(target.Elems)-1 {
+		c.errs.Add(pos, token.ArityMismatch, "not enough values to unpack")
+		return
+	}
 	for i, elem := range target.Elems {
+		if star, ok := elem.(*ast.Starred); ok {
+			name, ok := star.X.(*ast.Name)
+			if !ok {
+				c.errs.Add(star.Pos(), token.SyntaxError, "starred assignment target must be a name")
+				continue
+			}
+			elemType := listElem
+			if elemType == nil {
+				rest := elems[i : len(elems)-(len(target.Elems)-i-1)]
+				elemType = homogeneous(rest)
+				if elemType == types.Invalid {
+					c.errs.Add(star.Pos(), token.TypeMismatch, "starred tuple rest must have homogeneous type")
+					continue
+				}
+			}
+			c.bindUnpackedName(name, types.NewList(elemType))
+			continue
+		}
 		name, ok := elem.(*ast.Name)
 		if !ok {
 			c.errs.Add(elem.Pos(), token.SyntaxError, "tuple unpack target must be a name")
 			continue
 		}
-		if c.current != nil {
-			l, declared := c.current.locals[name.Name]
-			if !declared {
-				l = c.declareLocal(name.Name, elems[i], name.Pos())
-			}
-			if !types.AssignableTo(elems[i], l.typ) {
-				c.errs.Add(name.Pos(), token.TypeMismatch, "cannot assign %s to %s %q", elems[i], l.typ, name.Name)
-			}
-			l.init = true
-			c.types[name] = l.typ
-			continue
+		srcIdx := i
+		if star >= 0 && i > star {
+			srcIdx = len(elems) - (len(target.Elems) - i)
 		}
-		g, declared := c.globals[name.Name]
+		c.bindUnpackedName(name, elems[srcIdx])
+	}
+}
+
+func tupleStarIndex(target *ast.TupleLit) int {
+	star := -1
+	for i, elem := range target.Elems {
+		if _, ok := elem.(*ast.Starred); ok {
+			if star >= 0 {
+				return -2
+			}
+			star = i
+		}
+	}
+	return star
+}
+
+func homogeneous(ts []types.Type) types.Type {
+	if len(ts) == 0 {
+		return types.Any
+	}
+	first := ts[0]
+	for _, t := range ts[1:] {
+		if !types.Equal(first, t) {
+			return types.Invalid
+		}
+	}
+	return first
+}
+
+func (c *checker) bindUnpackedName(name *ast.Name, t types.Type) {
+	if c.current != nil {
+		l, declared := c.current.locals[name.Name]
 		if !declared {
-			// Whole-program inference: infer the unannotated global from the
-			// unpacked element type instead of requiring an annotation.
-			g = c.declare(name.Name, elems[i], name.Pos())
-			g.init = true
-			c.types[name] = g.typ
-			continue
+			l = c.declareLocal(name.Name, t, name.Pos())
 		}
-		if !types.AssignableTo(elems[i], g.typ) {
-			c.errs.Add(name.Pos(), token.TypeMismatch, "cannot assign %s to %s %q", elems[i], g.typ, name.Name)
+		if !types.AssignableTo(t, l.typ) {
+			c.errs.Add(name.Pos(), token.TypeMismatch, "cannot assign %s to %s %q", t, l.typ, name.Name)
 		}
+		l.init = true
+		c.types[name] = l.typ
+		return
+	}
+	g, declared := c.globals[name.Name]
+	if !declared {
+		g = c.declare(name.Name, t, name.Pos())
 		g.init = true
 		c.types[name] = g.typ
+		return
 	}
+	if !types.AssignableTo(t, g.typ) {
+		c.errs.Add(name.Pos(), token.TypeMismatch, "cannot assign %s to %s %q", t, g.typ, name.Name)
+	}
+	g.init = true
+	c.types[name] = g.typ
 }
 
 func (c *checker) augAssign(n *ast.AugAssign) {
@@ -1183,7 +1279,7 @@ func (c *checker) declareFuncs(body []ast.Stmt) {
 			info.result = c.resolveType(f.Returns)
 		}
 		for _, p := range f.Params {
-			info.params = append(info.params, parameter{name: p.Name.Name, typ: c.paramType(p)})
+			info.params = append(info.params, c.makeParam(p))
 		}
 		info.body = f.Body
 		info.astParams = f.Params
@@ -1303,6 +1399,16 @@ func (c *checker) classStmt(n *ast.Class) {
 	if info == nil {
 		return
 	}
+	if len(n.DecoratorExprs) != len(n.Decorators) {
+		for _, dec := range n.DecoratorExprs {
+			if _, ok := dec.(*ast.Name); !ok {
+				c.errs.Add(dec.Pos(), token.UnsupportedFeature, "decorator expressions are not supported yet")
+			}
+		}
+	}
+	if len(n.Bases) > 1 || len(n.Keywords) > 0 {
+		c.errs.Add(n.Pos(), token.UnsupportedFeature, "multiple bases and class keywords are not supported yet")
+	}
 	for _, dec := range n.Decorators {
 		if dec.Name == "dataclass" {
 			info.dataclass = true
@@ -1408,6 +1514,7 @@ func (c *checker) classField(info *class, n *ast.AnnAssign) {
 }
 
 func (c *checker) classMethod(info *class, n *ast.Function) {
+	c.checkParamFeatures(n.Params)
 	if _, exists := info.methods[n.Name.Name]; exists {
 		c.errs.Add(n.Name.Pos(), token.TypeMismatch, "cannot redeclare method %q", n.Name.Name)
 		return
@@ -1427,7 +1534,7 @@ func (c *checker) classMethod(info *class, n *ast.Function) {
 				c.errs.Add(p.Ann.Pos(), token.TypeMismatch, "self must be %s, got %s", info.typ, pt)
 			}
 		}
-		params = append(params, parameter{name: p.Name.Name, typ: pt})
+		params = append(params, c.makeParamWithType(p, pt))
 	}
 	inferResult := n.Returns == nil && n.Name.Name != "__init__"
 	result := types.None
@@ -1468,6 +1575,14 @@ func (c *checker) checkDataclassDefaults(info *class) {
 	}
 }
 
+func (c *checker) makeParam(p *ast.Param) parameter {
+	return c.makeParamWithType(p, c.paramType(p))
+}
+
+func (c *checker) makeParamWithType(p *ast.Param, t types.Type) parameter {
+	return parameter{name: p.Name.Name, typ: t, defaultValue: p.Default, kind: p.Kind, vararg: p.Vararg, kwarg: p.Kwarg}
+}
+
 func classTypeFields(fields []classField) []types.Field {
 	out := make([]types.Field, len(fields))
 	for i, f := range fields {
@@ -1496,6 +1611,7 @@ func (c *checker) nestedFuncs(info *function, body []ast.Stmt) {
 			globals:   map[string]bool{},
 			nonlocal:  map[string]bool{},
 		}
+		c.checkParamFeatures(f.Params)
 		if f.Returns == nil {
 			child.inferResult = true
 			child.result = types.None
@@ -1503,7 +1619,7 @@ func (c *checker) nestedFuncs(info *function, body []ast.Stmt) {
 			child.result = c.resolveType(f.Returns)
 		}
 		for _, p := range f.Params {
-			child.params = append(child.params, parameter{name: p.Name.Name, typ: c.paramType(p)})
+			child.params = append(child.params, c.makeParam(p))
 		}
 		info.children[f.Name.Name] = child
 		c.declareFuncLocal(child, f.Pos())
@@ -1529,6 +1645,9 @@ func (c *checker) paramType(p *ast.Param) types.Type {
 
 func (c *checker) resolveType(e ast.Expr) types.Type {
 	if name, ok := e.(*ast.Name); ok {
+		if alias, ok := c.aliases[name.Name]; ok {
+			return alias
+		}
 		if resolved, known := types.Resolve(name.Name); known {
 			return resolved
 		}
@@ -1635,6 +1754,17 @@ func (c *checker) resolveType(e ast.Expr) types.Type {
 }
 
 func (c *checker) functionStmt(n *ast.Function) {
+	if n.Async {
+		c.errs.Add(n.Pos(), token.UnsupportedFeature, "async def is parse-only until scheduler support lands")
+	}
+	if len(n.DecoratorExprs) != len(n.Decorators) {
+		for _, dec := range n.DecoratorExprs {
+			if _, ok := dec.(*ast.Name); !ok {
+				c.errs.Add(dec.Pos(), token.UnsupportedFeature, "decorator expressions are not supported yet")
+			}
+		}
+	}
+	c.checkParamFeatures(n.Params)
 	if c.current != nil {
 		info := c.current.children[n.Name.Name]
 		if info == nil {
@@ -1650,6 +1780,21 @@ func (c *checker) functionStmt(n *ast.Function) {
 	}
 	info.slot.init = true
 	c.checkFunctionBody(n.Body, n.Params, info, n.Pos())
+}
+
+func (c *checker) checkParamFeatures(params []*ast.Param) {
+	for _, p := range params {
+		if p.Default != nil {
+			dt := c.exprWithHint(p.Default, c.paramType(p))
+			pt := c.paramType(p)
+			if dt != types.Invalid && pt != types.Invalid && !types.AssignableTo(dt, pt) {
+				c.errs.Add(p.Default.Pos(), token.TypeMismatch, "default for %q must be %s, got %s", p.Name.Name, pt, dt)
+			}
+		}
+		if p.Vararg || p.Kwarg {
+			c.errs.Add(p.Pos(), token.UnsupportedFeature, "*args and **kwargs parameters are not supported yet")
+		}
+	}
 }
 
 func (c *checker) checkFunctionBody(body []ast.Stmt, params []*ast.Param, info *function, pos token.Pos) {
@@ -1880,12 +2025,13 @@ func (c *checker) specialize(info *function, argTypes []types.Type) *specializat
 			if !concrete(arg) {
 				return nil
 			}
-			params[i] = parameter{name: p.name, typ: arg}
+			params[i] = p
+			params[i].typ = arg
 		} else {
 			if arg == types.Invalid || !types.AssignableTo(arg, p.typ) {
 				return nil
 			}
-			params[i] = parameter{name: p.name, typ: p.typ}
+			params[i] = p
 		}
 		signature[i] = params[i].typ
 	}
@@ -1923,21 +2069,22 @@ func (c *checker) specialize(info *function, argTypes []types.Type) *specializat
 	}
 
 	errMark := len(c.errs)
-	savedTypes, savedNarrow, savedCalls := c.types, c.narrowed, c.callSpec
+	savedTypes, savedNarrow, savedCalls, savedArgs := c.types, c.narrowed, c.callSpec, c.callArgs
 	c.types = map[ast.Expr]types.Type{}
 	c.narrowed = map[string]types.Type{}
 	c.callSpec = map[*ast.CallExpr]*specialization{}
+	c.callArgs = map[*ast.CallExpr][]ast.Expr{}
 	c.specActive[guard] = true
 	c.checkFunctionBody(clone.body, clone.astParams, clone, token.Pos{})
 	delete(c.specActive, guard)
-	itypes, icalls := c.types, c.callSpec
-	c.types, c.narrowed, c.callSpec = savedTypes, savedNarrow, savedCalls
+	itypes, icalls, iargs := c.types, c.callSpec, c.callArgs
+	c.types, c.narrowed, c.callSpec, c.callArgs = savedTypes, savedNarrow, savedCalls, savedArgs
 
 	if len(c.errs) > errMark {
 		c.errs = c.errs[:errMark] // discard: this tuple cannot specialize
 		return nil
 	}
-	spec := &specialization{key: key, params: signature, info: clone, types: itypes, calls: icalls}
+	spec := &specialization{key: key, params: signature, info: clone, types: itypes, calls: icalls, args: iargs}
 	info.instances = append(info.instances, spec)
 	return spec
 }
@@ -2038,8 +2185,34 @@ func (c *checker) typeOf(e ast.Expr, hint types.Type) types.Type {
 		return types.NewSet(elem)
 	case *ast.Subscript:
 		receiver := c.expr(n.X)
+		if slice, ok := n.Index.(*ast.Slice); ok {
+			return c.sliceResultType(slice, receiver)
+		}
 		index := c.expr(n.Index)
 		return c.indexResultType(n, receiver, index)
+	case *ast.Slice:
+		c.checkSliceBounds(n)
+		return types.Invalid
+	case *ast.Starred:
+		c.expr(n.X)
+		c.errs.Add(n.Pos(), token.UnsupportedFeature, "starred unpacking is not supported yet")
+		return types.Invalid
+	case *ast.NamedExpr:
+		c.assign(&ast.Assign{Base: n.Base, Target: n.Target, Value: n.Value})
+		return c.currentType(n.Target.Name)
+	case *ast.AwaitExpr:
+		c.expr(n.X)
+		c.errs.Add(n.Pos(), token.UnsupportedFeature, "await is parse-only until scheduler support lands")
+		return types.Invalid
+	case *ast.YieldExpr:
+		if n.Value != nil {
+			c.expr(n.Value)
+		}
+		c.errs.Add(n.Pos(), token.UnsupportedFeature, "yield expressions are not supported yet")
+		return types.Invalid
+	case *ast.GeneratorExp:
+		elem := c.compElem(n.Clauses, n.Elem)
+		return types.NewIterator(elem)
 	case *ast.Attribute:
 		return c.fieldType(n, c.expr(n.X))
 	case *ast.FString:
@@ -2058,15 +2231,33 @@ func (c *checker) listType(n *ast.ListLit, hint types.Type) types.Type {
 		c.errs.Add(n.Pos(), token.UnsupportedType, "empty list needs list[T] annotation")
 		return types.Invalid
 	}
-	elem := c.expr(n.Elems[0])
+	elem := c.listElemType(n.Elems[0])
 	for _, e := range n.Elems[1:] {
-		et := c.expr(e)
+		et := c.listElemType(e)
 		if elem != types.Invalid && et != types.Invalid && !types.Equal(elem, et) {
 			c.errs.Add(e.Pos(), token.TypeMismatch, "list elements must have same type: %s and %s", elem, et)
 			return types.Invalid
 		}
 	}
 	return types.NewList(elem)
+}
+
+func (c *checker) listElemType(e ast.Expr) types.Type {
+	if star, ok := e.(*ast.Starred); ok {
+		t := c.expr(star.X)
+		switch x := t.(type) {
+		case *types.List:
+			return x.Elem
+		case *types.Tuple:
+			return homogeneous(x.Elems)
+		default:
+			if t != types.Invalid {
+				c.errs.Add(star.Pos(), token.TypeMismatch, "starred list element must be list or tuple, got %s", t)
+			}
+			return types.Invalid
+		}
+	}
+	return c.expr(e)
 }
 
 func (c *checker) dictType(n *ast.DictLit, hint types.Type) types.Type {
@@ -2077,11 +2268,19 @@ func (c *checker) dictType(n *ast.DictLit, hint types.Type) types.Type {
 		c.errs.Add(n.Pos(), token.UnsupportedType, "empty dict needs dict[K, V] annotation")
 		return types.Invalid
 	}
-	key := c.expr(n.Keys[0])
-	value := c.expr(n.Values[0])
+	for i, keyExpr := range n.Keys {
+		if star, ok := keyExpr.(*ast.Starred); ok || n.Values[i] == nil {
+			if ok {
+				c.expr(star.X)
+			} else {
+				c.errs.Add(keyExpr.Pos(), token.UnsupportedFeature, "dict unpacking is not supported yet")
+				return types.Invalid
+			}
+		}
+	}
+	key, value := c.dictEntryType(n.Keys[0], n.Values[0])
 	for i := 1; i < len(n.Keys); i++ {
-		k := c.expr(n.Keys[i])
-		v := c.expr(n.Values[i])
+		k, v := c.dictEntryType(n.Keys[i], n.Values[i])
 		if key != types.Invalid && k != types.Invalid && !types.Equal(key, k) {
 			c.errs.Add(n.Keys[i].Pos(), token.TypeMismatch, "dict keys must have same type: %s and %s", key, k)
 			return types.Invalid
@@ -2096,6 +2295,20 @@ func (c *checker) dictType(n *ast.DictLit, hint types.Type) types.Type {
 		return types.Invalid
 	}
 	return types.NewDict(key, value)
+}
+
+func (c *checker) dictEntryType(key, value ast.Expr) (types.Type, types.Type) {
+	if star, ok := key.(*ast.Starred); ok && value == nil {
+		t := c.expr(star.X)
+		if d, ok := t.(*types.Dict); ok {
+			return d.Key, d.Value
+		}
+		if t != types.Invalid {
+			c.errs.Add(star.Pos(), token.TypeMismatch, "dict unpacking requires dict, got %s", t)
+		}
+		return types.Invalid, types.Invalid
+	}
+	return c.expr(key), c.expr(value)
 }
 
 func hashableKey(t types.Type) bool {
@@ -2135,6 +2348,34 @@ func (c *checker) indexResultType(n *ast.Subscript, receiver, index types.Type) 
 			c.errs.Add(n.Pos(), token.NotIndexable, "%s is not indexable", receiver)
 		}
 		return types.Invalid
+	}
+}
+
+func (c *checker) sliceResultType(n *ast.Slice, receiver types.Type) types.Type {
+	c.checkSliceBounds(n)
+	switch receiver.(type) {
+	case *types.List:
+		return receiver
+	default:
+		if types.Equal(receiver, types.Str) {
+			return types.Str
+		}
+		if receiver != types.Invalid {
+			c.errs.Add(n.Pos(), token.NotIndexable, "%s is not sliceable", receiver)
+		}
+		return types.Invalid
+	}
+}
+
+func (c *checker) checkSliceBounds(n *ast.Slice) {
+	for _, expr := range []ast.Expr{n.Lower, n.Upper, n.Step} {
+		if expr == nil {
+			continue
+		}
+		t := c.expr(expr)
+		if t != types.Invalid && !types.Equal(t, types.Int) {
+			c.errs.Add(expr.Pos(), token.TypeMismatch, "slice bounds must be int, got %s", t)
+		}
 	}
 }
 
@@ -2346,9 +2587,9 @@ func (c *checker) setType(n *ast.SetLit, hint types.Type) types.Type {
 		c.errs.Add(n.Pos(), token.UnsupportedType, "empty set needs set[T] annotation")
 		return types.Invalid
 	}
-	elem := c.expr(n.Elems[0])
+	elem := c.setElemType(n.Elems[0])
 	for _, e := range n.Elems[1:] {
-		et := c.expr(e)
+		et := c.setElemType(e)
 		if elem != types.Invalid && et != types.Invalid && !types.Equal(elem, et) {
 			c.errs.Add(e.Pos(), token.TypeMismatch, "set elements must have same type: %s and %s", elem, et)
 			return types.Invalid
@@ -2359,6 +2600,20 @@ func (c *checker) setType(n *ast.SetLit, hint types.Type) types.Type {
 		return types.Invalid
 	}
 	return types.NewSet(elem)
+}
+
+func (c *checker) setElemType(e ast.Expr) types.Type {
+	if star, ok := e.(*ast.Starred); ok {
+		t := c.expr(star.X)
+		if s, ok := t.(*types.Set); ok {
+			return s.Elem
+		}
+		if t != types.Invalid {
+			c.errs.Add(star.Pos(), token.TypeMismatch, "starred set element must be set, got %s", t)
+		}
+		return types.Invalid
+	}
+	return c.expr(e)
 }
 
 func (c *checker) compElem(clauses []*ast.Comprehension, elem ast.Expr) types.Type {
@@ -2377,6 +2632,9 @@ func (c *checker) compClauses(clauses []*ast.Comprehension, body func()) {
 			return
 		}
 		clause := clauses[i]
+		if clause.Async {
+			c.errs.Add(clause.Pos(), token.UnsupportedFeature, "async comprehensions are parse-only until scheduler support lands")
+		}
 		iter := c.expr(clause.Iter)
 		elem := iterableElem(iter)
 		if elem == types.Invalid {
@@ -2445,6 +2703,9 @@ func (c *checker) binaryType(left types.Type, op token.Type, right types.Type, p
 		return types.Invalid
 	}
 	switch op {
+	case token.AT:
+		c.errs.Add(pos, token.UnsupportedFeature, "matrix multiplication is not supported yet")
+		return types.Invalid
 	case token.PLUS:
 		if types.Equal(left, types.Str) && types.Equal(right, types.Str) {
 			return types.Str
@@ -2583,10 +2844,20 @@ func (c *checker) isinstanceType(n *ast.CallExpr) types.Type {
 }
 
 func (c *checker) callType(n *ast.CallExpr) types.Type {
+	if c.checkVariadicCallExtras(n) {
+		return types.Invalid
+	}
 	name, ok := n.Fn.(*ast.Name)
 	if !ok {
 		if attr, ok := n.Fn.(*ast.Attribute); ok {
 			return c.methodCallType(n, attr)
+		}
+		if len(n.Keywords) > 0 {
+			for _, kw := range n.Keywords {
+				c.expr(kw.Value)
+				c.errs.Add(kw.Pos(), token.UnsupportedFeature, "keyword arguments for dynamic calls are not supported yet")
+			}
+			return types.Invalid
 		}
 		fnType := c.expr(n.Fn)
 		return c.callableCallType(n, fnType)
@@ -2596,21 +2867,20 @@ func (c *checker) callType(n *ast.CallExpr) types.Type {
 		return c.isinstanceType(n)
 	}
 
-	argTypes := make([]types.Type, len(n.Args))
-	for i, a := range n.Args {
-		argTypes[i] = c.expr(a)
-	}
-
 	if cls, ok := c.classes[name.Name]; ok {
-		return c.constructorCallType(n, cls, argTypes)
+		argExprs, argTypes, ok := c.constructorArgs(n, cls)
+		if !ok {
+			return types.Invalid
+		}
+		return c.constructorCallType(n, cls, argExprs, argTypes)
 	}
 	if info, ok := c.functions[name.Name]; ok {
 		if c.current == nil && !info.slot.init {
 			c.errs.Add(name.Pos(), token.UseBeforeDefinition, "function %q used before definition", name.Name)
 			return types.Invalid
 		}
-		if len(argTypes) != len(info.params) {
-			c.errs.Add(n.Pos(), token.ArityMismatch, "%s() takes exactly %d arguments (%d given)", name.Name, len(info.params), len(argTypes))
+		argExprs, argTypes, ok := c.resolveFunctionArgs(n, info)
+		if !ok {
 			return types.Invalid
 		}
 		if spec := c.specialize(info, argTypes); spec != nil {
@@ -2620,7 +2890,7 @@ func (c *checker) callType(n *ast.CallExpr) types.Type {
 		for i, arg := range argTypes {
 			pt := info.params[i].typ
 			if arg != types.Invalid && pt != types.Invalid && !types.AssignableTo(arg, pt) {
-				c.errs.Add(n.Args[i].Pos(), token.TypeMismatch, "%s() argument %d must be %s, got %s", name.Name, i+1, pt, arg)
+				c.errs.Add(argExprs[i].Pos(), token.TypeMismatch, "%s() argument %d must be %s, got %s", name.Name, i+1, pt, arg)
 			}
 		}
 		return info.result
@@ -2637,8 +2907,30 @@ func (c *checker) callType(n *ast.CallExpr) types.Type {
 		return c.callableCallType(n, g.typ)
 	}
 	if !isBuiltin(name.Name) {
+		for _, arg := range n.StarArgs {
+			c.expr(arg)
+			c.errs.Add(arg.Pos(), token.UnsupportedFeature, "starred calls require a known minipy function or method")
+		}
 		c.errs.Add(name.Pos(), token.UndefinedName, "name %q is not defined", name.Name)
 		return types.Invalid
+	}
+	if len(n.StarArgs) > 0 {
+		for _, arg := range n.StarArgs {
+			c.expr(arg)
+			c.errs.Add(arg.Pos(), token.UnsupportedFeature, "starred arguments for builtins are not supported yet")
+		}
+		return types.Invalid
+	}
+	if len(n.Keywords) > 0 {
+		for _, kw := range n.Keywords {
+			c.expr(kw.Value)
+			c.errs.Add(kw.Pos(), token.UnsupportedFeature, "keyword arguments for builtins are not supported yet")
+		}
+		return types.Invalid
+	}
+	argTypes := make([]types.Type, len(n.Args))
+	for i, a := range n.Args {
+		argTypes[i] = c.expr(a)
 	}
 	result, ok := builtinReturn(name.Name, argTypes)
 	if !ok {
@@ -2659,7 +2951,160 @@ func (c *checker) callType(n *ast.CallExpr) types.Type {
 	return result
 }
 
-func (c *checker) constructorCallType(n *ast.CallExpr, cls *class, argTypes []types.Type) types.Type {
+func (c *checker) checkVariadicCallExtras(n *ast.CallExpr) bool {
+	unsupported := false
+	if n.Kwargs != nil {
+		c.expr(n.Kwargs)
+		c.errs.Add(n.Kwargs.Pos(), token.UnsupportedFeature, "double-star call arguments are not supported yet")
+		unsupported = true
+	}
+	return unsupported
+}
+
+func (c *checker) resolveFunctionArgs(n *ast.CallExpr, info *function) ([]ast.Expr, []types.Type, bool) {
+	args := make([]ast.Expr, len(info.params))
+	seen := make([]bool, len(info.params))
+	positional := 0
+	positionalArgs := append([]ast.Expr(nil), n.Args...)
+	for _, star := range n.StarArgs {
+		expanded, ok := c.expandStarCallArg(star)
+		if !ok {
+			return nil, nil, false
+		}
+		positionalArgs = append(positionalArgs, expanded...)
+	}
+	for _, arg := range positionalArgs {
+		for positional < len(info.params) && info.params[positional].kind == ast.ParamKwOnly {
+			positional++
+		}
+		if positional >= len(info.params) {
+			c.errs.Add(arg.Pos(), token.ArityMismatch, "%s() takes too many positional arguments", info.name)
+			return nil, nil, false
+		}
+		args[positional] = arg
+		seen[positional] = true
+		positional++
+	}
+	for _, kw := range n.Keywords {
+		idx := -1
+		for i, p := range info.params {
+			if p.name == kw.Name {
+				idx = i
+				break
+			}
+		}
+		if idx < 0 {
+			c.errs.Add(kw.Pos(), token.ArityMismatch, "%s() got an unexpected keyword argument %q", info.name, kw.Name)
+			return nil, nil, false
+		}
+		if info.params[idx].kind == ast.ParamPosOnly {
+			c.errs.Add(kw.Pos(), token.ArityMismatch, "%s() got positional-only argument %q passed as keyword", info.name, kw.Name)
+			return nil, nil, false
+		}
+		if seen[idx] {
+			c.errs.Add(kw.Pos(), token.ArityMismatch, "%s() got multiple values for argument %q", info.name, kw.Name)
+			return nil, nil, false
+		}
+		args[idx] = kw.Value
+		seen[idx] = true
+	}
+	for i, p := range info.params {
+		if seen[i] {
+			continue
+		}
+		if p.defaultValue == nil {
+			c.errs.Add(n.Pos(), token.ArityMismatch, "%s() missing required argument %q", info.name, p.name)
+			return nil, nil, false
+		}
+		args[i] = p.defaultValue
+	}
+	argTypes := make([]types.Type, len(args))
+	for i, arg := range args {
+		argTypes[i] = c.exprWithHint(arg, info.params[i].typ)
+	}
+	c.callArgs[n] = args
+	return args, argTypes, true
+}
+
+func (c *checker) expandStarCallArg(arg ast.Expr) ([]ast.Expr, bool) {
+	t := c.expr(arg)
+	tuple, ok := t.(*types.Tuple)
+	if !ok {
+		if t != types.Invalid {
+			c.errs.Add(arg.Pos(), token.UnsupportedFeature, "starred calls require a statically-sized tuple, got %s", t)
+		}
+		return nil, false
+	}
+	out := make([]ast.Expr, len(tuple.Elems))
+	for i := range tuple.Elems {
+		idx := &ast.IntLit{Base: ast.Base{Position: arg.Pos()}, Value: int64(i)}
+		sub := &ast.Subscript{Base: ast.Base{Position: arg.Pos()}, X: arg, Index: idx}
+		c.types[idx] = types.Int
+		c.types[sub] = tuple.Elems[i]
+		out[i] = sub
+	}
+	return out, true
+}
+
+func (c *checker) constructorArgs(n *ast.CallExpr, cls *class) ([]ast.Expr, []types.Type, bool) {
+	params := constructorParamInfos(cls)
+	if params == nil {
+		if len(n.StarArgs) > 0 {
+			for _, arg := range n.StarArgs {
+				c.expr(arg)
+				c.errs.Add(arg.Pos(), token.UnsupportedFeature, "starred constructor arguments are not supported yet")
+			}
+			return nil, nil, false
+		}
+		if len(n.Keywords) > 0 {
+			for _, kw := range n.Keywords {
+				c.expr(kw.Value)
+				c.errs.Add(kw.Pos(), token.UnsupportedFeature, "keyword constructor arguments are not supported yet")
+			}
+			return nil, nil, false
+		}
+		argTypes := make([]types.Type, len(n.Args))
+		for i, a := range n.Args {
+			argTypes[i] = c.expr(a)
+		}
+		return n.Args, argTypes, true
+	}
+	temp := &function{name: cls.name, params: params}
+	return c.resolveFunctionArgs(n, temp)
+}
+
+func (c *checker) resolveMethodArgs(n *ast.CallExpr, method *function) ([]ast.Expr, []types.Type, bool) {
+	trimmed := *method
+	if len(method.params) > 0 {
+		trimmed.params = method.params[1:]
+	}
+	args, argTypes, ok := c.resolveFunctionArgs(n, &trimmed)
+	return args, argTypes, ok
+}
+
+func (c *checker) positionalMethodArgs(n *ast.CallExpr) []types.Type {
+	if len(n.StarArgs) > 0 {
+		for _, arg := range n.StarArgs {
+			c.expr(arg)
+			c.errs.Add(arg.Pos(), token.UnsupportedFeature, "starred arguments for built-in methods are not supported yet")
+		}
+		return nil
+	}
+	if len(n.Keywords) > 0 {
+		for _, kw := range n.Keywords {
+			c.expr(kw.Value)
+			c.errs.Add(kw.Pos(), token.UnsupportedFeature, "keyword arguments for built-in methods are not supported yet")
+		}
+		return nil
+	}
+	args := make([]types.Type, len(n.Args))
+	for i, a := range n.Args {
+		args[i] = c.expr(a)
+	}
+	return args
+}
+
+func (c *checker) constructorCallType(n *ast.CallExpr, cls *class, argExprs []ast.Expr, argTypes []types.Type) types.Type {
 	params, minArgs := constructorParams(cls)
 	if len(argTypes) < minArgs || len(argTypes) > len(params) {
 		c.errs.Add(n.Pos(), token.ArityMismatch, "%s() takes %d to %d arguments (%d given)", cls.name, minArgs, len(params), len(argTypes))
@@ -2668,7 +3113,7 @@ func (c *checker) constructorCallType(n *ast.CallExpr, cls *class, argTypes []ty
 	for i, arg := range argTypes {
 		pt := params[i]
 		if arg != types.Invalid && pt != types.Invalid && !types.AssignableTo(arg, pt) {
-			c.errs.Add(n.Args[i].Pos(), token.TypeMismatch, "%s() argument %d must be %s, got %s", cls.name, i+1, pt, arg)
+			c.errs.Add(argExprs[i].Pos(), token.TypeMismatch, "%s() argument %d must be %s, got %s", cls.name, i+1, pt, arg)
 		}
 	}
 	return cls.typ
@@ -2699,6 +3144,26 @@ func constructorParams(cls *class) ([]types.Type, int) {
 	return params, minArgs
 }
 
+func constructorParamInfos(cls *class) []parameter {
+	if isException(cls) {
+		return []parameter{{name: "message", typ: types.Str}}
+	}
+	if init := cls.methods["__init__"]; init != nil {
+		if len(init.params) == 0 {
+			return nil
+		}
+		return init.params[1:]
+	}
+	if !cls.dataclass {
+		return nil
+	}
+	params := make([]parameter, len(cls.fields))
+	for i, field := range cls.fields {
+		params[i] = parameter{name: field.name, typ: field.typ, defaultValue: field.value}
+	}
+	return params
+}
+
 func isException(info *class) bool {
 	for info != nil {
 		if info.name == "BaseException" {
@@ -2717,6 +3182,23 @@ func (c *checker) callableCallType(n *ast.CallExpr, value types.Type) types.Type
 		}
 		for _, arg := range n.Args {
 			c.expr(arg)
+		}
+		for _, kw := range n.Keywords {
+			c.expr(kw.Value)
+		}
+		return types.Invalid
+	}
+	if len(n.Keywords) > 0 {
+		for _, kw := range n.Keywords {
+			c.expr(kw.Value)
+			c.errs.Add(kw.Pos(), token.UnsupportedFeature, "keyword arguments for callable values are not supported yet")
+		}
+		return types.Invalid
+	}
+	if len(n.StarArgs) > 0 {
+		for _, arg := range n.StarArgs {
+			c.expr(arg)
+			c.errs.Add(arg.Pos(), token.UnsupportedFeature, "starred arguments for callable values are not supported yet")
 		}
 		return types.Invalid
 	}
@@ -2748,10 +3230,6 @@ func builtinArity(name string) (min int, max int, ok bool) {
 
 func (c *checker) methodCallType(n *ast.CallExpr, attr *ast.Attribute) types.Type {
 	receiver := c.expr(attr.X)
-	args := make([]types.Type, len(n.Args))
-	for i, a := range n.Args {
-		args[i] = c.expr(a)
-	}
 	switch t := receiver.(type) {
 	case *types.Class:
 		info := c.classes[t.Name]
@@ -2763,21 +3241,19 @@ func (c *checker) methodCallType(n *ast.CallExpr, attr *ast.Attribute) types.Typ
 			c.errs.Add(n.Pos(), token.UnsupportedFeature, "method %s on %s is not supported", attr.Name, receiver)
 			return types.Invalid
 		}
-		params := srcTypes(method.params)
-		if len(params) > 0 {
-			params = params[1:]
-		}
-		if len(args) != len(params) {
-			c.errs.Add(n.Pos(), token.ArityMismatch, "%s.%s() takes exactly %d arguments (%d given)", info.name, attr.Name, len(params), len(args))
+		argExprs, argTypes, ok := c.resolveMethodArgs(n, method)
+		if !ok {
 			return types.Invalid
 		}
-		for i, got := range args {
-			if got != types.Invalid && params[i] != types.Invalid && !types.AssignableTo(got, params[i]) {
-				c.errs.Add(n.Args[i].Pos(), token.TypeMismatch, "%s.%s() argument %d must be %s, got %s", info.name, attr.Name, i+1, params[i], got)
+		for i, got := range argTypes {
+			pt := method.params[i+1].typ
+			if got != types.Invalid && pt != types.Invalid && !types.AssignableTo(got, pt) {
+				c.errs.Add(argExprs[i].Pos(), token.TypeMismatch, "%s.%s() argument %d must be %s, got %s", info.name, attr.Name, i+1, pt, got)
 			}
 		}
 		return method.result
 	case *types.List:
+		args := c.positionalMethodArgs(n)
 		switch attr.Name {
 		case "append":
 			if len(args) != 1 || !types.AssignableTo(args[0], t.Elem) {
@@ -2793,6 +3269,7 @@ func (c *checker) methodCallType(n *ast.CallExpr, attr *ast.Attribute) types.Typ
 			return t.Elem
 		}
 	case *types.Dict:
+		args := c.positionalMethodArgs(n)
 		switch attr.Name {
 		case "get":
 			if len(args) < 1 || len(args) > 2 || !types.AssignableTo(args[0], t.Key) || (len(args) == 2 && !types.AssignableTo(args[1], t.Value)) {
@@ -2814,6 +3291,7 @@ func (c *checker) methodCallType(n *ast.CallExpr, attr *ast.Attribute) types.Typ
 			}
 		}
 	default:
+		args := c.positionalMethodArgs(n)
 		if types.Equal(receiver, types.Str) {
 			switch attr.Name {
 			case "upper", "lower":

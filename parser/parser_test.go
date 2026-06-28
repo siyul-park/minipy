@@ -471,15 +471,56 @@ finally:
 		second := mod.Body[1].(*ast.ExprStmt).X.(*ast.Compare)
 		require.Equal(t, []token.Type{token.ISNOT}, second.Ops)
 	})
+
+	t.Run("python 3.13 parse-only module and async syntax", func(t *testing.T) {
+		mod, err := parse("import math as m\nfrom pkg.sub import name as alias, other\nasync def af(x):\n    await x\nasync for item in xs:\n    pass\nasync with cm as value:\n    pass\n")
+		require.NoError(t, err)
+		require.IsType(t, &ast.Import{}, mod.Body[0])
+		require.IsType(t, &ast.ImportFrom{}, mod.Body[1])
+		require.True(t, mod.Body[2].(*ast.Function).Async)
+		require.True(t, mod.Body[3].(*ast.For).Async)
+		require.True(t, mod.Body[4].(*ast.With).Async)
+	})
+
+	t.Run("python 3.13 calls params slices and unpacking parse", func(t *testing.T) {
+		mod, err := parse("def f(a, /, b: int = 2, *args, c, **kwargs):\n    return g(a, b=b, *args, **kwargs)\nxs[1:5:2]\nhead, *tail = xs\n")
+		require.NoError(t, err)
+		fn := mod.Body[0].(*ast.Function)
+		require.Len(t, fn.Params, 5)
+		require.Equal(t, ast.ParamPosOnly, fn.Params[0].Kind)
+		require.NotNil(t, fn.Params[1].Default)
+		require.True(t, fn.Params[2].Vararg)
+		require.Equal(t, ast.ParamKwOnly, fn.Params[3].Kind)
+		require.True(t, fn.Params[4].Kwarg)
+		call := fn.Body[0].(*ast.Return).Value.(*ast.CallExpr)
+		require.Len(t, call.Keywords, 1)
+		require.Len(t, call.StarArgs, 1)
+		require.NotNil(t, call.Kwargs)
+		require.IsType(t, &ast.Slice{}, mod.Body[1].(*ast.ExprStmt).X.(*ast.Subscript).Index)
+		assign := mod.Body[2].(*ast.Assign)
+		require.IsType(t, &ast.Starred{}, assign.Target.(*ast.TupleLit).Elems[1])
+	})
+
+	t.Run("python 3.13 expression and class extras parse", func(t *testing.T) {
+		mod, err := parse("@pkg.decorator(1)\nclass C(A, B, metaclass=M):\n    pass\nx = (y := 1)\nz = (i for i in xs if i > 0)\nw = a @ b\nraise RuntimeError(\"x\") from cause\ntry:\n    pass\nexcept* ValueError as e:\n    pass\n")
+		require.NoError(t, err)
+		cls := mod.Body[0].(*ast.Class)
+		require.Len(t, cls.DecoratorExprs, 1)
+		require.Len(t, cls.Bases, 2)
+		require.Len(t, cls.Keywords, 1)
+		require.IsType(t, &ast.NamedExpr{}, mod.Body[1].(*ast.Assign).Value)
+		require.IsType(t, &ast.GeneratorExp{}, mod.Body[2].(*ast.Assign).Value)
+		require.Equal(t, token.AT, mod.Body[3].(*ast.Assign).Value.(*ast.BinaryExpr).Op)
+		require.NotNil(t, mod.Body[4].(*ast.Raise).Cause)
+		require.True(t, mod.Body[5].(*ast.Try).Handlers[0].Star)
+	})
 }
 
 func TestParseErrors(t *testing.T) {
 	cases := map[string]token.Code{
-		"1 = 2\n":           token.SyntaxError,
-		"else:\n    pass\n": token.SyntaxError,
-		"@pkg.decorator\ndef f() -> None:\n pass\n":      token.UnsupportedFeature,
-		"@other\nclass C:\n    pass\n":                   token.UnsupportedFeature,
-		"class C(A, B):\n    pass\n":                     token.UnsupportedFeature,
+		"1 = 2\n":                      token.SyntaxError,
+		"else:\n    pass\n":            token.SyntaxError,
+		"@other\nclass C:\n    pass\n": token.UnsupportedFeature,
 		"def f() -> Iterator[int]:\n    yield from xs\n": token.UnsupportedFeature,
 	}
 	for src, code := range cases {

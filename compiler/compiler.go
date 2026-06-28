@@ -48,6 +48,7 @@ type Compiler struct {
 	classes   map[string]*class
 	lambdas   map[*ast.LambdaExpr]*function
 	callSpec  map[*ast.CallExpr]*specialization
+	callArgs  map[*ast.CallExpr][]ast.Expr
 	locals    map[string]*local
 	current   *function
 	temps     map[string]int
@@ -145,6 +146,7 @@ func (c *Compiler) init(b *program.Builder, check *checker, host *host) {
 	c.classes = check.classes
 	c.lambdas = check.lambdas
 	c.callSpec = check.callSpec
+	c.callArgs = check.callArgs
 	c.locals = nil
 	c.current = nil
 	c.temps = map[string]int{}
@@ -313,7 +315,7 @@ func (c *Compiler) stmt(s ast.Stmt) {
 		c.functionStmt(n)
 	case *ast.Class:
 		c.classStmt(n)
-	case *ast.Global, *ast.Nonlocal:
+	case *ast.Global, *ast.Nonlocal, *ast.TypeAlias:
 		// scope declarations affect checking only
 	case *ast.Return:
 		c.returnStmt(n)
@@ -626,6 +628,10 @@ func (c *Compiler) emitExceptionClassID(instSlot int) {
 }
 
 func (c *Compiler) emitRaise(n *ast.Raise) {
+	if n.Cause != nil {
+		c.expr(n.Cause)
+		c.emit(instr.DROP)
+	}
 	if n.Exc == nil {
 		c.emit(instr.GLOBAL_GET, uint64(c.excepts[len(c.excepts)-1]))
 		c.emit(instr.THROW)
@@ -916,30 +922,118 @@ func (c *Compiler) classStmt(*ast.Class) {
 }
 
 func (c *Compiler) unpackAssign(target *ast.TupleLit, value ast.Expr) {
-	if tupleValue, ok := value.(*ast.TupleLit); ok {
+	if tupleStarIndex(target) < 0 {
+		if tupleValue, ok := value.(*ast.TupleLit); ok {
+			for i, elem := range target.Elems {
+				name := elem.(*ast.Name)
+				c.expr(tupleValue.Elems[i])
+				c.set(name.Name)
+			}
+			return
+		}
+	}
+	c.expr(value)
+	valueSlot := c.tmp()
+	c.emit(instr.GLOBAL_SET, uint64(valueSlot))
+	star := tupleStarIndex(target)
+	if star >= 0 {
+		c.unpackAssignStar(target, value, valueSlot, star)
+		return
+	}
+	for i, elem := range target.Elems {
+		name := elem.(*ast.Name)
+		c.emitUnpackIndex(value, valueSlot, i)
+		c.set(name.Name)
+	}
+}
+
+func (c *Compiler) unpackAssignStar(target *ast.TupleLit, value ast.Expr, valueSlot int, star int) {
+	suffix := len(target.Elems) - star - 1
+	if _, ok := c.types[value].(*types.List); ok {
 		for i, elem := range target.Elems {
+			if starred, ok := elem.(*ast.Starred); ok {
+				name := starred.X.(*ast.Name)
+				c.emit(instr.GLOBAL_GET, uint64(valueSlot))
+				c.emit(instr.I64_CONST, uint64(star))
+				c.emit(instr.GLOBAL_GET, uint64(valueSlot))
+				c.emit(instr.ARRAY_LEN)
+				c.emit(instr.I32_TO_I64_S)
+				c.emit(instr.I64_CONST, uint64(suffix))
+				c.emit(instr.I64_SUB)
+				c.emit(instr.I64_CONST, 1)
+				c.callHost(c.host.listSlice(c.types[value]))
+				c.set(name.Name)
+				continue
+			}
 			name := elem.(*ast.Name)
-			c.expr(tupleValue.Elems[i])
+			idx := i
+			if i > star {
+				idx = -suffix + (i - star - 1)
+			}
+			c.emitListUnpackIndex(valueSlot, idx)
 			c.set(name.Name)
 		}
 		return
 	}
-	c.expr(value)
 	for i, elem := range target.Elems {
-		name := elem.(*ast.Name)
-		c.emit(instr.DUP)
-		c.emit(instr.I32_CONST, uint64(i))
-		switch c.types[value].(type) {
-		case *types.Tuple:
-			c.emit(instr.STRUCT_GET)
-		case *types.List:
-			c.emit(instr.ARRAY_GET)
-		default:
-			panic("unsupported unpack value")
+		if starred, ok := elem.(*ast.Starred); ok {
+			name := starred.X.(*ast.Name)
+			c.emitTupleRestList(valueSlot, c.types[value].(*types.Tuple), star, suffix)
+			c.set(name.Name)
+			continue
 		}
+		name := elem.(*ast.Name)
+		idx := i
+		if i > star {
+			idx = len(c.types[value].(*types.Tuple).Elems) - suffix + (i - star - 1)
+		}
+		c.emitUnpackIndex(value, valueSlot, idx)
 		c.set(name.Name)
 	}
-	c.emit(instr.DROP)
+}
+
+func (c *Compiler) emitUnpackIndex(value ast.Expr, valueSlot int, idx int) {
+	c.emit(instr.GLOBAL_GET, uint64(valueSlot))
+	c.emit(instr.I32_CONST, uint64(idx))
+	switch c.types[value].(type) {
+	case *types.Tuple:
+		c.emit(instr.STRUCT_GET)
+	case *types.List:
+		c.emit(instr.ARRAY_GET)
+	default:
+		panic("unsupported unpack value")
+	}
+}
+
+func (c *Compiler) emitListUnpackIndex(valueSlot int, idx int) {
+	c.emit(instr.GLOBAL_GET, uint64(valueSlot))
+	if idx < 0 {
+		c.emit(instr.GLOBAL_GET, uint64(valueSlot))
+		c.emit(instr.ARRAY_LEN)
+		c.emit(instr.I32_TO_I64_S)
+		c.emit(instr.I64_CONST, uint64(-idx))
+		c.emit(instr.I64_SUB)
+		c.emit(instr.I64_TO_I32)
+	} else {
+		c.emit(instr.I32_CONST, uint64(idx))
+	}
+	c.emit(instr.ARRAY_GET)
+}
+
+func (c *Compiler) emitTupleRestList(valueSlot int, tuple *types.Tuple, star int, suffix int) {
+	restLen := len(tuple.Elems) - star - suffix
+	elemType := homogeneous(tuple.Elems[star : star+restLen])
+	listType := types.NewList(elemType)
+	c.emit(instr.I32_CONST, uint64(restLen))
+	c.emit(instr.ARRAY_NEW_DEFAULT, c.typeIndex(listType))
+	for i := 0; i < restLen; i++ {
+		c.emit(instr.DUP)
+		c.emit(instr.I32_CONST, uint64(i))
+		c.emit(instr.GLOBAL_GET, uint64(valueSlot))
+		c.emit(instr.I32_CONST, uint64(star+i))
+		c.emit(instr.STRUCT_GET)
+		c.emit(instr.ARRAY_SET)
+	}
 }
 
 func (c *Compiler) get(name string) {
@@ -1266,6 +1360,7 @@ func (c *Compiler) buildSpec(spec *specialization) {
 	child.locals = info.locals
 	child.types = spec.types
 	child.callSpec = spec.calls
+	child.callArgs = spec.args
 	child.loops = nil
 	child.finally = nil
 	child.excepts = nil
@@ -1456,6 +1551,8 @@ func (c *Compiler) expr(n ast.Expr) {
 		c.lambda(x)
 	case *ast.IfExp:
 		c.ifExp(x)
+	case *ast.NamedExpr:
+		c.namedExpr(x)
 	case *ast.ListLit:
 		c.listLit(x)
 	case *ast.DictLit:
@@ -1468,6 +1565,8 @@ func (c *Compiler) expr(n ast.Expr) {
 		c.dictComp(x)
 	case *ast.SetComp:
 		c.setComp(x)
+	case *ast.GeneratorExp:
+		c.generatorExp(x)
 	case *ast.TupleLit:
 		c.tupleLit(x)
 	case *ast.Subscript:
@@ -1481,6 +1580,28 @@ func (c *Compiler) expr(n ast.Expr) {
 
 func (c *Compiler) listLit(x *ast.ListLit) {
 	t := c.types[x].(*types.List)
+	if hasStarredExpr(x.Elems) {
+		slot := c.tmp()
+		c.emit(instr.I32_CONST, 0)
+		c.emit(instr.ARRAY_NEW_DEFAULT, c.typeIndex(t))
+		c.emit(instr.GLOBAL_SET, uint64(slot))
+		for _, elem := range x.Elems {
+			if star, ok := elem.(*ast.Starred); ok {
+				if tuple, ok := c.types[star.X].(*types.Tuple); ok {
+					c.appendTupleToListSlot(slot, star.X, tuple)
+					continue
+				}
+				c.emit(instr.GLOBAL_GET, uint64(slot))
+				c.expr(star.X)
+				c.callHost(c.host.listExtend(c.types[x]))
+				c.emit(instr.GLOBAL_SET, uint64(slot))
+				continue
+			}
+			c.appendListSlot(slot, func() { c.expr(elem) })
+		}
+		c.emit(instr.GLOBAL_GET, uint64(slot))
+		return
+	}
 	c.emit(instr.I32_CONST, uint64(len(x.Elems)))
 	c.emit(instr.ARRAY_NEW_DEFAULT, c.typeIndex(t))
 	for i, elem := range x.Elems {
@@ -1493,6 +1614,27 @@ func (c *Compiler) listLit(x *ast.ListLit) {
 
 func (c *Compiler) dictLit(x *ast.DictLit) {
 	t := c.types[x].(*types.Dict)
+	if hasDictUnpack(x) {
+		slot := c.tmp()
+		c.emit(instr.I32_CONST, 0)
+		c.emit(instr.MAP_NEW, c.typeIndex(t))
+		c.emit(instr.GLOBAL_SET, uint64(slot))
+		for i := range x.Keys {
+			if star, ok := x.Keys[i].(*ast.Starred); ok && x.Values[i] == nil {
+				c.emit(instr.GLOBAL_GET, uint64(slot))
+				c.expr(star.X)
+				c.callHost(c.host.dictMerge(c.types[x]))
+				c.emit(instr.GLOBAL_SET, uint64(slot))
+				continue
+			}
+			c.emit(instr.GLOBAL_GET, uint64(slot))
+			c.expr(x.Keys[i])
+			c.expr(x.Values[i])
+			c.emit(instr.MAP_SET)
+		}
+		c.emit(instr.GLOBAL_GET, uint64(slot))
+		return
+	}
 	for i := range x.Keys {
 		c.expr(x.Keys[i])
 		c.expr(x.Values[i])
@@ -1501,8 +1643,69 @@ func (c *Compiler) dictLit(x *ast.DictLit) {
 	c.emit(instr.MAP_NEW, c.typeIndex(t))
 }
 
+func hasStarredExpr(exprs []ast.Expr) bool {
+	for _, expr := range exprs {
+		if _, ok := expr.(*ast.Starred); ok {
+			return true
+		}
+	}
+	return false
+}
+
+func hasDictUnpack(x *ast.DictLit) bool {
+	for i, key := range x.Keys {
+		if _, ok := key.(*ast.Starred); ok && x.Values[i] == nil {
+			return true
+		}
+	}
+	return false
+}
+
+func (c *Compiler) appendListSlot(slot int, emitElem func()) {
+	c.emit(instr.GLOBAL_GET, uint64(slot))
+	emitElem()
+	c.emit(instr.I32_CONST, 1)
+	c.emit(instr.ARRAY_APPEND)
+	c.emit(instr.DROP)
+}
+
+func (c *Compiler) appendTupleToListSlot(slot int, tupleExpr ast.Expr, tuple *types.Tuple) {
+	tupleSlot := c.tmp()
+	c.expr(tupleExpr)
+	c.emit(instr.GLOBAL_SET, uint64(tupleSlot))
+	for i := range tuple.Elems {
+		idx := i
+		c.appendListSlot(slot, func() {
+			c.emit(instr.GLOBAL_GET, uint64(tupleSlot))
+			c.emit(instr.I32_CONST, uint64(idx))
+			c.emit(instr.STRUCT_GET)
+		})
+	}
+}
+
 func (c *Compiler) setLit(x *ast.SetLit) {
 	t := c.types[x].(*types.Set)
+	if hasStarredExpr(x.Elems) {
+		slot := c.tmp()
+		c.emit(instr.I32_CONST, 0)
+		c.emit(instr.MAP_NEW, c.typeIndex(t))
+		c.emit(instr.GLOBAL_SET, uint64(slot))
+		for _, elem := range x.Elems {
+			if star, ok := elem.(*ast.Starred); ok {
+				c.emit(instr.GLOBAL_GET, uint64(slot))
+				c.expr(star.X)
+				c.callHost(c.host.dictMerge(c.types[x]))
+				c.emit(instr.GLOBAL_SET, uint64(slot))
+				continue
+			}
+			c.emit(instr.GLOBAL_GET, uint64(slot))
+			c.expr(elem)
+			c.emit(instr.I32_CONST, 1)
+			c.emit(instr.MAP_SET)
+		}
+		c.emit(instr.GLOBAL_GET, uint64(slot))
+		return
+	}
 	for _, elem := range x.Elems {
 		c.expr(elem)
 		c.emit(instr.I32_CONST, 1)
@@ -1526,11 +1729,7 @@ func (c *Compiler) listComp(x *ast.ListComp) {
 	c.emit(instr.ARRAY_NEW_DEFAULT, c.typeIndex(t))
 	c.emit(instr.GLOBAL_SET, uint64(slot))
 	c.comp(x.Clauses, func() {
-		c.emit(instr.GLOBAL_GET, uint64(slot))
-		c.expr(x.Elem)
-		c.emit(instr.I32_CONST, 1)
-		c.emit(instr.ARRAY_APPEND)
-		c.emit(instr.DROP)
+		c.appendListSlot(slot, func() { c.expr(x.Elem) })
 	})
 	c.emit(instr.GLOBAL_GET, uint64(slot))
 }
@@ -1563,6 +1762,20 @@ func (c *Compiler) setComp(x *ast.SetComp) {
 		c.emit(instr.MAP_SET)
 	})
 	c.emit(instr.GLOBAL_GET, uint64(slot))
+}
+
+func (c *Compiler) generatorExp(x *ast.GeneratorExp) {
+	iter := c.types[x].(*types.Iterator)
+	listType := types.NewList(iter.Elem)
+	slot := c.tmp()
+	c.emit(instr.I32_CONST, 0)
+	c.emit(instr.ARRAY_NEW_DEFAULT, c.typeIndex(listType))
+	c.emit(instr.GLOBAL_SET, uint64(slot))
+	c.comp(x.Clauses, func() {
+		c.appendListSlot(slot, func() { c.expr(x.Elem) })
+	})
+	c.emit(instr.GLOBAL_GET, uint64(slot))
+	c.callHost(c.host.listIter(listType))
 }
 
 func (c *Compiler) comp(clauses []*ast.Comprehension, body func()) {
@@ -1669,6 +1882,10 @@ func (c *Compiler) tupleLit(x *ast.TupleLit) {
 }
 
 func (c *Compiler) subscript(x *ast.Subscript) {
+	if slice, ok := x.Index.(*ast.Slice); ok {
+		c.slice(x, slice)
+		return
+	}
 	c.expr(x.X)
 	c.expr(x.Index)
 	switch c.types[x.X].(type) {
@@ -1685,6 +1902,33 @@ func (c *Compiler) subscript(x *ast.Subscript) {
 			c.callStringIndex(x)
 		}
 	}
+}
+
+func (c *Compiler) namedExpr(x *ast.NamedExpr) {
+	c.expr(x.Value)
+	c.set(x.Target.Name)
+	c.get(x.Target.Name)
+}
+
+func (c *Compiler) slice(x *ast.Subscript, s *ast.Slice) {
+	c.expr(x.X)
+	c.sliceBound(s.Lower)
+	c.sliceBound(s.Upper)
+	c.sliceBound(s.Step)
+	switch c.types[x.X].(type) {
+	case *types.List:
+		c.callHost(c.host.listSlice(c.types[x.X]))
+	default:
+		c.callHost(c.host.strSlice)
+	}
+}
+
+func (c *Compiler) sliceBound(x ast.Expr) {
+	if x == nil {
+		c.emit(instr.I64_CONST, uint64(1)<<63)
+		return
+	}
+	c.expr(x)
 }
 
 func (c *Compiler) callStringIndex(x *ast.Subscript) {
@@ -1968,7 +2212,7 @@ func (c *Compiler) call(x *ast.CallExpr) {
 			return
 		}
 		if info, ok := c.functions[name.Name]; ok {
-			for _, arg := range x.Args {
+			for _, arg := range c.functionCallArgs(x, info) {
 				c.expr(arg)
 			}
 			if spec := c.callSpec[x]; spec != nil {
@@ -2105,6 +2349,41 @@ func (c *Compiler) call(x *ast.CallExpr) {
 	}
 }
 
+func (c *Compiler) functionCallArgs(x *ast.CallExpr, info *function) []ast.Expr {
+	if args, ok := c.callArgs[x]; ok {
+		return args
+	}
+	args := make([]ast.Expr, len(info.params))
+	seen := make([]bool, len(info.params))
+	positional := 0
+	for _, arg := range x.Args {
+		for positional < len(info.params) && info.params[positional].kind == ast.ParamKwOnly {
+			positional++
+		}
+		if positional >= len(info.params) {
+			break
+		}
+		args[positional] = arg
+		seen[positional] = true
+		positional++
+	}
+	for _, kw := range x.Keywords {
+		for i, p := range info.params {
+			if p.name == kw.Name {
+				args[i] = kw.Value
+				seen[i] = true
+				break
+			}
+		}
+	}
+	for i, p := range info.params {
+		if !seen[i] {
+			args[i] = p.defaultValue
+		}
+	}
+	return args
+}
+
 func (c *Compiler) construct(x *ast.CallExpr, cls *class) {
 	if isException(cls) {
 		c.emitExceptionInstance(cls, x.Args)
@@ -2112,9 +2391,13 @@ func (c *Compiler) construct(x *ast.CallExpr, cls *class) {
 	}
 	c.emit(instr.STRUCT_NEW_DEFAULT, c.typeIndex(cls.typ))
 	c.applyFieldDefaults(cls)
+	args := c.callArgs[x]
+	if args == nil {
+		args = x.Args
+	}
 	if init := cls.methods["__init__"]; init != nil {
 		c.emit(instr.DUP)
-		for _, arg := range x.Args {
+		for _, arg := range args {
 			c.expr(arg)
 		}
 		c.funcValue(init, cls.methodBody["__init__"])
@@ -2122,7 +2405,7 @@ func (c *Compiler) construct(x *ast.CallExpr, cls *class) {
 		c.emit(instr.DROP)
 		return
 	}
-	for i, arg := range x.Args {
+	for i, arg := range args {
 		c.emit(instr.DUP)
 		c.emit(instr.I32_CONST, uint64(cls.fields[i].index))
 		c.expr(arg)
@@ -2207,7 +2490,11 @@ func (c *Compiler) methodCall(x *ast.CallExpr, attr *ast.Attribute) {
 	if cls, ok := recvType.(*types.Class); ok {
 		owner, method := c.methodOwner(cls.Name, attr.Name)
 		c.expr(attr.X)
-		for _, arg := range x.Args {
+		args := c.callArgs[x]
+		if args == nil {
+			args = x.Args
+		}
+		for _, arg := range args {
 			c.expr(arg)
 		}
 		c.funcValue(method, owner.methodBody[attr.Name])

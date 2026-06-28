@@ -550,6 +550,115 @@ print(str(add(20, 22)))
 		require.Equal(t, "42\n", run(t, src))
 	})
 
+	t.Run("default parameters and keyword calls", func(t *testing.T) {
+		src := `def mix(a: int, /, b: int = 2, *, c: int = 3) -> int:
+    return a * 100 + b * 10 + c
+print(str(mix(1)))
+print(str(mix(1, 4)))
+print(str(mix(1, c=8)))
+print(str(mix(1, b=5, c=6)))
+`
+		require.Equal(t, "123\n143\n128\n156\n", run(t, src))
+	})
+
+	t.Run("walrus assigns and yields value", func(t *testing.T) {
+		src := `if (n := 4) > 2:
+    print(str(n))
+print(str((m := n + 3)))
+print(str(m))
+`
+		require.Equal(t, "4\n7\n7\n", run(t, src))
+	})
+
+	t.Run("list and string slicing", func(t *testing.T) {
+		src := `xs: list[int] = [0, 1, 2, 3, 4, 5]
+ys: list[int] = xs[1:5:2]
+print(str(len(ys)))
+print(str(ys[0]))
+print(str(ys[1]))
+print("abcdef"[1:5:2])
+print("abcdef"[:3])
+print("abcdef"[3:])
+`
+		require.Equal(t, "2\n1\n3\nbd\nabc\ndef\n", run(t, src))
+	})
+
+	t.Run("raise from evaluates cause and raises exception", func(t *testing.T) {
+		src := `try:
+    raise ValueError("outer") from ValueError("inner")
+except ValueError:
+    print("ok")
+`
+		require.Equal(t, "ok\n", run(t, src))
+	})
+
+	t.Run("starred assignment and display unpacking", func(t *testing.T) {
+		src := `head, *middle, tail = [1, 2, 3, 4]
+print(str(head))
+print(str(len(middle)))
+print(str(middle[0]))
+print(str(middle[1]))
+print(str(tail))
+xs: list[int] = [0, *middle, 5]
+print(str(len(xs)))
+print(str(xs[2]))
+d: dict[str, int] = {"a": 1}
+e: dict[str, int] = {**d, "b": 2}
+print(str(len(e)))
+print(str(e["b"]))
+s: set[int] = {1, 2}
+t: set[int] = {*s, 3}
+print(str(len(t)))
+`
+		require.Equal(t, "1\n2\n2\n3\n4\n4\n3\n2\n2\n3\n", run(t, src))
+	})
+
+	t.Run("static tuple unpack in list literal lowers without host helper", func(t *testing.T) {
+		src := `xs: list[int] = [0, *(1, 2), 3]
+`
+		prog, err := Compile(strings.NewReader(src), WithOutput(io.Discard))
+		require.NoError(t, err)
+		require.Empty(t, hostConstants(prog.Constants))
+		programOps(t, prog, instr.ARRAY_APPEND, instr.STRUCT_GET)
+	})
+
+	t.Run("starred tuple calls and keyword methods constructors", func(t *testing.T) {
+		src := `def add(a: int, b: int, c: int = 5) -> int:
+    return a + b + c
+args: tuple[int, int] = (2, 3)
+print(str(add(*args)))
+@dataclass
+class Point:
+    x: int
+    y: int
+    def shift(self, dx: int, *, dy: int = 1) -> int:
+        return self.x + dx + self.y + dy
+p: Point = Point(y=4, x=3)
+print(str(p.shift(10, dy=20)))
+`
+		require.Equal(t, "10\n37\n", run(t, src))
+	})
+
+	t.Run("keyword constructor type mismatch reports diagnostic", func(t *testing.T) {
+		src := `@dataclass
+class Point:
+    x: int
+p: Point = Point(x="bad")
+`
+		_, err := Compile(strings.NewReader(src), WithOutput(io.Discard))
+		code(t, err, token.TypeMismatch)
+	})
+
+	t.Run("generator expressions and type aliases", func(t *testing.T) {
+		src := `type Num = int
+total: Num = 0
+for value in (i * i for i in range(5) if i > 1):
+    total = total + value
+print(str(total))
+`
+		require.Equal(t, "29\n", run(t, src))
+	})
+
 	t.Run("recursive function", func(t *testing.T) {
 		src := `def fib(n: int) -> int:
     if n < 2:
@@ -1169,6 +1278,27 @@ func ops(t *testing.T, constants []vmtypes.Value, ops ...instr.Opcode) {
 	}
 }
 
+func programOps(t *testing.T, prog *program.Program, ops ...instr.Opcode) {
+	t.Helper()
+	seen := map[instr.Opcode]bool{}
+	for _, ins := range instr.Unmarshal(prog.Code) {
+		seen[ins.Opcode()] = true
+	}
+	for _, op := range ops {
+		require.Truef(t, seen[op], "expected program code to contain %s", op)
+	}
+}
+
+func hostConstants(constants []vmtypes.Value) []*interp.HostFunction {
+	var out []*interp.HostFunction
+	for _, constant := range constants {
+		if host, ok := constant.(*interp.HostFunction); ok {
+			out = append(out, host)
+		}
+	}
+	return out
+}
+
 func requireFuncParam(t *testing.T, constants []vmtypes.Value, parameter vmtypes.Type, wantOps bool, ops ...instr.Opcode) {
 	t.Helper()
 	for _, constant := range constants {
@@ -1262,6 +1392,18 @@ func TestCompileErrors(t *testing.T) {
 		"class C:\n    pass\nwith C():\n    pass\n":                 token.UnsupportedFeature,
 		"x: int = 1\nprint(str(x is 1))\n":                          token.TypeMismatch,
 		"try:\n    x = 1\nexcept ValueError:\n    pass\nprint(x)\n": token.UseBeforeDefinition,
+		// Python 3.13 parse-only forms
+		"import math\n":                                   token.UnsupportedFeature,
+		"from math import sqrt\n":                         token.UnsupportedFeature,
+		"async def f():\n    return None\n":               token.UnsupportedFeature,
+		"async for x in xs:\n    pass\n":                  token.UnsupportedFeature,
+		"async with cm:\n    pass\n":                      token.UnsupportedFeature,
+		"def f(x):\n    return await x\n":                 token.UnsupportedFeature,
+		"def f(*args):\n    return None\n":                token.UnsupportedFeature,
+		"xs = [*ys]\n":                                    token.UndefinedName,
+		"g = (x for x in xs)\n":                           token.UndefinedName,
+		"print(str(1 @ 2))\n":                             token.UnsupportedFeature,
+		"try:\n    pass\nexcept* ValueError:\n    pass\n": token.UnsupportedFeature,
 	}
 	for src, want := range cases {
 		_, err := Compile(strings.NewReader(src), WithOutput(&bytes.Buffer{}))
