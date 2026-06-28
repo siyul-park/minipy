@@ -18,10 +18,9 @@ import (
 // writes to the configured sink; the rest are helpers for conversions and the
 // operators with no single opcode.
 //
-// pow and float modulo stay host functions for now: lowering them inline needs
-// a loop with temporaries, but the module-entry frame has no local slots
-// (bp == sp). They are candidates for a JIT-able extension op later
-// (docs/spec/05-codegen.md); see compiler.go.
+// pow stays a host function: it needs a loop with temporaries, and minivm has
+// no native exponentiation opcode. Float modulo lowers to the native F64_MOD
+// opcode instead (see compiler.go's PERCENT case).
 type hostFuncs struct {
 	print       *interp.HostFunction
 	str         *interp.HostFunction
@@ -30,7 +29,6 @@ type hostFuncs struct {
 	floatParse  *interp.HostFunction
 	powInt      *interp.HostFunction
 	powFloat    *interp.HostFunction
-	floatMod    *interp.HostFunction
 	strIndex    *interp.HostFunction
 	strUpper    *interp.HostFunction
 	strLower    *interp.HostFunction
@@ -171,66 +169,6 @@ func (h *hostFuncs) dictItems(recv, ret types.Type) *interp.HostFunction {
 				items = append(items, vmtypes.BoxRef(addr))
 			}
 			return allocArray(i, ret.VM().(*vmtypes.ArrayType), items)
-		},
-	)
-}
-
-func (h *hostFuncs) listAppend(recv types.Type) *interp.HostFunction {
-	elem := recv.(*types.List).Elem
-	return interp.NewHostFunction(
-		&vmtypes.FunctionType{Params: []vmtypes.Type{recv.VM(), elem.VM()}, Returns: nil},
-		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
-			arrType, elems := arrayElems(i, params[0])
-			elems = append(elems, params[1])
-			return nil, i.Store(params[0].Ref(), vmtypes.NewArray(arrType, elems...))
-		},
-	)
-}
-
-func (h *hostFuncs) listPop(recv, ret types.Type) *interp.HostFunction {
-	return interp.NewHostFunction(
-		&vmtypes.FunctionType{Params: []vmtypes.Type{recv.VM(), vmtypes.TypeI64}, Returns: []vmtypes.Type{ret.VM()}},
-		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
-			arrType, elems := arrayElems(i, params[0])
-			if len(elems) == 0 {
-				return nil, interp.ErrIndexOutOfRange
-			}
-			idx := int(loadI64(i, params[1]))
-			if idx < 0 {
-				idx += len(elems)
-			}
-			if idx < 0 || idx >= len(elems) {
-				return nil, interp.ErrIndexOutOfRange
-			}
-			val := elems[idx]
-			elems = append(elems[:idx], elems[idx+1:]...)
-			if err := i.Store(params[0].Ref(), vmtypes.NewArray(arrType, elems...)); err != nil {
-				return nil, err
-			}
-			return []vmtypes.Boxed{val}, nil
-		},
-	)
-}
-
-// listSlice returns a new list holding recv[start:end), clamped to bounds. It
-// backs starred sequence-pattern captures (`case [a, *rest]`).
-func (h *hostFuncs) listSlice(recv types.Type) *interp.HostFunction {
-	return interp.NewHostFunction(
-		&vmtypes.FunctionType{Params: []vmtypes.Type{recv.VM(), vmtypes.TypeI32, vmtypes.TypeI32}, Returns: []vmtypes.Type{recv.VM()}},
-		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
-			arrType, elems := arrayElems(i, params[0])
-			start := int(params[1].I32())
-			end := int(params[2].I32())
-			if start < 0 {
-				start = 0
-			}
-			if end > len(elems) {
-				end = len(elems)
-			}
-			if start > end {
-				start = end
-			}
-			return allocArray(i, arrType, append([]vmtypes.Boxed(nil), elems[start:end]...))
 		},
 	)
 }
@@ -602,17 +540,6 @@ func newHostFuncs(out io.Writer, classes map[string]*classInfo) *hostFuncs {
 			&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeF64, vmtypes.TypeF64}, Returns: []vmtypes.Type{vmtypes.TypeF64}},
 			func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
 				return []vmtypes.Boxed{vmtypes.BoxF64(math.Pow(params[0].F64(), params[1].F64()))}, nil
-			},
-		),
-		floatMod: interp.NewHostFunction(
-			&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeF64, vmtypes.TypeF64}, Returns: []vmtypes.Type{vmtypes.TypeF64}},
-			func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
-				a, b := params[0].F64(), params[1].F64()
-				r := math.Mod(a, b)
-				if r != 0 && (r < 0) != (b < 0) {
-					r += b
-				}
-				return []vmtypes.Boxed{vmtypes.BoxF64(r)}, nil
 			},
 		),
 		strIndex: interp.NewHostFunction(

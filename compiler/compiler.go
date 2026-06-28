@@ -344,8 +344,8 @@ func (c *Compiler) stmt(s ast.Stmt) {
 
 // deleteStmt lowers `del`. A deleted name is overwritten with minivm's
 // uninitialized slot value (REF_NULL for ref kinds, the typed zero for scalars);
-// dict items use MAP_DELETE, list items reuse the listPop host (remove + shift),
-// and attributes are zeroed in place.
+// dict items use MAP_DELETE, list items use the native ARRAY_DELETE (remove +
+// shift) via emitArrayDelete, and attributes are zeroed in place.
 func (c *Compiler) deleteStmt(n *ast.Delete) {
 	for _, target := range n.Targets {
 		switch t := target.(type) {
@@ -353,7 +353,7 @@ func (c *Compiler) deleteStmt(n *ast.Delete) {
 			c.emitZeroValue(c.typ(t.Name))
 			c.set(t.Name)
 		case *ast.Subscript:
-			switch ct := c.types[t.X].(type) {
+			switch c.types[t.X].(type) {
 			case *types.Dict:
 				c.expr(t.X)
 				c.expr(t.Index)
@@ -361,7 +361,7 @@ func (c *Compiler) deleteStmt(n *ast.Delete) {
 			case *types.List:
 				c.expr(t.X)
 				c.expr(t.Index)
-				c.callHost(c.host.listPop(ct, ct.Elem))
+				c.emitArrayDelete()
 				c.emit(instr.DROP)
 			}
 		case *ast.Attribute:
@@ -387,6 +387,7 @@ func (c *Compiler) assertStmt(n *ast.Assert) {
 	} else {
 		c.constGet(vmtypes.String("AssertionError"))
 	}
+	c.emit(instr.I32_CONST, uint64(vmtypes.ErrorCodeNone))
 	c.emit(instr.ERROR_NEW)
 	c.emit(instr.THROW)
 	c.bind(ok)
@@ -533,10 +534,75 @@ func (c *Compiler) emitCaughtInstance(errSlot, instSlot int) {
 	c.br(done)
 	c.bind(trap)
 	c.emit(instr.DROP)
+	c.emitTrapInstance(errSlot)
+	c.bind(done)
+	c.emit(instr.GLOBAL_SET, uint64(instSlot))
+}
+
+// trapClasses maps the VM trap codes minipy classifies into dedicated
+// exception types, with the fixed message each bare sentinel error in
+// minivm's interp package renders as. Anything else (host-function errors,
+// future trap kinds) falls through to excInstance for its dynamic message.
+var trapClasses = []struct {
+	code    vmtypes.ErrorCode
+	class   string
+	message string
+}{
+	{interp.TrapCodeDivideByZero, "ZeroDivisionError", "divide by zero"},
+	{interp.TrapCodeIndexOutOfRange, "IndexError", "index out of range"},
+	{interp.TrapCodeTypeMismatch, "TypeError", "type mismatch"},
+}
+
+// emitTrapInstance lowers a caught VM trap (a null-payload types.Error) into
+// an exception instance. It reads the trap's numeric code natively via
+// ERROR_CODE and matches it against trapClasses entirely in bytecode,
+// skipping excInstance's host round trip for the traps minipy classifies most
+// often; an unrecognized code still defers to the host for its message text.
+func (c *Compiler) emitTrapInstance(errSlot int) {
+	codeSlot := c.tmp()
+	c.emit(instr.GLOBAL_GET, uint64(errSlot))
+	c.emit(instr.ERROR_CODE)
+	c.emit(instr.GLOBAL_SET, uint64(codeSlot))
+
+	done := c.label()
+	fallback := c.label()
+	matched := make([]instr.Label, len(trapClasses))
+	for i, tc := range trapClasses {
+		matched[i] = c.label()
+		c.emit(instr.GLOBAL_GET, uint64(codeSlot))
+		c.emit(instr.I32_CONST, uint64(uint32(tc.code)))
+		c.emit(instr.I32_EQ)
+		c.brIf(matched[i])
+	}
+	c.br(fallback)
+	for i, tc := range trapClasses {
+		c.bind(matched[i])
+		c.emitTrapClassInstance(tc.class, tc.message)
+		c.br(done)
+	}
+	c.bind(fallback)
 	c.emit(instr.GLOBAL_GET, uint64(errSlot))
 	c.callHost(c.host.excInstance)
 	c.bind(done)
-	c.emit(instr.GLOBAL_SET, uint64(instSlot))
+}
+
+// emitTrapClassInstance builds an exception instance for a natively
+// classified trap. It shares excInstance's convention of allocating with
+// BaseException's struct type regardless of the target subclass: every
+// exception class inherits the same {classID, message} field layout, and
+// runtime dispatch (emitExceptionClassID) only ever inspects the classID
+// value, not the struct's nominal type.
+func (c *Compiler) emitTrapClassInstance(class, message string) {
+	info := c.classes[class]
+	c.emit(instr.STRUCT_NEW_DEFAULT, c.typeIndex(c.classes["BaseException"].typ))
+	c.emit(instr.DUP)
+	c.emit(instr.I32_CONST, 0)
+	c.emit(instr.I64_CONST, uint64(info.classID))
+	c.emit(instr.STRUCT_SET)
+	c.emit(instr.DUP)
+	c.emit(instr.I32_CONST, 1)
+	c.constGet(vmtypes.String(message))
+	c.emit(instr.STRUCT_SET)
 }
 
 func (c *Compiler) emitExceptionTest(instSlot int, typ ast.Expr, next instr.Label) {
@@ -569,6 +635,7 @@ func (c *Compiler) emitRaise(n *ast.Raise) {
 		if name, ok := call.Fn.(*ast.Name); ok {
 			if cls := c.classes[name.Name]; cls != nil && isExceptionInfo(cls) {
 				c.emitExceptionInstance(cls, call.Args)
+				c.emit(instr.I32_CONST, uint64(vmtypes.ErrorCodeNone))
 				c.emit(instr.ERROR_NEW)
 				c.emit(instr.THROW)
 				return
@@ -576,6 +643,7 @@ func (c *Compiler) emitRaise(n *ast.Raise) {
 		}
 	}
 	c.expr(n.Exc)
+	c.emit(instr.I32_CONST, uint64(vmtypes.ErrorCodeNone))
 	c.emit(instr.ERROR_NEW)
 	c.emit(instr.THROW)
 }
@@ -748,7 +816,7 @@ func (c *Compiler) emitSequenceTest(pat *ast.SequencePattern, slot int, typ type
 			c.emit(instr.ARRAY_LEN)
 			c.emit(instr.I32_CONST, uint64(suffix))
 			c.emit(instr.I32_SUB)
-			c.callHost(c.host.listSlice(s))
+			c.emit(instr.ARRAY_SLICE)
 			c.set(star.Name)
 		}
 	}
@@ -1460,7 +1528,8 @@ func (c *Compiler) listComp(x *ast.ListComp) {
 	c.comp(x.Clauses, func() {
 		c.emit(instr.GLOBAL_GET, uint64(slot))
 		c.expr(x.Elem)
-		c.callHostVoid(c.host.listAppend(t))
+		c.emit(instr.I32_CONST, 1)
+		c.emit(instr.ARRAY_APPEND)
 		c.emit(instr.DROP)
 	})
 	c.emit(instr.GLOBAL_GET, uint64(slot))
@@ -1747,7 +1816,7 @@ func (c *Compiler) emitBinary(op token.Type, lt, rt types.Type, emitL, emitR fun
 		if lt == types.Int {
 			c.emit(instr.I64_REM_S)
 		} else {
-			c.callHost(c.host.floatMod)
+			c.emit(instr.F64_MOD)
 		}
 	case token.DOUBLESTAR:
 		emitL()
@@ -2162,12 +2231,15 @@ func (c *Compiler) methodCall(x *ast.CallExpr, attr *ast.Attribute) {
 	case "items":
 		c.callHost(c.host.dictItems(recvType, c.types[x]))
 	case "append":
-		c.callHostVoid(c.host.listAppend(recvType))
+		c.emit(instr.I32_CONST, 1)
+		c.emit(instr.ARRAY_APPEND)
+		c.emit(instr.DROP)
+		c.emit(instr.REF_NULL)
 	case "pop":
 		if len(x.Args) == 0 {
 			c.emit(instr.I64_CONST, ^uint64(0))
 		}
-		c.callHost(c.host.listPop(recvType, c.types[x]))
+		c.emitArrayDelete()
 	case "upper":
 		c.callHost(c.host.strUpper)
 	case "lower":
@@ -2217,6 +2289,38 @@ func (c *Compiler) absInt(arg ast.Expr) {
 	c.emit(instr.SWAP)
 	c.emit(instr.I64_SUB)
 	c.bind(end)
+}
+
+// emitArrayDelete lowers `list, index(i64) -> removed`: it normalizes a
+// Python-style negative index (relative to the end) before the native
+// ARRAY_DELETE, which traps on an already non-negative out-of-range index.
+// Backs `del list[i]` and `list.pop(i)`.
+func (c *Compiler) emitArrayDelete() {
+	idxSlot := c.tmp()
+	listSlot := c.tmp()
+	c.emit(instr.GLOBAL_SET, uint64(idxSlot))
+	c.emit(instr.GLOBAL_SET, uint64(listSlot))
+
+	neg := c.label()
+	norm := c.label()
+	c.emit(instr.GLOBAL_GET, uint64(idxSlot))
+	c.emit(instr.I64_CONST, 0)
+	c.emit(instr.I64_LT_S)
+	c.brIf(neg)
+	c.br(norm)
+	c.bind(neg)
+	c.emit(instr.GLOBAL_GET, uint64(idxSlot))
+	c.emit(instr.GLOBAL_GET, uint64(listSlot))
+	c.emit(instr.ARRAY_LEN)
+	c.emit(instr.I32_TO_I64_S)
+	c.emit(instr.I64_ADD)
+	c.emit(instr.GLOBAL_SET, uint64(idxSlot))
+	c.bind(norm)
+
+	c.emit(instr.GLOBAL_GET, uint64(listSlot))
+	c.emit(instr.GLOBAL_GET, uint64(idxSlot))
+	c.emit(instr.I64_TO_I32)
+	c.emit(instr.ARRAY_DELETE)
 }
 
 // callHost emits a call to a value-returning host function.
