@@ -35,6 +35,7 @@ type parameter struct {
 type function struct {
 	name        string
 	params      []parameter
+	paramIndex  map[string]int
 	result      types.Type
 	inferResult bool         // return type is inferred from the body (no annotation)
 	returns     []types.Type // return expression types collected while inferring
@@ -59,6 +60,47 @@ type function struct {
 	astParams     []*ast.Param
 	instances     []*specialization
 	constIdx      int // VM constant index of this (specialized) function body
+}
+
+func newFunction(name string) *function {
+	return &function{
+		name:       name,
+		paramIndex: map[string]int{},
+		locals:     map[string]*local{},
+		children:   map[string]*function{},
+		captures:   map[string]*capture{},
+		globals:    map[string]bool{},
+		nonlocal:   map[string]bool{},
+	}
+}
+
+func (f *function) addParam(p parameter) {
+	if f.paramIndex == nil {
+		f.paramIndex = map[string]int{}
+	}
+	f.paramIndex[p.name] = len(f.params)
+	f.params = append(f.params, p)
+}
+
+func (f *function) setParams(params []parameter) {
+	f.params = params
+	f.paramIndex = make(map[string]int, len(params))
+	for i, p := range params {
+		f.paramIndex[p.name] = i
+	}
+}
+
+func (f *function) paramPosition(name string) (int, bool) {
+	if f.paramIndex != nil {
+		i, ok := f.paramIndex[name]
+		return i, ok
+	}
+	for i, p := range f.params {
+		if p.name == name {
+			return i, true
+		}
+	}
+	return 0, false
 }
 
 // specialization is one monomorphic instantiation of a specializable function:
@@ -1263,15 +1305,8 @@ func (c *checker) declareFuncs(body []ast.Stmt) {
 			c.errs.Add(f.Name.Pos(), token.TypeMismatch, "cannot redeclare %q as a function", f.Name.Name)
 			continue
 		}
-		info := &function{
-			name:      f.Name.Name,
-			generator: containsYield(f.Body),
-			locals:    map[string]*local{},
-			children:  map[string]*function{},
-			captures:  map[string]*capture{},
-			globals:   map[string]bool{},
-			nonlocal:  map[string]bool{},
-		}
+		info := newFunction(f.Name.Name)
+		info.generator = containsYield(f.Body)
 		if f.Returns == nil {
 			info.inferResult = true
 			info.result = types.None // refined from collected returns after the body
@@ -1279,7 +1314,7 @@ func (c *checker) declareFuncs(body []ast.Stmt) {
 			info.result = c.resolveType(f.Returns)
 		}
 		for _, p := range f.Params {
-			info.params = append(info.params, c.makeParam(p))
+			info.addParam(c.makeParam(p))
 		}
 		info.body = f.Body
 		info.astParams = f.Params
@@ -1544,18 +1579,12 @@ func (c *checker) classMethod(info *class, n *ast.Function) {
 			c.errs.Add(n.Returns.Pos(), token.TypeMismatch, "__init__ must return None, got %s", result)
 		}
 	}
-	info.methods[n.Name.Name] = &function{
-		name:        info.name + "." + n.Name.Name,
-		params:      params,
-		result:      result,
-		inferResult: inferResult,
-		generator:   containsYield(n.Body),
-		locals:      map[string]*local{},
-		children:    map[string]*function{},
-		captures:    map[string]*capture{},
-		globals:     map[string]bool{},
-		nonlocal:    map[string]bool{},
-	}
+	method := newFunction(info.name + "." + n.Name.Name)
+	method.setParams(params)
+	method.result = result
+	method.inferResult = inferResult
+	method.generator = containsYield(n.Body)
+	info.methods[n.Name.Name] = method
 	info.methodBody[n.Name.Name] = n.Body
 }
 
@@ -1601,16 +1630,9 @@ func (c *checker) nestedFuncs(info *function, body []ast.Stmt) {
 			c.errs.Add(f.Name.Pos(), token.TypeMismatch, "cannot redeclare function %q", f.Name.Name)
 			continue
 		}
-		child := &function{
-			name:      f.Name.Name,
-			generator: containsYield(f.Body),
-			locals:    map[string]*local{},
-			parent:    info,
-			children:  map[string]*function{},
-			captures:  map[string]*capture{},
-			globals:   map[string]bool{},
-			nonlocal:  map[string]bool{},
-		}
+		child := newFunction(f.Name.Name)
+		child.generator = containsYield(f.Body)
+		child.parent = info
 		c.checkParamFeatures(f.Params)
 		if f.Returns == nil {
 			child.inferResult = true
@@ -1619,7 +1641,7 @@ func (c *checker) nestedFuncs(info *function, body []ast.Stmt) {
 			child.result = c.resolveType(f.Returns)
 		}
 		for _, p := range f.Params {
-			child.params = append(child.params, c.makeParam(p))
+			child.addParam(c.makeParam(p))
 		}
 		info.children[f.Name.Name] = child
 		c.declareFuncLocal(child, f.Pos())
@@ -2050,20 +2072,13 @@ func (c *checker) specialize(info *function, argTypes []types.Type) *specializat
 		return nil
 	}
 
-	clone := &function{
-		name:        info.name + "$" + key,
-		params:      params,
-		inferResult: info.inferResult,
-		result:      info.result,
-		generator:   info.generator,
-		body:        info.body,
-		astParams:   info.astParams,
-		locals:      map[string]*local{},
-		children:    map[string]*function{},
-		captures:    map[string]*capture{},
-		globals:     map[string]bool{},
-		nonlocal:    map[string]bool{},
-	}
+	clone := newFunction(info.name + "$" + key)
+	clone.setParams(params)
+	clone.inferResult = info.inferResult
+	clone.result = info.result
+	clone.generator = info.generator
+	clone.body = info.body
+	clone.astParams = info.astParams
 	if clone.inferResult {
 		clone.result = types.None
 	}
@@ -2547,18 +2562,11 @@ func (c *checker) lambda(n *ast.LambdaExpr, hint types.Type) types.Type {
 		c.errs.Add(n.Pos(), token.ArityMismatch, "lambda expects %d parameter types, got %d", len(n.Params), len(callable.Params))
 		return types.Invalid
 	}
-	info := &function{
-		name:     "<lambda>",
-		result:   callable.Return,
-		locals:   map[string]*local{},
-		parent:   c.current,
-		children: map[string]*function{},
-		captures: map[string]*capture{},
-		globals:  map[string]bool{},
-		nonlocal: map[string]bool{},
-	}
+	info := newFunction("<lambda>")
+	info.result = callable.Return
+	info.parent = c.current
 	for i, p := range n.Params {
-		info.params = append(info.params, parameter{name: p.Name.Name, typ: callable.Params[i]})
+		info.addParam(parameter{name: p.Name.Name, typ: callable.Params[i]})
 		p.Ann = typeExpr(p.Pos(), callable.Params[i])
 	}
 	prev := c.current
@@ -2986,14 +2994,8 @@ func (c *checker) resolveFunctionArgs(n *ast.CallExpr, info *function) ([]ast.Ex
 		positional++
 	}
 	for _, kw := range n.Keywords {
-		idx := -1
-		for i, p := range info.params {
-			if p.name == kw.Name {
-				idx = i
-				break
-			}
-		}
-		if idx < 0 {
+		idx, ok := info.paramPosition(kw.Name)
+		if !ok {
 			c.errs.Add(kw.Pos(), token.ArityMismatch, "%s() got an unexpected keyword argument %q", info.name, kw.Name)
 			return nil, nil, false
 		}
@@ -3069,14 +3071,15 @@ func (c *checker) constructorArgs(n *ast.CallExpr, cls *class) ([]ast.Expr, []ty
 		}
 		return n.Args, argTypes, true
 	}
-	temp := &function{name: cls.name, params: params}
+	temp := newFunction(cls.name)
+	temp.setParams(params)
 	return c.resolveFunctionArgs(n, temp)
 }
 
 func (c *checker) resolveMethodArgs(n *ast.CallExpr, method *function) ([]ast.Expr, []types.Type, bool) {
 	trimmed := *method
 	if len(method.params) > 0 {
-		trimmed.params = method.params[1:]
+		trimmed.setParams(method.params[1:])
 	}
 	args, argTypes, ok := c.resolveFunctionArgs(n, &trimmed)
 	return args, argTypes, ok

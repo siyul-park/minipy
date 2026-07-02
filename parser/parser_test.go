@@ -501,6 +501,12 @@ finally:
 		require.IsType(t, &ast.Starred{}, assign.Target.(*ast.TupleLit).Elems[1])
 	})
 
+	t.Run("multiple double-star call arguments are diagnosed", func(t *testing.T) {
+		_, err := parse("f(**left, **right)\n")
+		require.Error(t, err)
+		hasCode(t, err, token.UnsupportedFeature)
+	})
+
 	t.Run("python 3.13 expression and class extras parse", func(t *testing.T) {
 		mod, err := parse("@pkg.decorator(1)\nclass C(A, B, metaclass=M):\n    pass\nx = (y := 1)\nz = (i for i in xs if i > 0)\nw = a @ b\nraise RuntimeError(\"x\") from cause\ntry:\n    pass\nexcept* ValueError as e:\n    pass\n")
 		require.NoError(t, err)

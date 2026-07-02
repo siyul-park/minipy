@@ -1503,8 +1503,14 @@ func (p *Parser) parseCall(callee ast.Expr) ast.Expr {
 			p.advance()
 			starArgs = append(starArgs, p.parseExpression())
 		case p.at(token.DOUBLESTAR):
+			pos := p.cur().Pos
 			p.advance()
-			kwargs = p.parseExpression()
+			value := p.parseExpression()
+			if kwargs != nil {
+				p.errs.Add(pos, token.UnsupportedFeature, "multiple double-star call arguments are not supported yet")
+			} else {
+				kwargs = value
+			}
 		case p.cur().Type == token.NAME && p.peek(1).Type == token.ASSIGN:
 			key := p.cur()
 			p.advance()

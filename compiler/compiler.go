@@ -2368,12 +2368,9 @@ func (c *Compiler) functionCallArgs(x *ast.CallExpr, info *function) []ast.Expr 
 		positional++
 	}
 	for _, kw := range x.Keywords {
-		for i, p := range info.params {
-			if p.name == kw.Name {
-				args[i] = kw.Value
-				seen[i] = true
-				break
-			}
+		if i, ok := info.paramPosition(kw.Name); ok {
+			args[i] = kw.Value
+			seen[i] = true
 		}
 	}
 	for i, p := range info.params {

@@ -15,7 +15,7 @@ comprehensions) and high-compatibility syntax that still needs runtime/type
 lowering (`*args`, `**kwargs`, dynamic starred calls, `**kwargs` calls, matrix
 multiply, decorator expressions, multiple class bases and class keywords,
 `yield` expressions, and `except*`). See
-[`../compat-python-3.13.md`](../compat-python-3.13.md) for the current
+[`../compatibility.md`](../compatibility.md) for the current
 feature-by-feature matrix.
 
 Each construct is tagged with the milestone that introduces it
