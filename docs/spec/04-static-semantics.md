@@ -145,6 +145,58 @@ Rules:
   u16 indices in module order; functions/strings/large constants go to the program
   constant pool referenced by `CONST_GET`.
 
+## Module semantics (M8)
+
+`Compile` accepts explicit module search roots through `WithModules(fs.FS)` and
+`WithModulePath(fs.FS, dirs...)`. No implicit search path is added by the compiler
+API. The CLI adds the script directory first, then every `--path/-p` entry; the
+REPL adds the current working directory plus `--path/-p`.
+
+Resolution follows CPython's import machinery. The loader runs an ordered finder
+chain (the `sys.meta_path` analog): a **builtin finder** (CPython's
+`BuiltinImporter`) that resolves native modules from the injected module registry,
+followed by a **path finder** (`PathFinder` + `FileFinder`) that walks the search
+roots. The first finder to locate a module wins, so native modules take precedence
+over same-named files. A located module is described by a spec (`ModuleSpec`
+analog) that a loader then realizes.
+
+- Top-level `a` first checks native modules registered by the compiler
+  (`builtins`, `operator`), then searches each path entry in order, preferring
+  `a/__init__.py` packages over `a.py` modules within the same entry.
+- Dotted imports resolve children only inside the already selected parent
+  package. If the parent is a plain module, the diagnostic is
+  `ModuleNotFound`.
+- `import a.b` loads parents first and binds the local name `a` unless `as` is
+  used; `from a import x` binds a symbol exported by `a`, or falls back to the
+  submodule `a.x`.
+- Relative imports anchor at the current package, or at the containing package
+  for plain modules. Going beyond the top level is `ImportError`; relative
+  imports from `__main__` are also `ImportError`.
+- Imports are allowed only at module top level. `from ... import *` is rejected
+  with `UnsupportedFeature`. Circular imports are rejected with `ImportError`.
+- Imported module objects are compile-time only. They may be used as attribute
+  receivers (`m.x`, `m.f()`, `m.C`) but are not first-class runtime values.
+
+Imported modules use qualified global keys (`pkg.mod.name`) in the flat VM global
+space; the entry module keeps bare keys for backward-compatible single-file
+programs. Native modules are injected into the compiler as a registry of modules
+(`builtins`, `operator`, and future stdlib), not hardcoded: `builtins` supplies
+builtin functions and the exception class hierarchy; `operator` supplies
+Python-style operator function names such as `add`, `floordiv`, `eq`, `not_`, and
+`contains`, and is the single source of the language's operator semantics. Native
+modules win over filesystem modules of the same name. Normal source definitions
+still shadow bare builtin fallback names inside their own module; explicit
+`import builtins` or `from builtins import print` reaches the native module.
+
+Source roots follow the pip site-packages layout: alongside import packages, a
+root may hold installed-distribution metadata directories
+`<distribution>-<version>.dist-info/` (each with at least `METADATA`, `WHEEL`, and
+`RECORD`). The loader indexes these to map top-level import names to
+distributions, honoring distribution-name-vs-import-name differences (for example
+the `Pillow` distribution providing the `PIL` import package). Import resolution
+itself remains file-based; `RECORD` hashes are informational and not enforced at
+import.
+
 ## Class semantics (M5)
 
 - Field order = declaration order = struct field index order; a subclass appends
@@ -163,6 +215,8 @@ Rules:
 | `MissingAnnotation` | binding inference cannot constrain (e.g. lambda without Callable context) |
 | `TypeMismatch` | assignment/operator/argument type conflict (incl. operating on an un-narrowed union) |
 | `InvalidUnionMember` | a union annotation member is not a valid type |
+| `ModuleNotFound` | imported module cannot be resolved |
+| `ImportError` | invalid import form after resolution (missing exported name, relative import error, circular import) |
 | `UndefinedName` | name not resolvable in any scope |
 | `UseBeforeDefinition` | local read before assignment on some path |
 | `PossiblyNone` | use of `Optional[T]` without a `None` guard |

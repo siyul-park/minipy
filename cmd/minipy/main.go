@@ -5,9 +5,11 @@ package main
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"github.com/spf13/cobra"
 
+	"github.com/siyul-park/minipy/compiler"
 	"github.com/siyul-park/minivm/optimize"
 )
 
@@ -22,6 +24,7 @@ func main() {
 // and otherwise starts the REPL; `run <file>` is the explicit file form.
 func newRootCmd() *cobra.Command {
 	var opt int
+	var paths []string
 
 	root := &cobra.Command{
 		Use:           "minipy [file]",
@@ -35,13 +38,15 @@ func newRootCmd() *cobra.Command {
 				return err
 			}
 			if len(args) == 0 {
-				return repl(cmd.InOrStdin(), cmd.OutOrStdout(), level)
+				return repl(cmd.InOrStdin(), cmd.OutOrStdout(), level, paths)
 			}
-			return runFile(args[0], cmd.OutOrStdout(), level)
+			return runFile(args[0], cmd.OutOrStdout(), level, paths)
 		},
 	}
 	root.PersistentFlags().IntVarP(&opt, "opt", "O", int(optimize.O0),
 		"optimization level (0..3); 3 enables global value numbering / CSE")
+	root.PersistentFlags().StringArrayVarP(&paths, "path", "p", nil,
+		"add a module search path")
 
 	root.AddCommand(&cobra.Command{
 		Use:           "run <file>",
@@ -54,11 +59,23 @@ func newRootCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return runFile(args[0], cmd.OutOrStdout(), level)
+			return runFile(args[0], cmd.OutOrStdout(), level, paths)
 		},
 	})
 
 	return root
+}
+
+func modulePathOptions(paths []string) []compiler.Option {
+	opts := make([]compiler.Option, 0, len(paths))
+	for _, p := range paths {
+		abs, err := filepath.Abs(p)
+		if err != nil {
+			abs = p
+		}
+		opts = append(opts, compiler.WithModules(os.DirFS(abs)))
+	}
+	return opts
 }
 
 func optLevel(opt int) (optimize.Level, error) {

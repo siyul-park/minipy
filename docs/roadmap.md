@@ -178,14 +178,26 @@ Status: complete.
 
 ## M8 — Modules & stdlib
 
-- **Grammar:** `import name`, `from name import x`; multi-file compilation.
-- **Types:** cross-module name resolution; typed module interfaces.
-- **Runtime:** a curated typed stdlib subset (`math`, `random`, string helpers)
-  exposed as host functions/modules; per-module global namespaces.
+- **Status:** module system complete; curated external stdlib modules remain
+  future library work. Native modules (`builtins`, `operator`) are injected as a
+  dependency-injected registry of independent packages behind narrow module
+  interfaces; the loader uses a CPython-style finder/loader chain with a pip
+  `.dist-info` distribution layer.
+- **Grammar:** `import name [as alias]`, dotted imports, `from name import x as y`,
+  relative imports, package `__init__.py`; `from ... import *` is explicitly
+  unsupported.
+- **Types:** cross-module name resolution over explicit `fs.FS` search roots;
+  per-module qualified globals; imported classes/functions/globals usable through
+  module attributes or from-import bindings; native `builtins` and `operator`
+  modules.
+- **Runtime:** imported module bodies inline once at first import point, parents
+  before children, preserving observable import order. The CLI adds the script
+  directory as `sys.path[0]` and supports repeatable `--path/-p`.
 - **Sample:**
   ```python
-  from math import sqrt
-  print(str(sqrt(2.0)))
+  import helper
+  from pkg.sub import value as v
+  print(str(helper.double(v)))
   ```
 
 ## M9 — Statement completeness & pattern matching

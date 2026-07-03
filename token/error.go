@@ -38,6 +38,8 @@ const (
 	NoBindingForNonlocal Code = "NoBindingForNonlocal"
 	PatternError         Code = "PatternError"
 	InvalidUnionMember   Code = "InvalidUnionMember"
+	ModuleNotFound       Code = "ModuleNotFound"
+	ImportError          Code = "ImportError"
 )
 
 // Python maps a catalogue code to the CPython exception name a user would see
@@ -52,6 +54,10 @@ func (c Code) Python() string {
 		return "TypeError"
 	case UndefinedName, UseBeforeDefinition, NoBindingForNonlocal:
 		return "NameError"
+	case ModuleNotFound:
+		return "ModuleNotFoundError"
+	case ImportError:
+		return "ImportError"
 	default:
 		return "Error"
 	}

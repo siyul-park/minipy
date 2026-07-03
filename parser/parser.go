@@ -1187,10 +1187,15 @@ func (p *Parser) parseTypeAtom() ast.Expr {
 		if t.Type == token.NONE {
 			name = "None"
 		}
-		node := &ast.Name{Base: ast.Base{Position: t.Pos}, Name: name}
+		var node ast.Expr = &ast.Name{Base: ast.Base{Position: t.Pos}, Name: name}
+		for p.at(token.DOT) && p.peek(1).Type == token.NAME {
+			p.advance()
+			part := p.expect(token.NAME)
+			node = &ast.Attribute{Base: ast.Base{Position: t.Pos}, X: node, Name: part.Literal}
+		}
 		if p.at(token.LBRACKET) {
 			if name == "Callable" {
-				return p.parseCallableType(node)
+				return p.parseCallableType(node.(*ast.Name))
 			}
 			p.advance()
 			var args []ast.Expr

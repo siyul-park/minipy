@@ -9,9 +9,8 @@ The compiler has two support tiers:
 | **Compiled** | Parsed, type-checked, and lowered to minivm. |
 | **Parse-only** | Parsed into AST, then rejected by checker/compiler with `UnsupportedFeature` until runtime support lands. |
 
-Parse-only coverage currently includes module/scheduler forms (`import`,
-`from import`, `async def`, `async for`, `async with`, `await`, async
-comprehensions) and high-compatibility syntax that still needs runtime/type
+Parse-only coverage currently includes scheduler forms (`async def`, `async for`,
+`async with`, `await`, async comprehensions) and high-compatibility syntax that still needs runtime/type
 lowering (`*args`, `**kwargs`, dynamic starred calls, `**kwargs` calls, matrix
 multiply, decorator expressions, multiple class bases and class keywords,
 `yield` expressions, and `except*`). See
@@ -76,6 +75,18 @@ del_stmt:      'del' del_targets                 # [M9]
 assert_stmt:   'assert' expression [',' expression] # [M9]
 del_targets:   del_target (',' del_target)* [',']
 del_target:    NAME | primary '.' NAME | primary '[' expression ']'
+
+import_stmt:
+    | 'import' dotted_as_names                         # [M8]
+    | 'from' ('.'* dotted_name | '.'+) 'import' import_from_targets # [M8]
+dotted_as_names: dotted_as_name (',' dotted_as_name)* [',']
+dotted_as_name:  dotted_name ['as' NAME]
+dotted_name:     NAME ('.' NAME)*
+import_from_targets:
+    | import_from_as_name (',' import_from_as_name)* [',']
+    | '(' import_from_as_name (',' import_from_as_name)* [','] ')'
+    | '*'
+import_from_as_name: NAME ['as' NAME]
 ```
 
 **Dropped from upstream `assignment`:** chained `a = b = c`, tuple/list
