@@ -179,7 +179,10 @@ Status: complete.
 ## M8 — Modules & stdlib
 
 - **Status:** module system complete; curated external stdlib modules remain
-  future library work.
+  future library work. Native modules (`builtins`, `operator`) are injected as a
+  dependency-injected registry of independent packages behind narrow module
+  interfaces; the loader uses a CPython-style finder/loader chain with a pip
+  `.dist-info` distribution layer.
 - **Grammar:** `import name [as alias]`, dotted imports, `from name import x as y`,
   relative imports, package `__init__.py`; `from ... import *` is explicitly
   unsupported.

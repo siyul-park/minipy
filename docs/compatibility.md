@@ -34,7 +34,7 @@ Status key:
 | `raise` statement | ✅ | `raise ... from ...` evaluates/checks cause but does not preserve chained traceback. |
 | `break` statement | ✅ |  |
 | `continue` statement | ✅ |  |
-| `import` statement | ✅ | Native modules (`builtins`, `operator`) and source modules load from explicit `fs.FS` search roots; packages, dotted imports, aliases, and circular-import diagnostics are supported. |
+| `import` statement | ✅ | Injected native modules (`builtins`, `operator`) and source modules resolve through a CPython-style finder chain (native wins) over explicit `fs.FS` search roots; packages, dotted imports, aliases, circular-import diagnostics, and pip `.dist-info` distribution metadata are supported. |
 | `from ... import ...` statement | ✅ | Supports symbols, submodules, aliases, and relative imports. `from ... import *` is rejected. |
 | `from __future__ import ...` statement | ◐ | Parsed as a normal import; no future-feature handling. |
 | `global` statement | ✅ |  |

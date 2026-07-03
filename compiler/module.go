@@ -43,6 +43,8 @@ type binding struct {
 
 type loader struct {
 	reg     *module.Registry
+	finders []finder
+	dist    *distIndex
 	paths   []searchEntry
 	modules map[string]*moduleInfo
 	stack   []string
@@ -58,21 +60,18 @@ func newLoader(reg *module.Registry, paths []searchEntry) *loader {
 		paths:   append([]searchEntry(nil), paths...),
 		modules: map[string]*moduleInfo{},
 	}
-	for _, mod := range reg.Modules() {
-		names := mod.Names()
-		bindings := make(map[string]binding, len(names))
-		for _, symbol := range names {
-			bindings[symbol] = binding{module: mod.Name(), symbol: symbol}
-		}
-		ld.modules[mod.Name()] = &moduleInfo{
-			name:     mod.Name(),
-			path:     "<" + mod.Name() + ">",
-			ast:      &ast.Module{},
-			native:   true,
-			bindings: bindings,
-		}
-	}
+	ld.dist = newDistIndex(ld.paths)
+	// Finder chain, the importlib sys.meta_path analog: native modules resolve
+	// first (CPython's BuiltinImporter), then source modules on the search roots
+	// (PathFinder), so native modules win over same-named files.
+	ld.finders = []finder{builtinFinder{}, pathFinder{}}
 	return ld
+}
+
+// distribution returns the installed distribution providing a top-level import
+// name, or false if none is installed on the search roots.
+func (ld *loader) distribution(importName string) (*distribution, bool) {
+	return ld.dist.distribution(importName)
 }
 
 func (ld *loader) loadEntry(mod *ast.Module) (*moduleInfo, map[string]*moduleInfo) {
@@ -98,16 +97,58 @@ func (ld *loader) loadModule(name string, pos token.Pos) *moduleInfo {
 		}
 		return m
 	}
-	m := ld.findModule(name, pos)
-	if m == nil {
+	var parent *moduleInfo
+	if i := strings.LastIndex(name, "."); i >= 0 {
+		parentName := name[:i]
+		parent = ld.loadModule(parentName, pos)
+		if parent == nil {
+			return nil
+		}
+		if !parent.isPackage {
+			ld.errs.Add(pos, token.ModuleNotFound, "no module named %q; %q is not a package", name, parentName)
+			return nil
+		}
+	}
+	sp, ok := ld.findSpec(name, parent)
+	if !ok {
+		ld.errs.Add(pos, token.ModuleNotFound, "no module named %q", name)
 		return nil
 	}
-	ld.modules[name] = m
-	ld.stack = append(ld.stack, name)
+	return ld.loadSpec(sp, pos)
+}
+
+// findSpec walks the finder chain, returning the first located spec (importlib
+// sys.meta_path semantics).
+func (ld *loader) findSpec(name string, parent *moduleInfo) (*moduleSpec, bool) {
+	for _, f := range ld.finders {
+		if sp, ok := f.findSpec(ld, name, parent); ok {
+			return sp, true
+		}
+	}
+	return nil, false
+}
+
+// loadSpec realizes a located spec into a moduleInfo, dispatching to the builtin
+// or source loader.
+func (ld *loader) loadSpec(sp *moduleSpec, pos token.Pos) *moduleInfo {
+	if sp.builtin {
+		return ld.loadBuiltin(sp.name)
+	}
+	m := &moduleInfo{
+		name:      sp.name,
+		path:      sp.origin,
+		isPackage: sp.isPackage,
+		parent:    sp.parent,
+		fsys:      sp.fsys,
+		dir:       sp.dir,
+		bindings:  map[string]binding{},
+	}
+	ld.modules[sp.name] = m
+	ld.stack = append(ld.stack, sp.name)
 	m.loading = true
-	src, err := fs.ReadFile(m.fsys, m.path)
+	src, err := fs.ReadFile(sp.fsys, sp.origin)
 	if err != nil {
-		ld.errs.Add(pos, token.ModuleNotFound, "no module named %q", name)
+		ld.errs.Add(pos, token.ModuleNotFound, "no module named %q", sp.name)
 		ld.stack = ld.stack[:len(ld.stack)-1]
 		m.loading = false
 		return nil
@@ -127,57 +168,98 @@ func (ld *loader) loadModule(name string, pos token.Pos) *moduleInfo {
 	return m
 }
 
-func (ld *loader) findModule(name string, pos token.Pos) *moduleInfo {
-	parts := strings.Split(name, ".")
-	if len(parts) == 1 {
-		for _, entry := range ld.paths {
-			if m := ld.findChild(entry.fsys, cleanDir(entry.dir), "", parts[0], name); m != nil {
-				return m
-			}
-		}
-		ld.errs.Add(pos, token.ModuleNotFound, "no module named %q", name)
+// loadBuiltin realizes a native module into a synthetic moduleInfo whose
+// bindings expose each registry symbol under its own name.
+func (ld *loader) loadBuiltin(name string) *moduleInfo {
+	mod, ok := ld.reg.Module(name)
+	if !ok {
 		return nil
 	}
-	parentName := strings.Join(parts[:len(parts)-1], ".")
-	parent := ld.loadModule(parentName, pos)
-	if parent == nil {
-		return nil
+	names := mod.Names()
+	bindings := make(map[string]binding, len(names))
+	for _, symbol := range names {
+		bindings[symbol] = binding{module: name, symbol: symbol}
 	}
-	if !parent.isPackage {
-		ld.errs.Add(pos, token.ModuleNotFound, "no module named %q; %q is not a package", name, parentName)
-		return nil
+	m := &moduleInfo{
+		name:     name,
+		path:     "<" + name + ">",
+		ast:      &ast.Module{},
+		native:   true,
+		bindings: bindings,
 	}
-	child := parts[len(parts)-1]
-	if m := ld.findChild(parent.fsys, parent.dir, parentName, child, name); m != nil {
-		return m
-	}
-	ld.errs.Add(pos, token.ModuleNotFound, "no module named %q", name)
-	return nil
+	ld.modules[name] = m
+	return m
 }
 
-func (ld *loader) findChild(fsys fs.FS, dir, parent, child, name string) *moduleInfo {
+// moduleSpec is a located, not-yet-loaded module description (importlib
+// ModuleSpec analog).
+type moduleSpec struct {
+	name      string
+	origin    string
+	fsys      fs.FS
+	dir       string
+	isPackage bool
+	parent    string
+	builtin   bool
+}
+
+// finder locates a spec for a fully-qualified module name. parent is the
+// already-loaded parent package for submodule resolution, or nil for a
+// top-level import (importlib MetaPathFinder analog).
+type finder interface {
+	findSpec(ld *loader, name string, parent *moduleInfo) (*moduleSpec, bool)
+}
+
+// builtinFinder resolves native modules from the registry: CPython's
+// BuiltinImporter analog, top-level only and highest precedence.
+type builtinFinder struct{}
+
+func (builtinFinder) findSpec(ld *loader, name string, parent *moduleInfo) (*moduleSpec, bool) {
+	if parent != nil || !ld.reg.Has(name) {
+		return nil, false
+	}
+	return &moduleSpec{name: name, origin: "<" + name + ">", builtin: true}, true
+}
+
+// pathFinder resolves source modules on the search roots, preferring
+// __init__.py packages over plain modules: CPython's PathFinder + FileFinder
+// with a SourceFileLoader.
+type pathFinder struct{}
+
+func (pathFinder) findSpec(ld *loader, name string, parent *moduleInfo) (*moduleSpec, bool) {
+	child := name
+	if i := strings.LastIndex(name, "."); i >= 0 {
+		child = name[i+1:]
+	}
+	if parent != nil {
+		if sp := findOnPath(parent.fsys, parent.dir, name, child); sp != nil {
+			sp.parent = parent.name
+			return sp, true
+		}
+		return nil, false
+	}
+	for _, entry := range ld.paths {
+		if sp := findOnPath(entry.fsys, cleanDir(entry.dir), name, child); sp != nil {
+			return sp, true
+		}
+	}
+	return nil, false
+}
+
+func findOnPath(fsys fs.FS, dir, name, child string) *moduleSpec {
 	pkgInit := path.Join(dir, child, "__init__.py")
 	if readable(fsys, pkgInit) {
-		return &moduleInfo{
+		return &moduleSpec{
 			name:      name,
-			path:      pkgInit,
-			isPackage: true,
-			parent:    parent,
+			origin:    pkgInit,
 			fsys:      fsys,
 			dir:       path.Join(dir, child),
-			bindings:  map[string]binding{},
+			isPackage: true,
 		}
 	}
 	file := path.Join(dir, child+".py")
 	if readable(fsys, file) {
-		return &moduleInfo{
-			name:     name,
-			path:     file,
-			parent:   parent,
-			fsys:     fsys,
-			dir:      dir,
-			bindings: map[string]binding{},
-		}
+		return &moduleSpec{name: name, origin: file, fsys: fsys, dir: dir}
 	}
 	return nil
 }

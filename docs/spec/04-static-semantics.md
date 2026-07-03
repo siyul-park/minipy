@@ -152,8 +152,13 @@ Rules:
 API. The CLI adds the script directory first, then every `--path/-p` entry; the
 REPL adds the current working directory plus `--path/-p`.
 
-Resolution follows CPython-style native/source modules over the injected
-filesystems:
+Resolution follows CPython's import machinery. The loader runs an ordered finder
+chain (the `sys.meta_path` analog): a **builtin finder** (CPython's
+`BuiltinImporter`) that resolves native modules from the injected module registry,
+followed by a **path finder** (`PathFinder` + `FileFinder`) that walks the search
+roots. The first finder to locate a module wins, so native modules take precedence
+over same-named files. A located module is described by a spec (`ModuleSpec`
+analog) that a loader then realizes.
 
 - Top-level `a` first checks native modules registered by the compiler
   (`builtins`, `operator`), then searches each path entry in order, preferring
@@ -174,13 +179,23 @@ filesystems:
 
 Imported modules use qualified global keys (`pkg.mod.name`) in the flat VM global
 space; the entry module keeps bare keys for backward-compatible single-file
-programs. Native modules are synthetic module entries with typed native
-functions. `builtins` supplies builtin functions and exception classes;
-`operator` supplies Python-style operator function names such as `add`,
-`floordiv`, `eq`, `not_`, and `contains`. Native modules win over filesystem
-modules of the same name. Normal source definitions still shadow bare builtin
-fallback names inside their own module; explicit `import builtins` or
-`from builtins import print` reaches the native module.
+programs. Native modules are injected into the compiler as a registry of modules
+(`builtins`, `operator`, and future stdlib), not hardcoded: `builtins` supplies
+builtin functions and the exception class hierarchy; `operator` supplies
+Python-style operator function names such as `add`, `floordiv`, `eq`, `not_`, and
+`contains`, and is the single source of the language's operator semantics. Native
+modules win over filesystem modules of the same name. Normal source definitions
+still shadow bare builtin fallback names inside their own module; explicit
+`import builtins` or `from builtins import print` reaches the native module.
+
+Source roots follow the pip site-packages layout: alongside import packages, a
+root may hold installed-distribution metadata directories
+`<distribution>-<version>.dist-info/` (each with at least `METADATA`, `WHEEL`, and
+`RECORD`). The loader indexes these to map top-level import names to
+distributions, honoring distribution-name-vs-import-name differences (for example
+the `Pillow` distribution providing the `PIL` import package). Import resolution
+itself remains file-based; `RECORD` hashes are informational and not enforced at
+import.
 
 ## Class semantics (M5)
 

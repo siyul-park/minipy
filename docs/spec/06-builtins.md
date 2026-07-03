@@ -5,10 +5,29 @@ minipy ships small typed native modules. Each native function is either
 builtin lookup is a fallback to the native `builtins` module, so
 `import builtins; builtins.print(x)` and `from builtins import print as p` use the
 same lowering as bare `print(x)`. The `operator` native module exposes Python's
-operator-function names (`add`, `floordiv`, `eq`, `not_`, `contains`, ...).
-Internally, a native module is a synthetic module entry plus a symbol table whose
-exports map to `minivm/types.Value`; inline-only symbols use a native intrinsic
-marker while host-backed symbols store the `interp.HostFunction` value.
+operator-function names (`add`, `floordiv`, `eq`, `not_`, `contains`, ...) and
+owns the language's operator semantics: `a + b`, `==`, `in`, and unary operators
+route through the same code as `operator.add(a, b)`.
+
+## Architecture
+
+Native modules live in their own packages behind a small interface set in the
+`module` package, so they never depend on compiler internals and the Go compiler
+enforces their independence:
+
+- **`module`** defines `Module`/`Symbol` and the narrow `Checker`/`Emitter`/`Runtime`
+  boundary interfaces a symbol uses for type-checking, code generation, and its
+  runtime value, plus a dependency-injected `Registry` (no global state).
+- **`builtins`** implements the `builtins` module (standard functions + the
+  exception hierarchy). **`operator`** implements the `operator` module and the
+  shared operator type rules and lowerings. The two never reference each other.
+- **`hostabi`** holds the shared host↔VM helpers both use.
+- The compiler injects the registry and implements the boundary interfaces;
+  `builtins` is the fallback module for unqualified names.
+
+Internally, a native module is a module entry plus a symbol table whose exports
+map to `minivm/types.Value`; inline-only symbols use a native intrinsic marker
+while host-backed symbols store the `interp.HostFunction` value.
 
 ## Binding strategies
 
