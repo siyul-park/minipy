@@ -64,6 +64,12 @@ type Callable struct {
 	Return Type
 }
 
+// Module is a compile-time-only imported module object. It is not a first-class
+// runtime value; the checker permits it only as the receiver of attribute access.
+type Module struct {
+	Name string
+}
+
 // Union is a closed disjunction of member types (`A | B`). It is always kept
 // normalized (flattened, deduped, sorted) by NewUnion, so two unions with the
 // same members compare Equal. Optional[T] is the special case Union{T, None}.
@@ -127,6 +133,11 @@ func NewIterator(elem Type) Type {
 // NewCallable returns the callable type with the given parameter and return types.
 func NewCallable(params []Type, result Type) Type {
 	return &Callable{Params: append([]Type(nil), params...), Return: result}
+}
+
+// NewModule returns the compile-time module type for a canonical module name.
+func NewModule(name string) Type {
+	return &Module{Name: name}
 }
 
 // NewUnion returns the normalized union of the given members. Nested unions are
@@ -531,6 +542,21 @@ func (t *Callable) Equal(o Type) bool {
 	return true
 }
 
+func (t *Module) String() string {
+	if t == nil || t.Name == "" {
+		return "<module>"
+	}
+	return "module " + t.Name
+}
+func (*Module) IsNumeric() bool { return false }
+func (*Module) VM() vmtypes.Type {
+	return vmtypes.TypeRef
+}
+func (t *Module) Equal(o Type) bool {
+	other, ok := o.(*Module)
+	return ok && t.Name == other.Name
+}
+
 func (t *Union) String() string {
 	if t == nil || len(t.Members) == 0 {
 		return "<invalid>"
@@ -593,5 +619,6 @@ func (*Tuple) sealed()    {}
 func (*Class) sealed()    {}
 func (*Iterator) sealed() {}
 func (*Callable) sealed() {}
+func (*Module) sealed()   {}
 func (*Union) sealed()    {}
 func (*TypeVar) sealed()  {}

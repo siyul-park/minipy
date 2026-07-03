@@ -6,13 +6,19 @@ package compiler
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"math"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/siyul-park/minipy/ast"
+	"github.com/siyul-park/minipy/hostabi"
+	"github.com/siyul-park/minipy/module"
+	"github.com/siyul-park/minipy/operator"
 	"github.com/siyul-park/minipy/parser"
 	"github.com/siyul-park/minipy/token"
 	"github.com/siyul-park/minipy/types"
@@ -31,34 +37,42 @@ type Option func(*config)
 type config struct {
 	out   io.Writer
 	level optimize.Level
+	paths []searchEntry
+	reg   *module.Registry
 }
 
 // Compiler turns minipy source into a runnable minivm program. It mirrors the
 // package-level Compile convenience function while keeping options reusable for
 // one source stream.
 type Compiler struct {
-	src       []byte
-	err       error
-	config    config
-	prog      *program.Builder
-	code      target
-	types     map[ast.Expr]types.Type
-	globals   map[string]*global
-	functions map[string]*function
-	classes   map[string]*class
-	lambdas   map[*ast.LambdaExpr]*function
-	callSpec  map[*ast.CallExpr]*specialization
-	callArgs  map[*ast.CallExpr][]ast.Expr
-	locals    map[string]*local
-	current   *function
-	temps     map[string]int
-	host      *host
-	consts    map[*interp.HostFunction]int
-	loops     []loopLabels // enclosing-loop branch targets, innermost last
-	finally   []finallyFrame
-	excepts   []int
-	next      int
-	boxed     map[*local]bool
+	src        []byte
+	err        error
+	config     config
+	prog       *program.Builder
+	code       target
+	types      map[ast.Expr]types.Type
+	globals    map[string]*global
+	functions  map[string]*function
+	classes    map[string]*class
+	modules    map[string]*moduleInfo
+	mod        *moduleInfo
+	attrSym    map[*ast.Attribute]string
+	attrMod    map[*ast.Attribute]string
+	attrNative map[*ast.Attribute]module.Symbol
+	reg        *module.Registry
+	lambdas    map[*ast.LambdaExpr]*function
+	callSpec   map[*ast.CallExpr]*specialization
+	callArgs   map[*ast.CallExpr][]ast.Expr
+	locals     map[string]*local
+	current    *function
+	temps      map[string]int
+	native     *nativeRuntime
+	consts     map[*interp.HostFunction]int
+	loops      []loopLabels // enclosing-loop branch targets, innermost last
+	finally    []finallyFrame
+	excepts    []int
+	next       int
+	boxed      map[*local]bool
 }
 
 // loopLabels are the branch targets for the loop currently being lowered: cont
@@ -116,6 +130,23 @@ func WithOptimizationLevel(level optimize.Level) Option {
 	return func(c *config) { c.level = level }
 }
 
+// WithModules adds one sys.path-style module search root.
+func WithModules(fsys fs.FS) Option {
+	return func(c *config) { c.paths = append(c.paths, searchEntry{fsys: fsys, dir: "."}) }
+}
+
+// WithModulePath adds directories inside fsys as ordered module search roots.
+func WithModulePath(fsys fs.FS, dirs ...string) Option {
+	return func(c *config) {
+		if len(dirs) == 0 {
+			dirs = []string{"."}
+		}
+		for _, dir := range dirs {
+			c.paths = append(c.paths, searchEntry{fsys: fsys, dir: cleanDir(dir)})
+		}
+	}
+}
+
 // New returns a Compiler over source read from r.
 func New(r io.Reader, opts ...Option) *Compiler {
 	config := defaultConfig()
@@ -132,25 +163,31 @@ func New(r io.Reader, opts ...Option) *Compiler {
 }
 
 func defaultConfig() config {
-	return config{out: os.Stdout, level: optimize.O0}
+	return config{out: os.Stdout, level: optimize.O0, reg: defaultRegistry()}
 }
 
 // init resets per-compile lowering state. Compiler is reusable; each
-// Compile call gets a fresh builder, symbol tables, loop stack, and host cache.
-func (c *Compiler) init(b *program.Builder, check *checker, host *host) {
+// Compile call gets a fresh builder, symbol tables, loop stack, and native cache.
+func (c *Compiler) init(b *program.Builder, check *checker, native *nativeRuntime) {
 	c.prog = b
 	c.code = mainTarget(b)
 	c.types = check.types
 	c.globals = check.globals
 	c.functions = check.functions
 	c.classes = check.classes
+	c.modules = check.modules
+	c.mod = check.mod
+	c.attrSym = check.attrSym
+	c.attrMod = check.attrMod
+	c.attrNative = check.attrNative
+	c.reg = check.reg
 	c.lambdas = check.lambdas
 	c.callSpec = check.callSpec
 	c.callArgs = check.callArgs
 	c.locals = nil
 	c.current = nil
 	c.temps = map[string]int{}
-	c.host = host
+	c.native = native
 	c.consts = map[*interp.HostFunction]int{}
 	c.loops = nil
 	c.finally = nil
@@ -211,22 +248,25 @@ func (c *Compiler) Compile() (*program.Program, error) {
 	}
 	mod, parseErr := parser.Parse(bytes.NewReader(c.src))
 
-	chk := newChecker()
-	chk.check(mod)
+	ld := newLoader(c.config.reg, c.config.paths)
+	entry, _ := ld.loadEntry(mod)
+	chk := newChecker(ld)
+	chk.checkProgram(entry)
 
 	var errs token.ErrorList
 	if pl, ok := parseErr.(token.ErrorList); ok {
 		errs = append(errs, pl...)
 	}
+	errs = append(errs, ld.errs...)
 	errs = append(errs, chk.errs...)
 	if err := errs.Err(); err != nil {
 		return nil, err
 	}
 
-	host := newHost(c.config.out, chk.classes)
+	native := newNativeRuntime(c.config.reg, c.config.out)
 	b := program.NewBuilder()
-	c.init(b, chk, host)
-	c.module(mod)
+	c.init(b, chk, native)
+	c.module(entry)
 
 	prog, err := b.Build()
 	if err != nil {
@@ -252,10 +292,21 @@ func (c *Compiler) Compile() (*program.Program, error) {
 // trailing NOP gives any control-flow merge label bound at the very end a valid
 // landing instruction — branch targets must stay within the code (analysis
 // rejects a jump to len(code)).
-func (c *Compiler) module(mod *ast.Module) {
+func (c *Compiler) module(mod *moduleInfo) {
 	c.buildCallSpecs(c.callSpec)
-	c.block(mod.Body)
+	c.emitModule(mod)
 	c.emit(instr.NOP)
+}
+
+func (c *Compiler) emitModule(mod *moduleInfo) {
+	if mod == nil || mod.emitted || mod.native {
+		return
+	}
+	mod.emitted = true
+	prev := c.mod
+	c.mod = mod
+	c.block(mod.ast.Body)
+	c.mod = prev
 }
 
 // block lowers a statement sequence (a module body or a compound block).
@@ -315,6 +366,10 @@ func (c *Compiler) stmt(s ast.Stmt) {
 		c.functionStmt(n)
 	case *ast.Class:
 		c.classStmt(n)
+	case *ast.Import:
+		c.importStmt(n)
+	case *ast.ImportFrom:
+		c.importFromStmt(n)
 	case *ast.Global, *ast.Nonlocal, *ast.TypeAlias:
 		// scope declarations affect checking only
 	case *ast.Return:
@@ -342,6 +397,62 @@ func (c *Compiler) stmt(s ast.Stmt) {
 	case *ast.With:
 		c.emitWith(n)
 	}
+}
+
+func (c *Compiler) importStmt(n *ast.Import) {
+	for _, a := range n.Names {
+		c.emitImportChain(a.Name)
+	}
+}
+
+func (c *Compiler) importFromStmt(n *ast.ImportFrom) {
+	base := c.resolveFrom(n)
+	if base == "" {
+		return
+	}
+	c.emitImportChain(base)
+	for _, a := range n.Names {
+		if a.Name == "*" {
+			continue
+		}
+		if sub := c.modules[base+"."+a.Name]; sub != nil {
+			c.emitImportChain(sub.name)
+		}
+	}
+}
+
+func (c *Compiler) emitImportChain(name string) {
+	parts := strings.Split(name, ".")
+	for i := range parts {
+		m := c.modules[strings.Join(parts[:i+1], ".")]
+		c.emitModule(m)
+	}
+}
+
+func (c *Compiler) resolveFrom(n *ast.ImportFrom) string {
+	if n.Level == 0 {
+		return n.Module
+	}
+	if c.mod == nil || c.mod.name == "__main__" {
+		return ""
+	}
+	anchor := c.mod.name
+	if !c.mod.isPackage {
+		anchor = c.mod.parent
+	}
+	parts := strings.Split(anchor, ".")
+	up := n.Level - 1
+	if up > len(parts)-1 {
+		return ""
+	}
+	base := strings.Join(parts[:len(parts)-up], ".")
+	if n.Module != "" {
+		if base == "" {
+			return n.Module
+		}
+		return base + "." + n.Module
+	}
+	return base
 }
 
 // deleteStmt lowers `del`. A deleted name is overwritten with minivm's
@@ -584,7 +695,7 @@ func (c *Compiler) emitTrapInstance(errSlot int) {
 	}
 	c.bind(fallback)
 	c.emit(instr.GLOBAL_GET, uint64(errSlot))
-	c.callHost(c.host.excInstance)
+	c.callHost(c.exc())
 	c.bind(done)
 }
 
@@ -608,8 +719,7 @@ func (c *Compiler) emitTrapClassInstance(class, message string) {
 }
 
 func (c *Compiler) emitExceptionTest(instSlot int, typ ast.Expr, next instr.Label) {
-	name := typ.(*ast.Name).Name
-	info := c.classes[name]
+	info := c.classForExpr(typ)
 	c.emitExceptionClassID(instSlot)
 	c.emit(instr.I64_CONST, uint64(info.low))
 	c.emit(instr.I64_GE_S)
@@ -619,6 +729,18 @@ func (c *Compiler) emitExceptionTest(instSlot int, typ ast.Expr, next instr.Labe
 	c.emit(instr.I32_AND)
 	c.emit(instr.I32_EQZ)
 	c.brIf(next)
+}
+
+func (c *Compiler) classForExpr(e ast.Expr) *class {
+	switch x := e.(type) {
+	case *ast.Name:
+		return c.classes[c.symbol(x.Name)]
+	case *ast.Attribute:
+		if key := c.attrSym[x]; key != "" {
+			return c.classes[key]
+		}
+	}
+	return nil
 }
 
 func (c *Compiler) emitExceptionClassID(instSlot int) {
@@ -639,7 +761,15 @@ func (c *Compiler) emitRaise(n *ast.Raise) {
 	}
 	if call, ok := n.Exc.(*ast.CallExpr); ok {
 		if name, ok := call.Fn.(*ast.Name); ok {
-			if cls := c.classes[name.Name]; cls != nil && isException(cls) {
+			if cls := c.classes[c.symbol(name.Name)]; cls != nil && isException(cls) {
+				c.emitExceptionInstance(cls, call.Args)
+				c.emit(instr.I32_CONST, uint64(vmtypes.ErrorCodeNone))
+				c.emit(instr.ERROR_NEW)
+				c.emit(instr.THROW)
+				return
+			}
+		} else if attr, ok := call.Fn.(*ast.Attribute); ok {
+			if cls := c.classes[c.attrSym[attr]]; cls != nil && isException(cls) {
 				c.emitExceptionInstance(cls, call.Args)
 				c.emit(instr.I32_CONST, uint64(vmtypes.ErrorCodeNone))
 				c.emit(instr.ERROR_NEW)
@@ -739,7 +869,7 @@ func (c *Compiler) emitPatternTest(p ast.Pattern, slot int, typ types.Type, next
 	case *ast.ValuePattern:
 		c.emit(instr.GLOBAL_GET, uint64(slot))
 		c.expr(pat.Value)
-		c.emit(cmpOpcode(token.EQ, typ))
+		c.emit(operator.CmpOpcode(token.EQ, typ))
 		c.emit(instr.I32_EQZ)
 		c.brIf(next)
 	case *ast.SequencePattern:
@@ -857,7 +987,7 @@ func (c *Compiler) emitMappingTest(pat *ast.MappingPattern, slot int, typ types.
 		c.emit(instr.GLOBAL_SET, uint64(keysSlot))
 		c.emit(instr.GLOBAL_GET, uint64(slot))
 		c.emit(instr.GLOBAL_GET, uint64(keysSlot))
-		c.callHost(c.host.dictRest(d))
+		c.callHost(c.dictRest(d))
 		c.set(pat.Rest)
 	}
 }
@@ -896,6 +1026,11 @@ func (c *Compiler) assignTarget(target ast.Expr, value ast.Expr) {
 	case *ast.TupleLit:
 		c.unpackAssign(t, value)
 	case *ast.Attribute:
+		if key := c.attrSym[t]; key != "" {
+			c.expr(value)
+			c.emit(instr.GLOBAL_SET, uint64(c.globals[key].index))
+			return
+		}
 		c.expr(t.X)
 		c.emit(instr.I32_CONST, uint64(c.fieldIndex(t)))
 		c.expr(value)
@@ -907,6 +1042,13 @@ func (c *Compiler) assignTarget(target ast.Expr, value ast.Expr) {
 
 func (c *Compiler) augAssignAttribute(n *ast.AugAssign) {
 	attr := n.Target.(*ast.Attribute)
+	if key := c.attrSym[attr]; key != "" {
+		c.emitBinary(n.Op, c.types[attr], c.types[n.Value],
+			func() { c.emit(instr.GLOBAL_GET, uint64(c.globals[key].index)) },
+			func() { c.expr(n.Value) })
+		c.emit(instr.GLOBAL_SET, uint64(c.globals[key].index))
+		return
+	}
 	c.emitBinary(n.Op, c.types[attr], c.types[n.Value],
 		func() { c.attribute(attr) },
 		func() { c.expr(n.Value) })
@@ -961,7 +1103,7 @@ func (c *Compiler) unpackAssignStar(target *ast.TupleLit, value ast.Expr, valueS
 				c.emit(instr.I64_CONST, uint64(suffix))
 				c.emit(instr.I64_SUB)
 				c.emit(instr.I64_CONST, 1)
-				c.callHost(c.host.listSlice(c.types[value]))
+				c.callHost(c.listSlice(c.types[value]))
 				c.set(name.Name)
 				continue
 			}
@@ -1059,7 +1201,7 @@ func (c *Compiler) get(name string) {
 			return
 		}
 	}
-	c.emit(instr.GLOBAL_GET, uint64(c.globals[name].index))
+	c.emit(instr.GLOBAL_GET, uint64(c.globals[c.symbol(name)].index))
 }
 
 func (c *Compiler) set(name string) {
@@ -1097,7 +1239,40 @@ func (c *Compiler) set(name string) {
 			return
 		}
 	}
-	c.emit(instr.GLOBAL_SET, uint64(c.globals[name].index))
+	c.emit(instr.GLOBAL_SET, uint64(c.globals[c.symbol(name)].index))
+}
+
+func (c *Compiler) symbol(name string) string {
+	if c.mod != nil {
+		if b, ok := c.mod.bindings[name]; ok && b.symbol != "" {
+			return moduleKey(b.module, b.symbol)
+		}
+		if c.mod.name != "__main__" {
+			key := c.mod.name + "." + name
+			if _, ok := c.globals[key]; ok {
+				return key
+			}
+			if _, ok := c.functions[key]; ok {
+				return key
+			}
+			if _, ok := c.classes[key]; ok {
+				return key
+			}
+		}
+	}
+	if _, ok := c.globals[name]; ok {
+		return name
+	}
+	if _, ok := c.functions[name]; ok {
+		return name
+	}
+	if _, ok := c.classes[name]; ok {
+		return name
+	}
+	if _, ok := c.reg.FallbackSymbol(name); ok {
+		return c.reg.FallbackName() + "." + name
+	}
+	return name
 }
 
 // narrowCast unboxes a ref-backed binding (union/Any) to the concrete type the
@@ -1139,7 +1314,7 @@ func (c *Compiler) typ(name string) types.Type {
 			return cap.typ
 		}
 	}
-	return c.globals[name].typ
+	return c.globals[c.symbol(name)].typ
 }
 
 // emitIf lowers `if`/`elif`/`else`: invert the condition and branch over the
@@ -1250,7 +1425,7 @@ func (c *Compiler) iterate(expr ast.Expr, typ types.Type) {
 		c.emit(instr.MAP_ITER)
 	default:
 		if types.Equal(typ, types.Str) {
-			c.callHost(c.host.strIter())
+			c.callHost(c.strIter())
 		}
 	}
 }
@@ -1357,6 +1532,7 @@ func (c *Compiler) buildSpec(spec *specialization) {
 	child := *c
 	child.code = fnTarget(fb)
 	child.current = info
+	child.mod = info.mod
 	child.locals = info.locals
 	child.types = spec.types
 	child.callSpec = spec.calls
@@ -1391,7 +1567,7 @@ func (c *Compiler) function(n *ast.Function) *function {
 	if c.current != nil {
 		return c.current.children[n.Name.Name]
 	}
-	return c.functions[n.Name.Name]
+	return c.functions[c.symbol(n.Name.Name)]
 }
 
 func (c *Compiler) funcValue(info *function, body []ast.Stmt) {
@@ -1405,6 +1581,7 @@ func (c *Compiler) funcValue(info *function, body []ast.Stmt) {
 	child := *c
 	child.code = fnTarget(fb)
 	child.current = info
+	child.mod = info.mod
 	child.locals = info.locals
 	child.loops = nil
 	child.finally = nil
@@ -1593,7 +1770,7 @@ func (c *Compiler) listLit(x *ast.ListLit) {
 				}
 				c.emit(instr.GLOBAL_GET, uint64(slot))
 				c.expr(star.X)
-				c.callHost(c.host.listExtend(c.types[x]))
+				c.callHost(c.listExtend(c.types[x]))
 				c.emit(instr.GLOBAL_SET, uint64(slot))
 				continue
 			}
@@ -1623,7 +1800,7 @@ func (c *Compiler) dictLit(x *ast.DictLit) {
 			if star, ok := x.Keys[i].(*ast.Starred); ok && x.Values[i] == nil {
 				c.emit(instr.GLOBAL_GET, uint64(slot))
 				c.expr(star.X)
-				c.callHost(c.host.dictMerge(c.types[x]))
+				c.callHost(c.dictMerge(c.types[x]))
 				c.emit(instr.GLOBAL_SET, uint64(slot))
 				continue
 			}
@@ -1694,7 +1871,7 @@ func (c *Compiler) setLit(x *ast.SetLit) {
 			if star, ok := elem.(*ast.Starred); ok {
 				c.emit(instr.GLOBAL_GET, uint64(slot))
 				c.expr(star.X)
-				c.callHost(c.host.dictMerge(c.types[x]))
+				c.callHost(c.dictMerge(c.types[x]))
 				c.emit(instr.GLOBAL_SET, uint64(slot))
 				continue
 			}
@@ -1775,7 +1952,7 @@ func (c *Compiler) generatorExp(x *ast.GeneratorExp) {
 		c.appendListSlot(slot, func() { c.expr(x.Elem) })
 	})
 	c.emit(instr.GLOBAL_GET, uint64(slot))
-	c.callHost(c.host.listIter(listType))
+	c.callHost(c.listIter(listType))
 }
 
 func (c *Compiler) comp(clauses []*ast.Comprehension, body func()) {
@@ -1917,9 +2094,9 @@ func (c *Compiler) slice(x *ast.Subscript, s *ast.Slice) {
 	c.sliceBound(s.Step)
 	switch c.types[x.X].(type) {
 	case *types.List:
-		c.callHost(c.host.listSlice(c.types[x.X]))
+		c.callHost(c.listSlice(c.types[x.X]))
 	default:
-		c.callHost(c.host.strSlice)
+		c.callHost(c.strSlice())
 	}
 }
 
@@ -1933,10 +2110,17 @@ func (c *Compiler) sliceBound(x ast.Expr) {
 
 func (c *Compiler) callStringIndex(x *ast.Subscript) {
 	// Stack already has string and index; helper returns a one-codepoint string.
-	c.callHost(c.host.strIndex)
+	c.callHost(c.strIndex())
 }
 
 func (c *Compiler) attribute(x *ast.Attribute) {
+	if key, ok := c.attrSym[x]; ok {
+		c.emit(instr.GLOBAL_GET, uint64(c.globals[key].index))
+		return
+	}
+	if _, ok := c.attrMod[x]; ok {
+		return
+	}
 	c.expr(x.X)
 	c.emit(instr.I32_CONST, uint64(c.fieldIndex(x)))
 	c.emit(instr.STRUCT_GET)
@@ -1963,18 +2147,18 @@ func (c *Compiler) fstringPart(part ast.FStringPart) {
 		if p.Debug != "" {
 			c.constGet(vmtypes.String(p.Debug))
 			c.expr(p.Expr)
-			c.callHost(c.host.str)
+			c.callHost(c.nativeHost("builtins", "str"))
 			c.emit(instr.STRING_CONCAT)
 			return
 		}
 		c.expr(p.Expr)
 		if format, ok := staticFStringFormat(p.Format); ok && format != "" {
 			c.constGet(vmtypes.String(format))
-			c.callHost(c.host.format(c.types[p.Expr]))
+			c.callHost(c.format(c.types[p.Expr]))
 			return
 		}
 		if !types.Equal(c.types[p.Expr], types.Str) || p.Conversion != 0 || len(p.Format) > 0 {
-			c.callHost(c.host.str)
+			c.callHost(c.nativeHost("builtins", "str"))
 		}
 	}
 }
@@ -2006,83 +2190,15 @@ func (c *Compiler) ifExp(x *ast.IfExp) {
 	c.bind(end)
 }
 
+// unary and emitBinary delegate to the operator module, the single source of
+// operator lowering.
+
 func (c *Compiler) unary(x *ast.UnaryExpr) {
-	switch x.Op {
-	case token.NOT:
-		c.expr(x.X)
-		c.emit(instr.I32_EQZ)
-	case token.PLUS:
-		c.expr(x.X)
-	case token.MINUS:
-		if c.types[x.X] == types.Float {
-			c.expr(x.X)
-			c.emit(instr.F64_NEG)
-		} else {
-			c.emit(instr.I64_CONST, 0)
-			c.expr(x.X)
-			c.emit(instr.I64_SUB)
-		}
-	case token.TILDE:
-		c.expr(x.X)
-		c.emit(instr.I64_CONST, ^uint64(0))
-		c.emit(instr.I64_XOR)
-	}
+	operator.EmitUnary(c, x.Op, x.X)
 }
 
-// emitBinary lowers a binary operation. pushLeft/pushRight push the operands; the
-// operator and operand types decide the opcode sequence. The handful of ops that
-// need more than one opcode or a host call are special-cased; the rest map to a
-// single opcode via simpleBinOp.
 func (c *Compiler) emitBinary(op token.Type, left, right types.Type, pushLeft, pushRight func()) {
-	switch op {
-	case token.SLASH: // true division always yields float
-		pushLeft()
-		if left == types.Int {
-			c.emit(instr.I64_TO_F64_S)
-		}
-		pushRight()
-		if left == types.Int {
-			c.emit(instr.I64_TO_F64_S)
-		}
-		c.emit(instr.F64_DIV)
-	case token.DOUBLESLASH:
-		pushLeft()
-		pushRight()
-		if left == types.Int {
-			c.emit(instr.I64_DIV_S)
-		} else {
-			c.emit(instr.F64_DIV)
-			c.emit(instr.F64_FLOOR)
-		}
-	case token.PERCENT:
-		pushLeft()
-		pushRight()
-		if left == types.Int {
-			c.emit(instr.I64_REM_S)
-		} else {
-			c.emit(instr.F64_MOD)
-		}
-	case token.DOUBLESTAR:
-		pushLeft()
-		pushRight()
-		if left == types.Int {
-			c.callHost(c.host.powInt)
-		} else {
-			c.callHost(c.host.powFloat)
-		}
-	case token.PLUS:
-		pushLeft()
-		pushRight()
-		if left == types.Str {
-			c.emit(instr.STRING_CONCAT)
-		} else {
-			c.emit(simpleBinOp(op, left))
-		}
-	default:
-		pushLeft()
-		pushRight()
-		c.emit(simpleBinOp(op, left))
-	}
+	operator.EmitBinary(c, op, left, right, pushLeft, pushRight)
 }
 
 // boolOp lowers short-circuiting `and`/`or` (docs/spec/05-codegen.md).
@@ -2145,41 +2261,7 @@ func (c *Compiler) emitCmp(left ast.Expr, op token.Type, right ast.Expr) {
 }
 
 func (c *Compiler) emitCmpStack(op token.Type, left types.Type, right types.Type) {
-	if op == token.IN || op == token.NOTIN {
-		c.emit(instr.SWAP)
-		c.containsType(op, left, right)
-		return
-	}
-	if op == token.IS || op == token.ISNOT {
-		c.emit(instr.REF_EQ)
-		if op == token.ISNOT {
-			c.emit(instr.I32_EQZ)
-		}
-		return
-	}
-	c.emit(cmpOpcode(op, left))
-}
-
-func (c *Compiler) contains(op token.Type, left ast.Expr, right ast.Expr) {
-	c.containsType(op, c.types[left], c.types[right])
-}
-
-func (c *Compiler) containsType(op token.Type, left types.Type, right types.Type) {
-	switch right.(type) {
-	case *types.Dict:
-		c.emit(instr.MAP_LOOKUP)
-		c.emit(instr.SWAP)
-		c.emit(instr.DROP)
-	case *types.List:
-		c.callHost(c.host.listContains(left, right))
-	default:
-		if types.Equal(right, types.Str) {
-			c.callHost(c.host.strContains)
-		}
-	}
-	if op == token.NOTIN {
-		c.emit(instr.I32_EQZ)
-	}
+	operator.EmitCompareStack(c, op, left, right)
 }
 
 func (c *Compiler) emitResumeIterator(slot int) {
@@ -2189,29 +2271,20 @@ func (c *Compiler) emitResumeIterator(slot int) {
 	c.emit(instr.DROP)
 }
 
-// call lowers a direct builtin or user-function call. Inline builtins emit
-// opcodes directly; print/str and the parse helpers go through host functions.
+// call lowers a direct native, class, function, or callable-value call.
 func (c *Compiler) call(x *ast.CallExpr) {
 	if attr, ok := x.Fn.(*ast.Attribute); ok {
 		c.methodCall(x, attr)
 		return
 	}
 	name, isName := x.Fn.(*ast.Name)
-	if isName && name.Name == "isinstance" && len(x.Args) == 2 {
-		// isinstance(value, T) → REF_TEST recovers the runtime tag as i32; the
-		// trailing I32_NE normalizes it to a minipy bool (i1).
-		c.expr(x.Args[0])
-		c.emit(instr.REF_TEST, c.typeIndex(c.types[x.Args[1]]))
-		c.emit(instr.I32_CONST, 0)
-		c.emit(instr.I32_NE)
-		return
-	}
 	if isName {
-		if cls, ok := c.classes[name.Name]; ok {
+		sym := c.symbol(name.Name)
+		if cls, ok := c.classes[sym]; ok {
 			c.construct(x, cls)
 			return
 		}
-		if info, ok := c.functions[name.Name]; ok {
+		if info, ok := c.functions[sym]; ok {
 			for _, arg := range c.functionCallArgs(x, info) {
 				c.expr(arg)
 			}
@@ -2224,7 +2297,7 @@ func (c *Compiler) call(x *ast.CallExpr) {
 			c.emit(instr.CALL)
 			return
 		}
-		if !isBuiltin(name.Name) {
+		if _, ok := c.reg.SymbolByKey(sym); !ok {
 			for _, arg := range x.Args {
 				c.expr(arg)
 			}
@@ -2242,111 +2315,17 @@ func (c *Compiler) call(x *ast.CallExpr) {
 		return
 	}
 
-	var arg ast.Expr
-	var typ types.Type
-	if len(x.Args) > 0 {
-		arg = x.Args[0]
-		typ = c.types[arg]
+	if sym, ok := c.reg.SymbolByKey(c.symbol(name.Name)); ok {
+		sym.Emit(c, x.Args)
 	}
+}
 
-	switch name.Name {
-	case "print":
-		c.expr(arg)
-		c.callHostVoid(c.host.print)
-	case "str":
-		c.expr(arg)
-		if typ != types.Str {
-			c.callHost(c.host.str)
-		}
-	case "int":
-		c.expr(arg)
-		switch typ {
-		case types.Float:
-			c.emit(instr.F64_TO_I64_S)
-		case types.Bool:
-			c.emit(instr.I32_TO_I64_S)
-		case types.Str:
-			c.callHost(c.host.intParse)
-		}
-	case "float":
-		c.expr(arg)
-		switch typ {
-		case types.Int:
-			c.emit(instr.I64_TO_F64_S)
-		case types.Bool:
-			c.emit(instr.I32_TO_F64_S)
-		case types.Str:
-			c.callHost(c.host.floatParse)
-		}
-	case "bool":
-		c.expr(arg)
-		switch typ {
-		case types.Int:
-			c.emit(instr.I64_CONST, 0)
-			c.emit(instr.I64_NE)
-		case types.Float:
-			c.emit(instr.F64_CONST, math.Float64bits(0))
-			c.emit(instr.F64_NE)
-		case types.Str:
-			c.emit(instr.STRING_LEN)
-			c.emit(instr.I32_CONST, 0)
-			c.emit(instr.I32_NE)
-		default:
-			switch t := typ.(type) {
-			case *types.List:
-				c.emit(instr.ARRAY_LEN)
-				c.emit(instr.I32_CONST, 0)
-				c.emit(instr.I32_NE)
-			case *types.Dict, *types.Set:
-				c.emit(instr.MAP_LEN)
-				c.emit(instr.I32_CONST, 0)
-				c.emit(instr.I32_NE)
-			case *types.Tuple:
-				c.emit(instr.DROP)
-				if len(t.Elems) == 0 {
-					c.emit(instr.I32_CONST, 0)
-				} else {
-					c.emit(instr.I32_CONST, 1)
-				}
-			case *types.Iterator, *types.Callable, *types.Class:
-				c.emit(instr.REF_IS_NULL)
-				c.emit(instr.I32_EQZ)
-			}
-		}
-	case "abs":
-		if typ == types.Int {
-			c.absInt(arg)
-		} else {
-			c.expr(arg)
-			c.emit(instr.F64_ABS)
-		}
-	case "len":
-		c.expr(arg)
-		switch typ.(type) {
-		case *types.List:
-			c.emit(instr.ARRAY_LEN)
-		case *types.Dict, *types.Set:
-			c.emit(instr.MAP_LEN)
-		case *types.Tuple:
-			c.emit(instr.I32_CONST, uint64(len(typ.(*types.Tuple).Elems)))
-		default:
-			c.emit(instr.STRING_LEN)
-		}
-		c.emit(instr.I32_TO_I64_S)
-	case "enumerate":
-		c.expr(arg)
-		c.callHost(c.host.enumerate(c.types[x]))
-	case "zip":
-		c.expr(x.Args[0])
-		c.expr(x.Args[1])
-		c.callHost(c.host.zip(c.types[x]))
-	case "range":
-		c.rangeCall(x)
-	case "iter":
-		c.iterCall(arg, typ)
-	case "next":
-		c.nextCall(arg)
+func (c *Compiler) nativeHost(moduleName, symbol string) *interp.HostFunction {
+	fn, ok := c.native.Value(moduleName, symbol).(*interp.HostFunction)
+	if !ok {
+		panic("native symbol " + moduleName + "." + symbol + " is not a host function")
 	}
+	return fn
 }
 
 func (c *Compiler) functionCallArgs(x *ast.CallExpr, info *function) []ast.Expr {
@@ -2422,67 +2401,30 @@ func (c *Compiler) applyFieldDefaults(cls *class) {
 	}
 }
 
-func (c *Compiler) rangeCall(x *ast.CallExpr) {
-	switch len(x.Args) {
-	case 1:
-		c.emit(instr.I64_CONST, 0)
-		c.expr(x.Args[0])
-		c.emit(instr.I64_CONST, 1)
-	case 2:
-		c.expr(x.Args[0])
-		c.expr(x.Args[1])
-		c.emit(instr.I64_CONST, 1)
-	default:
-		c.expr(x.Args[0])
-		c.expr(x.Args[1])
-		c.expr(x.Args[2])
-	}
-	c.callHost(c.host.rangeIter)
-}
-
-func (c *Compiler) iterCall(arg ast.Expr, typ types.Type) {
-	if _, ok := typ.(*types.Iterator); ok {
-		c.expr(arg)
+func (c *Compiler) methodCall(x *ast.CallExpr, attr *ast.Attribute) {
+	if native := c.attrNative[attr]; native != nil {
+		native.Emit(c, x.Args)
 		return
 	}
-	c.expr(arg)
-	switch typ.(type) {
-	case *types.Dict, *types.Set:
-		c.emit(instr.MAP_ITER)
-	case *types.List:
-		c.callHost(c.host.listIter(typ))
-	default:
-		if types.Equal(typ, types.Str) {
-			c.callHost(c.host.strIter())
+	if key := c.attrSym[attr]; key != "" {
+		if cls := c.classes[key]; cls != nil {
+			c.construct(x, cls)
+			return
+		}
+		if info := c.functions[key]; info != nil {
+			for _, arg := range c.functionCallArgs(x, info) {
+				c.expr(arg)
+			}
+			if spec := c.callSpec[x]; spec != nil {
+				c.emit(instr.CONST_GET, uint64(spec.info.constIdx))
+				c.emit(instr.CALL)
+				return
+			}
+			c.emit(instr.GLOBAL_GET, uint64(info.slot.index))
+			c.emit(instr.CALL)
+			return
 		}
 	}
-}
-
-func (c *Compiler) nextCall(arg ast.Expr) {
-	valSlot := c.tmp()
-	done := c.label()
-	end := c.label()
-	c.expr(arg)
-	c.emit(instr.DUP)
-	c.emit(instr.CORO_DONE)
-	c.brIf(done)
-	c.emit(instr.DUP)
-	c.emit(instr.CORO_VALUE)
-	c.emit(instr.GLOBAL_SET, uint64(valSlot))
-	c.emit(instr.REF_NULL)
-	c.emit(instr.RESUME)
-	c.emit(instr.DROP)
-	c.emit(instr.GLOBAL_GET, uint64(valSlot))
-	c.br(end)
-	c.bind(done)
-	c.emit(instr.REF_NULL)
-	c.emit(instr.RESUME)
-	c.emit(instr.DROP)
-	c.emit(instr.UNREACHABLE)
-	c.bind(end)
-}
-
-func (c *Compiler) methodCall(x *ast.CallExpr, attr *ast.Attribute) {
 	recvType := c.types[attr.X]
 	if cls, ok := recvType.(*types.Class); ok {
 		owner, method := c.methodOwner(cls.Name, attr.Name)
@@ -2507,13 +2449,13 @@ func (c *Compiler) methodCall(x *ast.CallExpr, attr *ast.Attribute) {
 		if len(x.Args) == 1 {
 			c.emitZeroValue(c.types[x])
 		}
-		c.callHost(c.host.dictGet(recvType, c.types[x]))
+		c.callHost(c.dictGet(recvType, c.types[x]))
 	case "keys":
 		c.emit(instr.MAP_KEYS)
 	case "values":
-		c.callHost(c.host.dictValues(recvType, c.types[x]))
+		c.callHost(c.dictValues(recvType, c.types[x]))
 	case "items":
-		c.callHost(c.host.dictItems(recvType, c.types[x]))
+		c.callHost(c.dictItems(recvType, c.types[x]))
 	case "append":
 		c.emit(instr.I32_CONST, 1)
 		c.emit(instr.ARRAY_APPEND)
@@ -2525,18 +2467,18 @@ func (c *Compiler) methodCall(x *ast.CallExpr, attr *ast.Attribute) {
 		}
 		c.emitArrayDelete()
 	case "upper":
-		c.callHost(c.host.strUpper)
+		c.callHost(c.strUpper())
 	case "lower":
-		c.callHost(c.host.strLower)
+		c.callHost(c.strLower())
 	case "split":
 		if len(x.Args) == 0 {
 			c.constGet(vmtypes.String(" "))
 		}
-		c.callHost(c.host.strSplit)
+		c.callHost(c.strSplit())
 	case "join":
-		c.callHost(c.host.strJoin)
+		c.callHost(c.strJoin())
 	case "find":
-		c.callHost(c.host.strFind)
+		c.callHost(c.strFind())
 	default:
 		panic("unsupported method")
 	}
@@ -2559,26 +2501,6 @@ func (c *Compiler) emitZeroValue(t types.Type) {
 
 // absInt lowers abs() on an int inline: branch on the sign and negate when
 // negative (the entry frame has no locals for a branchless trick).
-func (c *Compiler) absInt(arg ast.Expr) {
-	c.expr(arg)
-	c.emit(instr.DUP)
-	c.emit(instr.I64_CONST, 0)
-	c.emit(instr.I64_LT_S)
-	neg := c.label()
-	end := c.label()
-	c.brIf(neg)
-	c.br(end)
-	c.bind(neg)
-	c.emit(instr.I64_CONST, 0)
-	c.emit(instr.SWAP)
-	c.emit(instr.I64_SUB)
-	c.bind(end)
-}
-
-// emitArrayDelete lowers `list, index(i64) -> removed`: it normalizes a
-// Python-style negative index (relative to the end) before the native
-// ARRAY_DELETE, which traps on an already non-negative out-of-range index.
-// Backs `del list[i]` and `list.pop(i)`.
 func (c *Compiler) emitArrayDelete() {
 	idxSlot := c.tmp()
 	listSlot := c.tmp()
@@ -2605,6 +2527,515 @@ func (c *Compiler) emitArrayDelete() {
 	c.emit(instr.GLOBAL_GET, uint64(idxSlot))
 	c.emit(instr.I64_TO_I32)
 	c.emit(instr.ARRAY_DELETE)
+}
+
+func (c *Compiler) dictGet(receiver, result types.Type) *interp.HostFunction {
+	dict := receiver.(*types.Dict)
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: []vmtypes.Type{receiver.VM(), dict.Key.VM(), result.VM()}, Returns: []vmtypes.Type{result.VM()}},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			if val, ok := mapGet(i, params[0], params[1]); ok {
+				return []vmtypes.Boxed{val}, nil
+			}
+			return []vmtypes.Boxed{params[2]}, nil
+		},
+	)
+}
+
+func (c *Compiler) dictValues(receiver, result types.Type) *interp.HostFunction {
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: []vmtypes.Type{receiver.VM()}, Returns: []vmtypes.Type{result.VM()}},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			_, vals := mapEntries(i, params[0])
+			return hostabi.AllocArray(i, result.VM().(*vmtypes.ArrayType), vals)
+		},
+	)
+}
+
+func (c *Compiler) dictItems(receiver, result types.Type) *interp.HostFunction {
+	tupleType := result.(*types.List).Elem.VM().(*vmtypes.StructType)
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: []vmtypes.Type{receiver.VM()}, Returns: []vmtypes.Type{result.VM()}},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			keys, vals := mapEntries(i, params[0])
+			items := make([]vmtypes.Boxed, 0, len(keys))
+			for idx := range keys {
+				addr, err := i.Alloc(vmtypes.NewStruct(tupleType, keys[idx], vals[idx]))
+				if err != nil {
+					return nil, err
+				}
+				items = append(items, vmtypes.BoxRef(addr))
+			}
+			return hostabi.AllocArray(i, result.VM().(*vmtypes.ArrayType), items)
+		},
+	)
+}
+
+// dictRest returns a new dict holding receiver minus the keys in the second
+// argument. It backs mapping-pattern `**rest` captures.
+func (c *Compiler) dictRest(receiver types.Type) *interp.HostFunction {
+	keys := types.NewList(receiver.(*types.Dict).Key)
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: []vmtypes.Type{receiver.VM(), keys.VM()}, Returns: []vmtypes.Type{receiver.VM()}},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			src, err := i.Load(params[0].Ref())
+			if err != nil {
+				return nil, err
+			}
+			mt, ok := src.Type().(*vmtypes.MapType)
+			if !ok {
+				return nil, fmt.Errorf("dict rest on non-map value")
+			}
+			ks, vs := mapEntries(i, params[0])
+			_, exclude := hostabi.ArrayElems(i, params[1])
+			out := vmtypes.NewMapForType(mt, len(ks))
+			for idx, k := range ks {
+				skip := false
+				for _, ex := range exclude {
+					if hostabi.BoxedEqual(i, k, ex) {
+						skip = true
+						break
+					}
+				}
+				if !skip {
+					mapSet(out, k, vs[idx])
+				}
+			}
+			addr, err := i.Alloc(out)
+			if err != nil {
+				return nil, err
+			}
+			return []vmtypes.Boxed{vmtypes.BoxRef(addr)}, nil
+		},
+	)
+}
+
+// mapSet inserts (key, value) into a map value, dispatching on its concrete
+// representation (mirrors mapGet).
+func mapSet(m vmtypes.Value, key, val vmtypes.Boxed) {
+	switch mm := m.(type) {
+	case *vmtypes.TypedMap[bool]:
+		mm.Set(key.Bool(), val)
+	case *vmtypes.TypedMap[int32]:
+		mm.Set(key.I32(), val)
+	case *vmtypes.TypedMap[int64]:
+		mm.Set(key.I64(), val)
+	case *vmtypes.TypedMap[float32]:
+		mm.Set(key.F32(), val)
+	case *vmtypes.TypedMap[float64]:
+		mm.Set(key.F64(), val)
+	case *vmtypes.Map:
+		mm.Set(mapKey(key), vmtypes.MapEntry{Key: key, Value: val})
+	}
+}
+
+func (c *Compiler) listSlice(receiver types.Type) *interp.HostFunction {
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: []vmtypes.Type{receiver.VM(), vmtypes.TypeI64, vmtypes.TypeI64, vmtypes.TypeI64}, Returns: []vmtypes.Type{receiver.VM()}},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			typ, elems := hostabi.ArrayElems(i, params[0])
+			indexes, err := sliceIndexes(len(elems), hostabi.LoadI64(i, params[1]), hostabi.LoadI64(i, params[2]), hostabi.LoadI64(i, params[3]))
+			if err != nil {
+				return nil, err
+			}
+			out := make([]vmtypes.Boxed, 0, len(indexes))
+			for _, idx := range indexes {
+				out = append(out, elems[idx])
+			}
+			return hostabi.AllocArray(i, typ, out)
+		},
+	)
+}
+
+func (c *Compiler) listExtend(receiver types.Type) *interp.HostFunction {
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: []vmtypes.Type{receiver.VM(), receiver.VM()}, Returns: []vmtypes.Type{receiver.VM()}},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			typ, left := hostabi.ArrayElems(i, params[0])
+			_, right := hostabi.ArrayElems(i, params[1])
+			out := append(left, right...)
+			return hostabi.AllocArray(i, typ, out)
+		},
+	)
+}
+
+func (c *Compiler) dictMerge(receiver types.Type) *interp.HostFunction {
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: []vmtypes.Type{receiver.VM(), receiver.VM()}, Returns: []vmtypes.Type{receiver.VM()}},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			src, err := i.Load(params[0].Ref())
+			if err != nil {
+				return nil, err
+			}
+			mt, ok := src.Type().(*vmtypes.MapType)
+			if !ok {
+				return nil, fmt.Errorf("dict merge on non-map value")
+			}
+			leftKeys, leftVals := mapEntries(i, params[0])
+			rightKeys, rightVals := mapEntries(i, params[1])
+			out := vmtypes.NewMapForType(mt, len(leftKeys)+len(rightKeys))
+			for idx, key := range leftKeys {
+				mapSet(out, key, leftVals[idx])
+			}
+			for idx, key := range rightKeys {
+				mapSet(out, key, rightVals[idx])
+			}
+			addr, err := i.Alloc(out)
+			if err != nil {
+				return nil, err
+			}
+			return []vmtypes.Boxed{vmtypes.BoxRef(addr)}, nil
+		},
+	)
+}
+
+func (c *Compiler) listIter(arg types.Type) *interp.HostFunction {
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: []vmtypes.Type{arg.VM()}, Returns: []vmtypes.Type{vmtypes.TypeRef}},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			_, elems := hostabi.ArrayElems(i, params[0])
+			addr, err := i.Alloc(hostabi.NewIterator("list.iterator", elems))
+			if err != nil {
+				return nil, err
+			}
+			return []vmtypes.Boxed{vmtypes.BoxRef(addr)}, nil
+		},
+	)
+}
+
+func (c *Compiler) strIter() *interp.HostFunction {
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeString}, Returns: []vmtypes.Type{vmtypes.TypeRef}},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			s := hostabi.LoadStr(i, params[0])
+			values := make([]vmtypes.Boxed, 0, len([]rune(s)))
+			for _, r := range s {
+				addr, err := i.Alloc(vmtypes.String(string(r)))
+				if err != nil {
+					return nil, err
+				}
+				values = append(values, vmtypes.BoxRef(addr))
+			}
+			addr, err := i.Alloc(hostabi.NewIterator("str.iterator", values))
+			if err != nil {
+				return nil, err
+			}
+			return []vmtypes.Boxed{vmtypes.BoxRef(addr)}, nil
+		},
+	)
+}
+
+func (c *Compiler) format(t types.Type) *interp.HostFunction {
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: []vmtypes.Type{t.VM(), vmtypes.TypeString}, Returns: []vmtypes.Type{vmtypes.TypeString}},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			return hostabi.AllocString(i, pyFormat(i, params[0], hostabi.LoadStr(i, params[1])))
+		},
+	)
+}
+
+func (c *Compiler) strIndex() *interp.HostFunction {
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeString, vmtypes.TypeI64}, Returns: []vmtypes.Type{vmtypes.TypeString}},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			s := []rune(hostabi.LoadStr(i, params[0]))
+			idx := int(hostabi.LoadI64(i, params[1]))
+			if idx < 0 {
+				idx += len(s)
+			}
+			if idx < 0 || idx >= len(s) {
+				return nil, interp.ErrIndexOutOfRange
+			}
+			return hostabi.AllocString(i, string(s[idx]))
+		},
+	)
+}
+
+func (c *Compiler) strUpper() *interp.HostFunction {
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeString}, Returns: []vmtypes.Type{vmtypes.TypeString}},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			return hostabi.AllocString(i, strings.ToUpper(hostabi.LoadStr(i, params[0])))
+		},
+	)
+}
+
+func (c *Compiler) strLower() *interp.HostFunction {
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeString}, Returns: []vmtypes.Type{vmtypes.TypeString}},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			return hostabi.AllocString(i, strings.ToLower(hostabi.LoadStr(i, params[0])))
+		},
+	)
+}
+
+func (c *Compiler) strFind() *interp.HostFunction {
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeString, vmtypes.TypeString}, Returns: []vmtypes.Type{vmtypes.TypeI64}},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			return []vmtypes.Boxed{vmtypes.BoxI64(int64(strings.Index(hostabi.LoadStr(i, params[0]), hostabi.LoadStr(i, params[1]))))}, nil
+		},
+	)
+}
+
+func (c *Compiler) strSlice() *interp.HostFunction {
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeString, vmtypes.TypeI64, vmtypes.TypeI64, vmtypes.TypeI64}, Returns: []vmtypes.Type{vmtypes.TypeString}},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			runes := []rune(hostabi.LoadStr(i, params[0]))
+			indexes, err := sliceIndexes(len(runes), hostabi.LoadI64(i, params[1]), hostabi.LoadI64(i, params[2]), hostabi.LoadI64(i, params[3]))
+			if err != nil {
+				return nil, err
+			}
+			var b strings.Builder
+			for _, idx := range indexes {
+				b.WriteRune(runes[idx])
+			}
+			return hostabi.AllocString(i, b.String())
+		},
+	)
+}
+
+func (c *Compiler) strSplit() *interp.HostFunction {
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeString, vmtypes.TypeString}, Returns: []vmtypes.Type{vmtypes.NewArrayType(vmtypes.TypeString)}},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			parts := strings.Split(hostabi.LoadStr(i, params[0]), hostabi.LoadStr(i, params[1]))
+			out := make([]vmtypes.Boxed, 0, len(parts))
+			for _, part := range parts {
+				box, err := hostabi.AllocString(i, part)
+				if err != nil {
+					return nil, err
+				}
+				out = append(out, box[0])
+			}
+			return hostabi.AllocArray(i, vmtypes.NewArrayType(vmtypes.TypeString), out)
+		},
+	)
+}
+
+func (c *Compiler) strJoin() *interp.HostFunction {
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeString, vmtypes.NewArrayType(vmtypes.TypeString)}, Returns: []vmtypes.Type{vmtypes.TypeString}},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			_, elems := hostabi.ArrayElems(i, params[1])
+			parts := make([]string, len(elems))
+			for idx, elem := range elems {
+				parts[idx] = hostabi.LoadStr(i, elem)
+			}
+			return hostabi.AllocString(i, strings.Join(parts, hostabi.LoadStr(i, params[0])))
+		},
+	)
+}
+
+func (c *Compiler) exc() *interp.HostFunction {
+	excType := c.classes["BaseException"].typ.VM().(*vmtypes.StructType)
+	classID := func(name string) int64 { return int64(c.classes[name].classID) }
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeRef}, Returns: []vmtypes.Type{c.classes["BaseException"].typ.VM()}},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			class := classID("RuntimeError")
+			message := ""
+			if params[0].Kind() == vmtypes.KindRef && params[0].Ref() != 0 {
+				if val, err := i.Load(params[0].Ref()); err == nil {
+					if exc, ok := val.(*vmtypes.Error); ok {
+						message = exc.Error()
+						switch {
+						case errors.Is(exc.Unwrap(), interp.ErrDivideByZero):
+							class = classID("ZeroDivisionError")
+						case errors.Is(exc.Unwrap(), interp.ErrIndexOutOfRange):
+							class = classID("IndexError")
+						case errors.Is(exc.Unwrap(), interp.ErrTypeMismatch):
+							class = classID("TypeError")
+						}
+					}
+				}
+			}
+			msg, err := hostabi.AllocString(i, message)
+			if err != nil {
+				return nil, err
+			}
+			addr, err := i.Alloc(vmtypes.NewStruct(excType, vmtypes.BoxI64(class), msg[0]))
+			if err != nil {
+				return nil, err
+			}
+			return []vmtypes.Boxed{vmtypes.BoxRef(addr)}, nil
+		},
+	)
+}
+
+func pyFormat(i *interp.Interpreter, v vmtypes.Boxed, spec string) string {
+	if spec == "" {
+		return hostabi.FormatScalar(i, v)
+	}
+	if v.Kind() == vmtypes.KindI64 && strings.HasSuffix(spec, "d") {
+		widthSpec := strings.TrimSuffix(spec, "d")
+		pad := byte(' ')
+		if strings.HasPrefix(widthSpec, "0") {
+			pad = '0'
+			widthSpec = strings.TrimPrefix(widthSpec, "0")
+		}
+		width, _ := strconv.Atoi(widthSpec)
+		s := strconv.FormatInt(hostabi.LoadI64(i, v), 10)
+		if width > len(s) {
+			s = strings.Repeat(string(pad), width-len(s)) + s
+		}
+		return s
+	}
+	return hostabi.FormatScalar(i, v)
+}
+
+const omittedSliceBound = math.MinInt64
+
+func sliceIndexes(length int, rawStart, rawStop, rawStep int64) ([]int, error) {
+	step := rawStep
+	if step == omittedSliceBound {
+		step = 1
+	}
+	if step == 0 {
+		return nil, fmt.Errorf("slice step cannot be zero")
+	}
+	startOmitted := rawStart == omittedSliceBound
+	stopOmitted := rawStop == omittedSliceBound
+	start, stop := int(rawStart), int(rawStop)
+	if step > 0 {
+		if startOmitted {
+			start = 0
+		} else if start < 0 {
+			start += length
+		}
+		if stopOmitted {
+			stop = length
+		} else if stop < 0 {
+			stop += length
+		}
+		if start < 0 {
+			start = 0
+		}
+		if start > length {
+			start = length
+		}
+		if stop < 0 {
+			stop = 0
+		}
+		if stop > length {
+			stop = length
+		}
+		var out []int
+		for i := start; i < stop; i += int(step) {
+			out = append(out, i)
+		}
+		return out, nil
+	}
+	if startOmitted {
+		start = length - 1
+	} else if start < 0 {
+		start += length
+	}
+	if stopOmitted {
+		stop = -1
+	} else if stop < 0 {
+		stop += length
+	}
+	if start < -1 {
+		start = -1
+	}
+	if start >= length {
+		start = length - 1
+	}
+	if stop < -1 {
+		stop = -1
+	}
+	if stop >= length {
+		stop = length - 1
+	}
+	var out []int
+	for i := start; i > stop; i += int(step) {
+		out = append(out, i)
+	}
+	return out, nil
+}
+
+func mapGet(i *interp.Interpreter, ref vmtypes.Boxed, key vmtypes.Boxed) (vmtypes.Boxed, bool) {
+	val, err := i.Load(ref.Ref())
+	if err != nil {
+		return 0, false
+	}
+	switch m := val.(type) {
+	case *vmtypes.TypedMap[bool]:
+		return m.Get(key.Bool())
+	case *vmtypes.TypedMap[int32]:
+		return m.Get(key.I32())
+	case *vmtypes.TypedMap[int64]:
+		return m.Get(hostabi.LoadI64(i, key))
+	case *vmtypes.TypedMap[float32]:
+		return m.Get(key.F32())
+	case *vmtypes.TypedMap[float64]:
+		return m.Get(key.F64())
+	case *vmtypes.Map:
+		entry, ok := m.Get(mapKey(key))
+		return entry.Value, ok
+	default:
+		return 0, false
+	}
+}
+
+func mapEntries(i *interp.Interpreter, ref vmtypes.Boxed) ([]vmtypes.Boxed, []vmtypes.Boxed) {
+	val, err := i.Load(ref.Ref())
+	if err != nil {
+		return nil, nil
+	}
+	var keys, vals []vmtypes.Boxed
+	switch m := val.(type) {
+	case *vmtypes.TypedMap[bool]:
+		m.Range(func(k bool, v vmtypes.Boxed) {
+			keys = append(keys, vmtypes.BoxI1(k))
+			vals = append(vals, v)
+		})
+	case *vmtypes.TypedMap[int32]:
+		m.Range(func(k int32, v vmtypes.Boxed) {
+			keys = append(keys, vmtypes.BoxI32(k))
+			vals = append(vals, v)
+		})
+	case *vmtypes.TypedMap[int64]:
+		m.Range(func(k int64, v vmtypes.Boxed) {
+			keys = append(keys, vmtypes.BoxI64(k))
+			vals = append(vals, v)
+		})
+	case *vmtypes.TypedMap[float32]:
+		m.Range(func(k float32, v vmtypes.Boxed) {
+			keys = append(keys, vmtypes.BoxF32(k))
+			vals = append(vals, v)
+		})
+	case *vmtypes.TypedMap[float64]:
+		m.Range(func(k float64, v vmtypes.Boxed) {
+			keys = append(keys, vmtypes.BoxF64(k))
+			vals = append(vals, v)
+		})
+	case *vmtypes.Map:
+		m.Range(func(_ vmtypes.MapKey, entry vmtypes.MapEntry) {
+			keys = append(keys, entry.Key)
+			vals = append(vals, entry.Value)
+		})
+	}
+	return keys, vals
+}
+
+func mapKey(v vmtypes.Boxed) vmtypes.MapKey {
+	switch v.Kind() {
+	// bool keys may arrive as i1 (comparisons) or i32 (literals); canonicalize
+	// to one i32 key so the two representations hash and compare alike.
+	case vmtypes.KindI1, vmtypes.KindI32:
+		return vmtypes.MapKey{Kind: vmtypes.KindI32, Bits: uint64(uint32(v.I32()))}
+	case vmtypes.KindI64:
+		return vmtypes.MapKey{Kind: vmtypes.KindI64, Bits: uint64(v.I64())}
+	case vmtypes.KindF32:
+		return vmtypes.MapKey{Kind: vmtypes.KindF32, Bits: uint64(math.Float32bits(v.F32()))}
+	case vmtypes.KindF64:
+		return vmtypes.MapKey{Kind: vmtypes.KindF64, Bits: math.Float64bits(v.F64())}
+	default:
+		return vmtypes.MapKey{Kind: vmtypes.KindRef, Bits: uint64(v.Ref())}
+	}
 }
 
 // callHost emits a call to a value-returning host function.
@@ -2635,101 +3066,3 @@ func (c *Compiler) constOf(function *interp.HostFunction) int {
 
 // simpleBinOp returns the single opcode for an operator that maps directly to
 // one (`+ - *` for int/float; `& | ^ << >>` for int).
-func simpleBinOp(op token.Type, t types.Type) instr.Opcode {
-	if t == types.Float {
-		switch op {
-		case token.PLUS:
-			return instr.F64_ADD
-		case token.MINUS:
-			return instr.F64_SUB
-		case token.STAR:
-			return instr.F64_MUL
-		}
-		return instr.NOP
-	}
-	switch op {
-	case token.PLUS:
-		return instr.I64_ADD
-	case token.MINUS:
-		return instr.I64_SUB
-	case token.STAR:
-		return instr.I64_MUL
-	case token.AMP:
-		return instr.I64_AND
-	case token.PIPE:
-		return instr.I64_OR
-	case token.CARET:
-		return instr.I64_XOR
-	case token.LSHIFT:
-		return instr.I64_SHL
-	case token.RSHIFT:
-		return instr.I64_SHR_S
-	}
-	return instr.NOP
-}
-
-func cmpOpcode(op token.Type, t types.Type) instr.Opcode {
-	switch t {
-	case types.Float:
-		switch op {
-		case token.EQ:
-			return instr.F64_EQ
-		case token.NE:
-			return instr.F64_NE
-		case token.LT:
-			return instr.F64_LT
-		case token.LE:
-			return instr.F64_LE
-		case token.GT:
-			return instr.F64_GT
-		case token.GE:
-			return instr.F64_GE
-		}
-	case types.Str:
-		switch op {
-		case token.EQ:
-			return instr.STRING_EQ
-		case token.NE:
-			return instr.STRING_NE
-		case token.LT:
-			return instr.STRING_LT
-		case token.LE:
-			return instr.STRING_LE
-		case token.GT:
-			return instr.STRING_GT
-		case token.GE:
-			return instr.STRING_GE
-		}
-	case types.Bool:
-		switch op {
-		case token.EQ:
-			return instr.I32_EQ
-		case token.NE:
-			return instr.I32_NE
-		case token.LT:
-			return instr.I32_LT_S
-		case token.LE:
-			return instr.I32_LE_S
-		case token.GT:
-			return instr.I32_GT_S
-		case token.GE:
-			return instr.I32_GE_S
-		}
-	default: // Int
-		switch op {
-		case token.EQ:
-			return instr.I64_EQ
-		case token.NE:
-			return instr.I64_NE
-		case token.LT:
-			return instr.I64_LT_S
-		case token.LE:
-			return instr.I64_LE_S
-		case token.GT:
-			return instr.I64_GT_S
-		case token.GE:
-			return instr.I64_GE_S
-		}
-	}
-	return instr.NOP
-}

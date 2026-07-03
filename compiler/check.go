@@ -4,6 +4,9 @@ import (
 	"strings"
 
 	"github.com/siyul-park/minipy/ast"
+	"github.com/siyul-park/minipy/builtins"
+	"github.com/siyul-park/minipy/module"
+	"github.com/siyul-park/minipy/operator"
 	"github.com/siyul-park/minipy/token"
 	"github.com/siyul-park/minipy/types"
 )
@@ -60,6 +63,7 @@ type function struct {
 	astParams     []*ast.Param
 	instances     []*specialization
 	constIdx      int // VM constant index of this (specialized) function body
+	mod           *moduleInfo
 }
 
 func newFunction(name string) *function {
@@ -174,9 +178,23 @@ type checker struct {
 	callSpec   map[*ast.CallExpr]*specialization
 	callArgs   map[*ast.CallExpr][]ast.Expr
 	specActive map[string]bool
+	loader     *loader
+	reg        *module.Registry
+	modules    map[string]*moduleInfo
+	mod        *moduleInfo
+	attrSym    map[*ast.Attribute]string
+	attrMod    map[*ast.Attribute]string
+	attrNative map[*ast.Attribute]module.Symbol
 }
 
-func newChecker() *checker {
+func newChecker(loaders ...*loader) *checker {
+	var ld *loader
+	if len(loaders) > 0 {
+		ld = loaders[0]
+	}
+	if ld == nil {
+		ld = newLoader(nil, nil)
+	}
 	c := &checker{
 		types:      map[ast.Expr]types.Type{},
 		globals:    map[string]*global{},
@@ -189,6 +207,12 @@ func newChecker() *checker {
 		callSpec:   map[*ast.CallExpr]*specialization{},
 		callArgs:   map[*ast.CallExpr][]ast.Expr{},
 		specActive: map[string]bool{},
+		loader:     ld,
+		reg:        ld.reg,
+		modules:    ld.modules,
+		attrSym:    map[*ast.Attribute]string{},
+		attrMod:    map[*ast.Attribute]string{},
+		attrNative: map[*ast.Attribute]module.Symbol{},
 	}
 	c.declareBuiltinExceptions()
 	return c
@@ -199,11 +223,117 @@ func newChecker() *checker {
 const maxSpecializations = 8
 
 // check walks every top-level statement, accumulating diagnostics.
-func (c *checker) check(mod *ast.Module) {
-	c.declareClasses(mod.Body)
-	c.declareFuncs(mod.Body)
-	c.checkBlock(mod.Body)
+func (c *checker) checkProgram(entry *moduleInfo) {
+	c.checkModule(entry)
 	c.computeClassIntervals()
+}
+
+func (c *checker) check(mod *ast.Module) {
+	entry, _ := c.loader.loadEntry(mod)
+	c.checkProgram(entry)
+}
+
+func (c *checker) checkModule(m *moduleInfo) {
+	if m == nil || m.checked {
+		return
+	}
+	m.checked = true
+	prev := c.mod
+	c.mod = m
+	c.declareClasses(m.ast.Body)
+	c.declareFuncs(m.ast.Body)
+	c.checkBlock(m.ast.Body)
+	c.mod = prev
+}
+
+func (c *checker) key(name string) string {
+	if c.mod == nil || c.mod.name == "__main__" {
+		return name
+	}
+	return c.mod.name + "." + name
+}
+
+func moduleKey(module, symbol string) string {
+	if module == "__main__" {
+		return symbol
+	}
+	return module + "." + symbol
+}
+
+type resolvedName struct {
+	key    string
+	module string
+	native module.Symbol
+	kind   string
+}
+
+func (c *checker) resolveName(name string) resolvedName {
+	if c.mod != nil {
+		if b, ok := c.mod.bindings[name]; ok {
+			if b.symbol == "" {
+				return resolvedName{module: b.module, kind: "module"}
+			}
+			if sym, ok := c.reg.Symbol(b.module, b.symbol); ok {
+				return resolvedName{key: b.module + "." + b.symbol, native: sym, kind: "native"}
+			}
+			key := moduleKey(b.module, b.symbol)
+			switch {
+			case c.functions[key] != nil:
+				return resolvedName{key: key, kind: "function"}
+			case c.classes[key] != nil:
+				return resolvedName{key: key, kind: "class"}
+			case c.globals[key] != nil:
+				return resolvedName{key: key, kind: "global"}
+			}
+			return resolvedName{key: key}
+		}
+	}
+	key := c.key(name)
+	switch {
+	case c.functions[key] != nil:
+		return resolvedName{key: key, kind: "function"}
+	case c.classes[key] != nil:
+		return resolvedName{key: key, kind: "class"}
+	case c.globals[key] != nil:
+		return resolvedName{key: key, kind: "global"}
+	case c.reg.Has(name):
+		return resolvedName{module: name, kind: "module"}
+	case c.classes["builtins."+name] != nil:
+		return resolvedName{key: "builtins." + name, kind: "class"}
+	}
+	if sym, ok := c.reg.FallbackSymbol(name); ok {
+		return resolvedName{key: c.reg.FallbackName() + "." + name, native: sym, kind: "native"}
+	}
+	return resolvedName{key: key}
+}
+
+func (c *checker) resolveModuleAttr(moduleName, name string) resolvedName {
+	if sym, ok := c.reg.Symbol(moduleName, name); ok {
+		return resolvedName{key: moduleName + "." + name, native: sym, kind: "native"}
+	}
+	if m := c.modules[moduleName]; m != nil {
+		if b, ok := m.bindings[name]; ok {
+			if b.symbol == "" {
+				return resolvedName{module: b.module, kind: "module"}
+			}
+			if sym, ok := c.reg.Symbol(b.module, b.symbol); ok {
+				return resolvedName{key: b.module + "." + b.symbol, native: sym, kind: "native"}
+			}
+			return c.resolveModuleAttr(b.module, b.symbol)
+		}
+	}
+	key := moduleKey(moduleName, name)
+	switch {
+	case c.functions[key] != nil:
+		return resolvedName{key: key, kind: "function"}
+	case c.classes[key] != nil:
+		return resolvedName{key: key, kind: "class"}
+	case c.globals[key] != nil:
+		return resolvedName{key: key, kind: "global"}
+	case c.modules[key] != nil:
+		return resolvedName{module: key, kind: "module"}
+	}
+	return resolvedName{key: key}
 }
 
 // checkBlock checks a statement sequence (a module body or a compound block).
@@ -387,7 +517,7 @@ func (c *checker) currentType(name string) types.Type {
 			return cap.typ
 		}
 	}
-	if g, ok := c.globals[name]; ok {
+	if g, ok := c.globals[c.resolveName(name).key]; ok {
 		return g.typ
 	}
 	return types.Invalid
@@ -422,13 +552,13 @@ func (c *checker) stmt(s ast.Stmt) {
 	case *ast.Class:
 		c.classStmt(n)
 	case *ast.Import:
-		c.errs.Add(n.Pos(), token.UnsupportedFeature, "import is parse-only until module loading lands")
+		c.importStmt(n)
 	case *ast.ImportFrom:
-		c.errs.Add(n.Pos(), token.UnsupportedFeature, "from import is parse-only until module loading lands")
+		c.importFromStmt(n)
 	case *ast.TypeAlias:
 		t := c.resolveType(n.Value)
 		if t != types.Invalid {
-			c.aliases[n.Name.Name] = t
+			c.aliases[c.key(n.Name.Name)] = t
 		}
 	case *ast.Global:
 		if c.current == nil {
@@ -476,6 +606,72 @@ func (c *checker) stmt(s ast.Stmt) {
 		c.raiseStmt(n)
 	case *ast.With:
 		c.withStmt(n)
+	}
+}
+
+func (c *checker) importStmt(n *ast.Import) {
+	if c.current != nil {
+		c.errs.Add(n.Pos(), token.UnsupportedFeature, "import is only supported at module top level")
+		return
+	}
+	for _, a := range n.Names {
+		m := c.loader.loadModule(a.Name, a.Pos())
+		c.checkModule(m)
+		if m == nil {
+			continue
+		}
+		local := a.As
+		target := a.Name
+		if local == "" {
+			local = strings.Split(a.Name, ".")[0]
+			target = local
+		}
+		c.mod.bindings[local] = binding{module: target}
+	}
+}
+
+func (c *checker) importFromStmt(n *ast.ImportFrom) {
+	if c.current != nil {
+		c.errs.Add(n.Pos(), token.UnsupportedFeature, "from import is only supported at module top level")
+		return
+	}
+	if len(n.Names) == 1 && n.Names[0].Name == "*" {
+		c.errs.Add(n.Names[0].Pos(), token.UnsupportedFeature, "from-import * is not supported")
+		return
+	}
+	base := c.loader.resolveFrom(c.mod, n)
+	if base == "" {
+		return
+	}
+	m := c.loader.loadModule(base, n.Pos())
+	c.checkModule(m)
+	if m == nil {
+		return
+	}
+	for _, a := range n.Names {
+		local := a.As
+		if local == "" {
+			local = a.Name
+		}
+		res := c.resolveModuleAttr(base, a.Name)
+		switch res.kind {
+		case "function", "class", "global", "native":
+			c.mod.bindings[local] = binding{module: base, symbol: a.Name}
+		case "module":
+			c.mod.bindings[local] = binding{module: res.module}
+		default:
+			errMark := len(c.loader.errs)
+			sub := c.loader.loadModule(base+"."+a.Name, a.Pos())
+			if sub == nil {
+				c.loader.errs = c.loader.errs[:errMark]
+			}
+			c.checkModule(sub)
+			if sub != nil {
+				c.mod.bindings[local] = binding{module: sub.name}
+				continue
+			}
+			c.errs.Add(a.Pos(), token.ImportError, "cannot import name %q from %q", a.Name, base)
+		}
 	}
 }
 
@@ -649,7 +845,7 @@ func (c *checker) deleteName(n *ast.Name) {
 }
 
 func (c *checker) deleteGlobalName(n *ast.Name) {
-	g, ok := c.globals[n.Name]
+	g, ok := c.globals[c.resolveName(n.Name).key]
 	if !ok {
 		c.errs.Add(n.Pos(), token.UndefinedName, "name %q is not defined", n.Name)
 		return
@@ -703,7 +899,7 @@ func (c *checker) bindCapture(name string, t types.Type, pos token.Pos) {
 		l.init = true
 		return
 	}
-	if g, ok := c.globals[name]; ok {
+	if g, ok := c.globals[c.resolveName(name).key]; ok {
 		if t != types.Invalid && g.typ != types.Invalid && !types.Equal(g.typ, t) {
 			c.errs.Add(pos, token.PatternError, "capture %q binds inconsistent types %s and %s", name, g.typ, t)
 		}
@@ -795,30 +991,41 @@ func (c *checker) checkMappingPattern(pat *ast.MappingPattern, subjT types.Type)
 }
 
 func (c *checker) checkClassPattern(pat *ast.ClassPattern, subjT types.Type) {
-	name, ok := pat.Class.(*ast.Name)
-	if !ok {
-		c.errs.Add(pat.Pos(), token.UnsupportedFeature, "dotted class pattern is not supported")
+	display := ""
+	key := ""
+	if name, ok := pat.Class.(*ast.Name); ok {
+		display = name.Name
+		key = c.resolveName(name.Name).key
+	} else if attr, ok := pat.Class.(*ast.Attribute); ok {
+		display = attr.Name
+		if mod, ok := c.moduleExpr(attr.X); ok {
+			res := c.resolveModuleAttr(mod, attr.Name)
+			key = res.key
+			c.attrSym[attr] = key
+		}
+	} else {
+		c.errs.Add(pat.Pos(), token.UnsupportedFeature, "class pattern target is not supported")
 		return
 	}
-	info := c.classes[name.Name]
+	info := c.classes[key]
 	if info == nil {
-		c.errs.Add(pat.Pos(), token.UndefinedName, "class %q is not defined", name.Name)
+		c.errs.Add(pat.Pos(), token.UndefinedName, "class %q is not defined", display)
 		return
 	}
 	if subjT != types.Invalid && !types.Equal(subjT, info.typ) {
-		c.errs.Add(pat.Pos(), token.PatternError, "class pattern %s does not match subject %s", name.Name, subjT)
+		c.errs.Add(pat.Pos(), token.PatternError, "class pattern %s does not match subject %s", display, subjT)
 	}
 	for i, sub := range pat.Args {
 		if i < len(info.fields) {
 			c.checkPattern(sub, info.fields[i].typ)
 		} else {
-			c.errs.Add(sub.Pos(), token.PatternError, "class %s has no positional field %d", name.Name, i)
+			c.errs.Add(sub.Pos(), token.PatternError, "class %s has no positional field %d", display, i)
 		}
 	}
 	for i, kw := range pat.KwNames {
 		idx, ok := info.fieldIndex[kw]
 		if !ok {
-			c.errs.Add(pat.Kw[i].Pos(), token.UndefinedName, "field %q is not defined on %s", kw, name.Name)
+			c.errs.Add(pat.Kw[i].Pos(), token.UndefinedName, "field %q is not defined on %s", kw, display)
 			continue
 		}
 		c.checkPattern(pat.Kw[i], info.fields[idx].typ)
@@ -970,7 +1177,7 @@ func (c *checker) assign(n *ast.Assign) {
 		return
 	}
 	if c.current == nil {
-		if _, isFunc := c.functions[name.Name]; isFunc {
+		if _, isFunc := c.functions[c.key(name.Name)]; isFunc {
 			c.errs.Add(n.Pos(), token.TypeMismatch, "cannot assign to function %q", name.Name)
 			c.expr(n.Value)
 			return
@@ -1005,7 +1212,7 @@ func (c *checker) assign(n *ast.Assign) {
 			return
 		}
 	}
-	g, declared := c.globals[name.Name]
+	g, declared := c.globals[c.key(name.Name)]
 	if !declared {
 		// Whole-program inference: an unannotated global takes the type of its
 		// first assignment instead of requiring an annotation.
@@ -1153,7 +1360,7 @@ func (c *checker) bindUnpackedName(name *ast.Name, t types.Type) {
 		c.types[name] = l.typ
 		return
 	}
-	g, declared := c.globals[name.Name]
+	g, declared := c.globals[c.key(name.Name)]
 	if !declared {
 		g = c.declare(name.Name, t, name.Pos())
 		g.init = true
@@ -1223,7 +1430,7 @@ func (c *checker) augAssign(n *ast.AugAssign) {
 			return
 		}
 	}
-	g, declared := c.globals[name.Name]
+	g, declared := c.globals[c.key(name.Name)]
 	if !declared {
 		c.errs.Add(n.Pos(), token.UndefinedName, "name %q is not defined", name.Name)
 		c.expr(n.Value)
@@ -1244,12 +1451,13 @@ func (c *checker) augAssign(n *ast.AugAssign) {
 // declare registers a new global or returns the existing one, reporting a type
 // change on redeclaration.
 func (c *checker) declare(name string, t types.Type, pos token.Pos) *global {
-	if g, ok := c.globals[name]; ok {
-		if _, isFunc := c.functions[name]; isFunc && t != types.Invalid {
+	key := c.key(name)
+	if g, ok := c.globals[key]; ok {
+		if _, isFunc := c.functions[key]; isFunc && t != types.Invalid {
 			c.errs.Add(pos, token.TypeMismatch, "cannot redeclare function %q", name)
 			return g
 		}
-		if _, isClass := c.classes[name]; isClass && t != types.Invalid {
+		if _, isClass := c.classes[key]; isClass && t != types.Invalid {
 			c.errs.Add(pos, token.TypeMismatch, "cannot redeclare class %q", name)
 			return g
 		}
@@ -1258,12 +1466,12 @@ func (c *checker) declare(name string, t types.Type, pos token.Pos) *global {
 		}
 		return g
 	}
-	if _, isClass := c.classes[name]; isClass && t != types.Invalid {
+	if _, isClass := c.classes[key]; isClass && t != types.Invalid {
 		c.errs.Add(pos, token.TypeMismatch, "cannot redeclare class %q", name)
 	}
 	g := &global{typ: t, index: len(c.order)}
-	c.globals[name] = g
-	c.order = append(c.order, name)
+	c.globals[key] = g
+	c.order = append(c.order, key)
 	return g
 }
 
@@ -1293,19 +1501,21 @@ func (c *checker) declareFuncs(body []ast.Stmt) {
 		if !ok {
 			continue
 		}
-		if _, exists := c.functions[f.Name.Name]; exists {
+		key := c.key(f.Name.Name)
+		if _, exists := c.functions[key]; exists {
 			c.errs.Add(f.Name.Pos(), token.TypeMismatch, "cannot redeclare function %q", f.Name.Name)
 			continue
 		}
-		if _, exists := c.classes[f.Name.Name]; exists {
+		if _, exists := c.classes[key]; exists {
 			c.errs.Add(f.Name.Pos(), token.TypeMismatch, "cannot redeclare class %q as a function", f.Name.Name)
 			continue
 		}
-		if _, exists := c.globals[f.Name.Name]; exists {
+		if _, exists := c.globals[key]; exists {
 			c.errs.Add(f.Name.Pos(), token.TypeMismatch, "cannot redeclare %q as a function", f.Name.Name)
 			continue
 		}
-		info := newFunction(f.Name.Name)
+		info := newFunction(key)
+		info.mod = c.mod
 		info.generator = containsYield(f.Body)
 		if f.Returns == nil {
 			info.inferResult = true
@@ -1320,7 +1530,7 @@ func (c *checker) declareFuncs(body []ast.Stmt) {
 		info.astParams = f.Params
 		info.specializable = specializable(info)
 		info.slot = c.declare(f.Name.Name, types.Invalid, f.Pos())
-		c.functions[f.Name.Name] = info
+		c.functions[key] = info
 	}
 }
 
@@ -1331,76 +1541,59 @@ func (c *checker) declareClasses(body []ast.Stmt) {
 			continue
 		}
 		name := cls.Name.Name
-		if _, exists := c.classes[name]; exists {
+		key := c.key(name)
+		if _, exists := c.classes[key]; exists {
 			c.errs.Add(cls.Name.Pos(), token.TypeMismatch, "cannot redeclare class %q", name)
 			continue
 		}
-		if _, exists := c.globals[name]; exists {
+		if _, exists := c.globals[key]; exists {
 			c.errs.Add(cls.Name.Pos(), token.TypeMismatch, "cannot redeclare %q as a class", name)
 			continue
 		}
-		if _, exists := c.functions[name]; exists {
+		if _, exists := c.functions[key]; exists {
 			c.errs.Add(cls.Name.Pos(), token.TypeMismatch, "cannot redeclare function %q as a class", name)
 			continue
 		}
-		c.classes[name] = &class{
-			name:       name,
-			typ:        types.NewClass(name, nil),
+		c.classes[key] = &class{
+			name:       key,
+			typ:        types.NewClass(key, nil),
 			fieldIndex: map[string]int{},
 			methods:    map[string]*function{},
 			methodBody: map[string][]ast.Stmt{},
 		}
-		c.classOrder = append(c.classOrder, name)
+		c.classOrder = append(c.classOrder, key)
 	}
 }
 
-var builtinExceptionNames = []string{
-	"BaseException",
-	"Exception",
-	"ZeroDivisionError",
-	"ValueError",
-	"TypeError",
-	"IndexError",
-	"KeyError",
-	"RuntimeError",
-	"AssertionError",
-	"StopIteration",
-}
-
-var builtinExceptionBase = map[string]string{
-	"Exception":         "BaseException",
-	"ZeroDivisionError": "Exception",
-	"ValueError":        "Exception",
-	"TypeError":         "Exception",
-	"IndexError":        "Exception",
-	"KeyError":          "Exception",
-	"RuntimeError":      "Exception",
-	"AssertionError":    "Exception",
-	"StopIteration":     "Exception",
-}
-
+// declareBuiltinExceptions seeds the class table with the builtin exception
+// hierarchy exported by the builtins module, so exception identity lives in the
+// builtins module rather than being hardcoded here.
 func (c *checker) declareBuiltinExceptions() {
 	fields := []classField{
 		{name: "__classid", typ: types.Int, index: 0},
 		{name: "message", typ: types.Str, index: 1},
 	}
-	for _, name := range builtinExceptionNames {
+	excs := builtins.Exceptions()
+	for _, exc := range excs {
 		info := &class{
-			name:       name,
-			typ:        types.NewClass(name, nil),
+			name:       exc.Name,
+			typ:        types.NewClass(exc.Name, nil),
 			fields:     append([]classField(nil), fields...),
 			fieldIndex: map[string]int{"__classid": 0, "message": 1},
 			methods:    map[string]*function{},
 			methodBody: map[string][]ast.Stmt{},
 		}
-		c.classes[name] = info
-		c.classOrder = append(c.classOrder, name)
+		c.classes["builtins."+exc.Name] = info
+		c.classes[exc.Name] = info
+		c.classOrder = append(c.classOrder, "builtins."+exc.Name)
 	}
-	for name, base := range builtinExceptionBase {
-		c.classes[name].base = c.classes[base]
+	for _, exc := range excs {
+		if exc.Base != "" {
+			c.classes["builtins."+exc.Name].base = c.classes["builtins."+exc.Base]
+		}
 	}
-	for _, name := range builtinExceptionNames {
-		c.classes[name].typ.Fields = classTypeFields(c.classes[name].fields)
+	for _, exc := range excs {
+		c.classes["builtins."+exc.Name].typ.Fields = classTypeFields(c.classes["builtins."+exc.Name].fields)
 	}
 }
 
@@ -1430,7 +1623,7 @@ func (c *checker) computeClassIntervals() {
 }
 
 func (c *checker) classStmt(n *ast.Class) {
-	info := c.classes[n.Name.Name]
+	info := c.classes[c.key(n.Name.Name)]
 	if info == nil {
 		return
 	}
@@ -1452,7 +1645,7 @@ func (c *checker) classStmt(n *ast.Class) {
 		c.errs.Add(dec.Pos(), token.UnsupportedFeature, "class decorator @%s is not supported", dec.Name)
 	}
 	if n.BaseClass != nil {
-		base := c.classes[n.BaseClass.Name]
+		base := c.classes[c.resolveName(n.BaseClass.Name).key]
 		if base == nil {
 			c.errs.Add(n.BaseClass.Pos(), token.UnsupportedType, "unknown base class %q", n.BaseClass.Name)
 		} else if base == info {
@@ -1489,18 +1682,29 @@ func (c *checker) classStmt(n *ast.Class) {
 }
 
 func (c *checker) exceptionClass(e ast.Expr) *class {
-	name, ok := e.(*ast.Name)
-	if !ok {
+	display := ""
+	key := ""
+	if name, ok := e.(*ast.Name); ok {
+		display = name.Name
+		key = c.resolveName(name.Name).key
+	} else if attr, ok := e.(*ast.Attribute); ok {
+		display = attr.Name
+		if mod, ok := c.moduleExpr(attr.X); ok {
+			res := c.resolveModuleAttr(mod, attr.Name)
+			key = res.key
+			c.attrSym[attr] = key
+		}
+	} else {
 		c.errs.Add(e.Pos(), token.UnsupportedFeature, "exception type must be a class name")
 		return nil
 	}
-	info := c.classes[name.Name]
+	info := c.classes[key]
 	if info == nil {
-		if _, ok := types.Resolve(name.Name); ok {
-			c.errs.Add(e.Pos(), token.TypeMismatch, "except type must inherit from Exception, got %s", name.Name)
+		if _, ok := types.Resolve(display); ok {
+			c.errs.Add(e.Pos(), token.TypeMismatch, "except type must inherit from Exception, got %s", display)
 			return nil
 		}
-		c.errs.Add(e.Pos(), token.UndefinedName, "class %q is not defined", name.Name)
+		c.errs.Add(e.Pos(), token.UndefinedName, "class %q is not defined", display)
 		return nil
 	}
 	if !c.isException(info.name) {
@@ -1580,6 +1784,7 @@ func (c *checker) classMethod(info *class, n *ast.Function) {
 		}
 	}
 	method := newFunction(info.name + "." + n.Name.Name)
+	method.mod = c.mod
 	method.setParams(params)
 	method.result = result
 	method.inferResult = inferResult
@@ -1631,6 +1836,7 @@ func (c *checker) nestedFuncs(info *function, body []ast.Stmt) {
 			continue
 		}
 		child := newFunction(f.Name.Name)
+		child.mod = c.mod
 		child.generator = containsYield(f.Body)
 		child.parent = info
 		c.checkParamFeatures(f.Params)
@@ -1667,13 +1873,13 @@ func (c *checker) paramType(p *ast.Param) types.Type {
 
 func (c *checker) resolveType(e ast.Expr) types.Type {
 	if name, ok := e.(*ast.Name); ok {
-		if alias, ok := c.aliases[name.Name]; ok {
+		if alias, ok := c.aliases[c.resolveName(name.Name).key]; ok {
 			return alias
 		}
 		if resolved, known := types.Resolve(name.Name); known {
 			return resolved
 		}
-		if cls, known := c.classes[name.Name]; known {
+		if cls, known := c.classes[c.resolveName(name.Name).key]; known {
 			return cls.typ
 		}
 		c.errs.Add(e.Pos(), token.UnsupportedType, "unknown type %q", name.Name)
@@ -1772,7 +1978,37 @@ func (c *checker) resolveType(e ast.Expr) types.Type {
 			return types.Invalid
 		}
 	}
+	if attr, ok := e.(*ast.Attribute); ok {
+		if mod, ok := c.moduleExpr(attr.X); ok {
+			res := c.resolveModuleAttr(mod, attr.Name)
+			if res.kind == "class" {
+				c.attrSym[attr] = res.key
+				return c.classes[res.key].typ
+			}
+		}
+		c.errs.Add(e.Pos(), token.UnsupportedType, "unsupported type annotation")
+		return types.Invalid
+	}
 	return types.Invalid
+}
+
+func (c *checker) moduleExpr(e ast.Expr) (string, bool) {
+	switch x := e.(type) {
+	case *ast.Name:
+		res := c.resolveName(x.Name)
+		if res.kind == "module" {
+			return res.module, true
+		}
+	case *ast.Attribute:
+		if mod, ok := c.moduleExpr(x.X); ok {
+			res := c.resolveModuleAttr(mod, x.Name)
+			if res.kind == "module" {
+				c.attrMod[x] = res.module
+				return res.module, true
+			}
+		}
+	}
+	return "", false
 }
 
 func (c *checker) functionStmt(n *ast.Function) {
@@ -1796,7 +2032,7 @@ func (c *checker) functionStmt(n *ast.Function) {
 		c.checkFunctionBody(n.Body, n.Params, info, n.Pos())
 		return
 	}
-	info := c.functions[n.Name.Name]
+	info := c.functions[c.key(n.Name.Name)]
 	if info == nil {
 		return
 	}
@@ -1821,7 +2057,11 @@ func (c *checker) checkParamFeatures(params []*ast.Param) {
 
 func (c *checker) checkFunctionBody(body []ast.Stmt, params []*ast.Param, info *function, pos token.Pos) {
 	prev := c.current
+	prevMod := c.mod
 	c.current = info
+	if info.mod != nil {
+		c.mod = info.mod
+	}
 	c.nestedFuncs(info, body)
 	for i, p := range info.params {
 		if _, exists := info.locals[p.name]; exists {
@@ -1853,6 +2093,7 @@ func (c *checker) checkFunctionBody(body []ast.Stmt, params []*ast.Param, info *
 		c.errs.Add(pos, token.TypeMismatch, "function %q may fall through without returning %s", info.name, info.result)
 	}
 	c.current = prev
+	c.mod = prevMod
 }
 
 func (c *checker) returnStmt(n *ast.Return) {
@@ -2073,6 +2314,7 @@ func (c *checker) specialize(info *function, argTypes []types.Type) *specializat
 	}
 
 	clone := newFunction(info.name + "$" + key)
+	clone.mod = info.mod
 	clone.setParams(params)
 	clone.inferResult = info.inferResult
 	clone.result = info.result
@@ -2395,6 +2637,31 @@ func (c *checker) checkSliceBounds(n *ast.Slice) {
 }
 
 func (c *checker) fieldType(n *ast.Attribute, receiver types.Type) types.Type {
+	if mod, ok := receiver.(*types.Module); ok {
+		res := c.resolveModuleAttr(mod.Name, n.Name)
+		switch res.kind {
+		case "module":
+			c.attrMod[n] = res.module
+			return types.NewModule(res.module)
+		case "native":
+			c.attrNative[n] = res.native
+			c.errs.Add(n.Pos(), token.UnsupportedFeature, "native function %q is not a first-class value", nativeDisplay(res.key))
+			return types.Invalid
+		case "function":
+			info := c.functions[res.key]
+			c.attrSym[n] = res.key
+			return types.NewCallable(srcTypes(info.params), info.result)
+		case "class":
+			c.attrSym[n] = res.key
+			c.errs.Add(n.Pos(), token.UnsupportedFeature, "class value %q is not supported", n.Name)
+			return types.Invalid
+		case "global":
+			c.attrSym[n] = res.key
+			return c.globals[res.key].typ
+		}
+		c.errs.Add(n.Pos(), token.UndefinedName, "module %q has no attribute %q", mod.Name, n.Name)
+		return types.Invalid
+	}
 	cls, ok := receiver.(*types.Class)
 	if !ok {
 		if receiver != types.Invalid {
@@ -2476,13 +2743,20 @@ func (c *checker) nameType(n *ast.Name) types.Type {
 			return cap.typ
 		}
 	}
-	if info, ok := c.functions[n.Name]; ok {
+	res := c.resolveName(n.Name)
+	switch res.kind {
+	case "module":
+		return types.NewModule(res.module)
+	case "native":
+		c.errs.Add(n.Pos(), token.UnsupportedFeature, "native function %q is not a first-class value", nativeDisplay(res.key))
+		return types.Invalid
+	case "function":
+		info := c.functions[res.key]
 		if !info.slot.init {
 			c.errs.Add(n.Pos(), token.UseBeforeDefinition, "function %q used before definition", n.Name)
 		}
 		return types.NewCallable(srcTypes(info.params), info.result)
-	}
-	if _, ok := c.classes[n.Name]; ok {
+	case "class":
 		c.errs.Add(n.Pos(), token.UnsupportedFeature, "class value %q is not supported", n.Name)
 		return types.Invalid
 	}
@@ -2490,7 +2764,12 @@ func (c *checker) nameType(n *ast.Name) types.Type {
 }
 
 func (c *checker) global(n *ast.Name) types.Type {
-	g, ok := c.globals[n.Name]
+	res := c.resolveName(n.Name)
+	if res.kind == "module" {
+		c.errs.Add(n.Pos(), token.UnsupportedFeature, "module object is not a first-class value")
+		return types.Invalid
+	}
+	g, ok := c.globals[res.key]
 	if !ok {
 		c.errs.Add(n.Pos(), token.UndefinedName, "name %q is not defined", n.Name)
 		return types.Invalid
@@ -2668,33 +2947,11 @@ func (c *checker) compClauses(clauses []*ast.Comprehension, body func()) {
 	walk(0)
 }
 
+// unaryType, binary, binaryType, and compareType delegate to the operator
+// module, the single source of operator semantics (docs/spec/04-static-semantics.md).
+
 func (c *checker) unaryType(n *ast.UnaryExpr) types.Type {
-	t := c.expr(n.X)
-	switch n.Op {
-	case token.NOT:
-		if !types.Equal(t, types.Bool) && t != types.Invalid {
-			c.errs.Add(n.Pos(), token.TypeMismatch, "'not' requires bool, got %s", t)
-		}
-		return types.Bool
-	case token.MINUS, token.PLUS:
-		if t.IsNumeric() {
-			return t
-		}
-		if t != types.Invalid {
-			c.errs.Add(n.Pos(), token.TypeMismatch, "bad operand type for unary %s: %s", n.Op, t)
-		}
-		return types.Invalid
-	case token.TILDE:
-		if types.Equal(t, types.Int) {
-			return types.Int
-		}
-		if t != types.Invalid {
-			c.errs.Add(n.Pos(), token.TypeMismatch, "bad operand type for unary ~: %s", t)
-		}
-		return types.Invalid
-	default:
-		return types.Invalid
-	}
+	return operator.UnaryType(c, n.Op, n.X)
 }
 
 func (c *checker) binary(n *ast.BinaryExpr) types.Type {
@@ -2703,66 +2960,8 @@ func (c *checker) binary(n *ast.BinaryExpr) types.Type {
 	return c.binaryType(left, n.Op, right, n.Pos())
 }
 
-// binaryType applies the arithmetic/bitwise/shift typing rules
-// (docs/spec/04-static-semantics.md). Mixed int/float and bool arithmetic are
-// rejected; `str + str` is the only non-numeric case.
 func (c *checker) binaryType(left types.Type, op token.Type, right types.Type, pos token.Pos) types.Type {
-	if left == types.Invalid || right == types.Invalid {
-		return types.Invalid
-	}
-	switch op {
-	case token.AT:
-		c.errs.Add(pos, token.UnsupportedFeature, "matrix multiplication is not supported yet")
-		return types.Invalid
-	case token.PLUS:
-		if types.Equal(left, types.Str) && types.Equal(right, types.Str) {
-			return types.Str
-		}
-		if list, ok := left.(*types.List); ok && types.AssignableTo(right, left) {
-			return types.NewList(list.Elem)
-		}
-		return c.arith(left, op, right, pos)
-	case token.STAR:
-		if types.Equal(left, types.Str) && types.Equal(right, types.Int) {
-			return types.Str
-		}
-		if list, ok := left.(*types.List); ok && types.Equal(right, types.Int) {
-			return types.NewList(list.Elem)
-		}
-		return c.arith(left, op, right, pos)
-	case token.MINUS, token.DOUBLESLASH, token.PERCENT, token.DOUBLESTAR:
-		return c.arith(left, op, right, pos)
-	case token.SLASH:
-		if types.Equal(left, types.Int) && types.Equal(right, types.Int) {
-			return types.Float
-		}
-		if types.Equal(left, types.Float) && types.Equal(right, types.Float) {
-			return types.Float
-		}
-		return c.mismatch(op, left, right, pos)
-	case token.AMP, token.PIPE, token.CARET, token.LSHIFT, token.RSHIFT:
-		if types.Equal(left, types.Int) && types.Equal(right, types.Int) {
-			return types.Int
-		}
-		return c.mismatch(op, left, right, pos)
-	default:
-		return types.Invalid
-	}
-}
-
-func (c *checker) arith(left types.Type, op token.Type, right types.Type, pos token.Pos) types.Type {
-	if types.Equal(left, types.Int) && types.Equal(right, types.Int) {
-		return types.Int
-	}
-	if types.Equal(left, types.Float) && types.Equal(right, types.Float) {
-		return types.Float
-	}
-	return c.mismatch(op, left, right, pos)
-}
-
-func (c *checker) mismatch(op token.Type, left, right types.Type, pos token.Pos) types.Type {
-	c.errs.Add(pos, token.TypeMismatch, "unsupported operand type(s) for %s: %s and %s", op, left, right)
-	return types.Invalid
+	return operator.BinaryType(c, left, op, right, pos)
 }
 
 func (c *checker) boolOpType(n *ast.BoolOp) types.Type {
@@ -2778,76 +2977,9 @@ func (c *checker) compareType(n *ast.Compare) types.Type {
 	prev := c.expr(n.X)
 	for i, op := range n.Ops {
 		right := c.expr(n.Comparators[i])
-		c.checkComparable(op, prev, right, n.Pos())
+		operator.Comparable(c, op, prev, right, n.Pos())
 		prev = right
 	}
-	return types.Bool
-}
-
-func (c *checker) checkComparable(op token.Type, left, right types.Type, pos token.Pos) {
-	if left == types.Invalid || right == types.Invalid {
-		return
-	}
-	if op == token.IS || op == token.ISNOT {
-		if !identityComparable(left) || !identityComparable(right) {
-			c.errs.Add(pos, token.TypeMismatch, "'%s' requires reference operands, got %s and %s", op, left, right)
-		}
-		return
-	}
-	if op == token.IN || op == token.NOTIN {
-		if !containsType(left, right) {
-			c.errs.Add(pos, token.NotIterable, "'%s' requires container RHS, got %s in %s", op, left, right)
-		}
-		return
-	}
-	if types.Equal(left, types.None) || types.Equal(right, types.None) {
-		c.errs.Add(pos, token.UnsupportedFeature, "comparing to None uses 'is'")
-		return
-	}
-	if !types.Equal(left, right) {
-		c.errs.Add(pos, token.NotComparable, "'%s' not supported between instances of %s and %s", op, left, right)
-	}
-}
-
-func identityComparable(t types.Type) bool {
-	if types.Equal(t, types.None) || types.Equal(t, types.Str) || types.IsAny(t) {
-		return true
-	}
-	switch t.(type) {
-	case *types.List, *types.Dict, *types.Set, *types.Tuple, *types.Class, *types.Iterator, *types.Callable, *types.Union:
-		return true
-	default:
-		return false
-	}
-}
-
-func containsType(needle, haystack types.Type) bool {
-	switch t := haystack.(type) {
-	case *types.List:
-		return types.AssignableTo(needle, t.Elem)
-	case *types.Dict:
-		return types.AssignableTo(needle, t.Key)
-	case *types.Set:
-		return types.AssignableTo(needle, t.Elem)
-	default:
-		return types.Equal(haystack, types.Str) && types.Equal(needle, types.Str)
-	}
-}
-
-// isinstanceType checks isinstance(value, T). The first argument is any value;
-// the second is a type operand (resolved as an annotation, not a value) whose
-// resolved type is recorded for the compiler to lower as a REF_TEST.
-func (c *checker) isinstanceType(n *ast.CallExpr) types.Type {
-	if len(n.Args) != 2 {
-		c.errs.Add(n.Pos(), token.ArityMismatch, "isinstance() takes exactly 2 arguments (%d given)", len(n.Args))
-		for _, a := range n.Args {
-			c.expr(a)
-		}
-		return types.Bool
-	}
-	c.expr(n.Args[0])
-	t := c.resolveType(n.Args[1])
-	c.types[n.Args[1]] = t
 	return types.Bool
 }
 
@@ -2871,37 +3003,17 @@ func (c *checker) callType(n *ast.CallExpr) types.Type {
 		return c.callableCallType(n, fnType)
 	}
 
-	if name.Name == "isinstance" {
-		return c.isinstanceType(n)
-	}
-
-	if cls, ok := c.classes[name.Name]; ok {
+	res := c.resolveName(name.Name)
+	if res.kind == "class" {
+		cls := c.classes[res.key]
 		argExprs, argTypes, ok := c.constructorArgs(n, cls)
 		if !ok {
 			return types.Invalid
 		}
 		return c.constructorCallType(n, cls, argExprs, argTypes)
 	}
-	if info, ok := c.functions[name.Name]; ok {
-		if c.current == nil && !info.slot.init {
-			c.errs.Add(name.Pos(), token.UseBeforeDefinition, "function %q used before definition", name.Name)
-			return types.Invalid
-		}
-		argExprs, argTypes, ok := c.resolveFunctionArgs(n, info)
-		if !ok {
-			return types.Invalid
-		}
-		if spec := c.specialize(info, argTypes); spec != nil {
-			c.callSpec[n] = spec
-			return spec.info.result
-		}
-		for i, arg := range argTypes {
-			pt := info.params[i].typ
-			if arg != types.Invalid && pt != types.Invalid && !types.AssignableTo(arg, pt) {
-				c.errs.Add(argExprs[i].Pos(), token.TypeMismatch, "%s() argument %d must be %s, got %s", name.Name, i+1, pt, arg)
-			}
-		}
-		return info.result
+	if res.kind == "function" {
+		return c.directFunctionCallType(n, c.functions[res.key], name.Name)
 	}
 	if c.current != nil {
 		if l, ok := c.current.locals[name.Name]; ok {
@@ -2911,10 +3023,11 @@ func (c *checker) callType(n *ast.CallExpr) types.Type {
 			return c.callableCallType(n, cap.typ)
 		}
 	}
-	if g, ok := c.globals[name.Name]; ok && !isBuiltin(name.Name) {
+	if res.kind == "global" {
+		g := c.globals[res.key]
 		return c.callableCallType(n, g.typ)
 	}
-	if !isBuiltin(name.Name) {
+	if res.kind != "native" {
 		for _, arg := range n.StarArgs {
 			c.expr(arg)
 			c.errs.Add(arg.Pos(), token.UnsupportedFeature, "starred calls require a known minipy function or method")
@@ -2922,41 +3035,49 @@ func (c *checker) callType(n *ast.CallExpr) types.Type {
 		c.errs.Add(name.Pos(), token.UndefinedName, "name %q is not defined", name.Name)
 		return types.Invalid
 	}
+	return c.checkNativeCall(res.native, n)
+}
+
+// checkNativeCall type-checks a native call, rejecting starred and keyword
+// arguments (unsupported for native functions) before delegating to the symbol.
+func (c *checker) checkNativeCall(sym module.Symbol, n *ast.CallExpr) types.Type {
 	if len(n.StarArgs) > 0 {
-		for _, arg := range n.StarArgs {
-			c.expr(arg)
-			c.errs.Add(arg.Pos(), token.UnsupportedFeature, "starred arguments for builtins are not supported yet")
+		for _, a := range n.StarArgs {
+			c.expr(a)
+			c.errs.Add(a.Pos(), token.UnsupportedFeature, "starred arguments for native functions are not supported yet")
 		}
 		return types.Invalid
 	}
 	if len(n.Keywords) > 0 {
 		for _, kw := range n.Keywords {
 			c.expr(kw.Value)
-			c.errs.Add(kw.Pos(), token.UnsupportedFeature, "keyword arguments for builtins are not supported yet")
+			c.errs.Add(kw.Pos(), token.UnsupportedFeature, "keyword arguments for native functions are not supported yet")
 		}
 		return types.Invalid
 	}
-	argTypes := make([]types.Type, len(n.Args))
-	for i, a := range n.Args {
-		argTypes[i] = c.expr(a)
+	return sym.Check(c, n.Args, n.Pos())
+}
+
+func (c *checker) directFunctionCallType(n *ast.CallExpr, info *function, display string) types.Type {
+	if c.current == nil && !info.slot.init {
+		c.errs.Add(n.Fn.Pos(), token.UseBeforeDefinition, "function %q used before definition", display)
+		return types.Invalid
 	}
-	result, ok := builtinReturn(name.Name, argTypes)
+	argExprs, argTypes, ok := c.resolveFunctionArgs(n, info)
 	if !ok {
-		if min, max, arity := builtinArity(name.Name); arity && (len(argTypes) < min || len(argTypes) > max) {
-			if min == max {
-				c.errs.Add(n.Pos(), token.ArityMismatch, "%s() takes exactly %d argument(s) (%d given)", name.Name, min, len(argTypes))
-			} else {
-				c.errs.Add(n.Pos(), token.ArityMismatch, "%s() takes %d to %d arguments (%d given)", name.Name, min, max, len(argTypes))
-			}
-			return types.Invalid
-		}
-		c.errs.Add(n.Pos(), token.TypeMismatch, "%s() does not accept these arguments", name.Name)
 		return types.Invalid
 	}
-	if name.Name == "range" && len(n.Args) == 3 && isConstIntLiteral(n.Args[2]) && constIntValue(n.Args[2]) == 0 {
-		c.errs.Add(n.Args[2].Pos(), token.SyntaxError, "range() step must not be zero")
+	if spec := c.specialize(info, argTypes); spec != nil {
+		c.callSpec[n] = spec
+		return spec.info.result
 	}
-	return result
+	for i, arg := range argTypes {
+		pt := info.params[i].typ
+		if arg != types.Invalid && pt != types.Invalid && !types.AssignableTo(arg, pt) {
+			c.errs.Add(argExprs[i].Pos(), token.TypeMismatch, "%s() argument %d must be %s, got %s", display, i+1, pt, arg)
+		}
+	}
+	return info.result
 }
 
 func (c *checker) checkVariadicCallExtras(n *ast.CallExpr) bool {
@@ -3218,22 +3339,34 @@ func (c *checker) callableCallType(n *ast.CallExpr, value types.Type) types.Type
 	return callable.Return
 }
 
-func builtinArity(name string) (min int, max int, ok bool) {
-	switch name {
-	case "print", "str", "int", "float", "bool", "abs", "len", "enumerate", "iter", "next":
-		return 1, 1, true
-	case "zip":
-		return 2, 2, true
-	case "range":
-		return 1, 3, true
-	default:
-		return 0, 0, false
-	}
-}
-
 func (c *checker) methodCallType(n *ast.CallExpr, attr *ast.Attribute) types.Type {
 	receiver := c.expr(attr.X)
 	switch t := receiver.(type) {
+	case *types.Module:
+		res := c.resolveModuleAttr(t.Name, attr.Name)
+		switch res.kind {
+		case "native":
+			c.attrNative[attr] = res.native
+			return c.checkNativeCall(res.native, n)
+		case "function":
+			info := c.functions[res.key]
+			c.attrSym[attr] = res.key
+			return c.directFunctionCallType(n, info, attr.Name)
+		case "class":
+			cls := c.classes[res.key]
+			c.attrSym[attr] = res.key
+			argExprs, argTypes, ok := c.constructorArgs(n, cls)
+			if !ok {
+				return types.Invalid
+			}
+			return c.constructorCallType(n, cls, argExprs, argTypes)
+		default:
+			c.errs.Add(n.Pos(), token.UndefinedName, "module %q has no attribute %q", t.Name, attr.Name)
+			for _, arg := range n.Args {
+				c.expr(arg)
+			}
+			return types.Invalid
+		}
 	case *types.Class:
 		info := c.classes[t.Name]
 		if info == nil {

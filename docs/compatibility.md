@@ -34,9 +34,9 @@ Status key:
 | `raise` statement | ✅ | `raise ... from ...` evaluates/checks cause but does not preserve chained traceback. |
 | `break` statement | ✅ |  |
 | `continue` statement | ✅ |  |
-| `import` statement | ◐ | Parsed, then rejected; module loading/linking is not implemented. |
-| `from ... import ...` statement | ◐ | Parsed, then rejected; module loading/linking is not implemented. |
-| `from __future__ import ...` statement | ◐ | Covered by import parsing; no future-feature handling. |
+| `import` statement | ✅ | Native modules (`builtins`, `operator`) and source modules load from explicit `fs.FS` search roots; packages, dotted imports, aliases, and circular-import diagnostics are supported. |
+| `from ... import ...` statement | ✅ | Supports symbols, submodules, aliases, and relative imports. `from ... import *` is rejected. |
+| `from __future__ import ...` statement | ◐ | Parsed as a normal import; no future-feature handling. |
 | `global` statement | ✅ |  |
 | `nonlocal` statement | ✅ |  |
 | `type` alias statement | ✅ | Simple aliases to supported minipy types are available after declaration. |
@@ -117,7 +117,7 @@ Status key:
 | Dictionary comprehension | ✅ |  |
 | Generator expression | ◐ | Compiles as eager iterator construction on the current VM. |
 | Async comprehension | ◐ | Parsed, then rejected until scheduler/coroutine support exists. |
-| Attribute reference | ✅ | Supported for known minipy objects/classes. |
+| Attribute reference | ✅ | Supported for known minipy objects/classes and imported module members. |
 | Subscription/indexing | ✅ | Tuple index must be constant. |
 | Slicing | ✅ | List and string slicing support optional start/stop/step. |
 | Call expression | ✅ | Positional calls compile. |

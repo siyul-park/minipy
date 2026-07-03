@@ -1,9 +1,14 @@
-# minipy — Builtins & Host ABI
+# minipy — Native Modules & Host ABI
 
-minipy ships a small, typed builtin namespace. Each builtin is either **lowered
-inline** to opcodes or **bound to a minivm host function**. There is no Python
-`builtins` module object and no runtime name lookup — builtins are resolved at
-compile time.
+minipy ships small typed native modules. Each native function is either
+**lowered inline** to opcodes or **bound to a minivm host function**. Bare
+builtin lookup is a fallback to the native `builtins` module, so
+`import builtins; builtins.print(x)` and `from builtins import print as p` use the
+same lowering as bare `print(x)`. The `operator` native module exposes Python's
+operator-function names (`add`, `floordiv`, `eq`, `not_`, `contains`, ...).
+Internally, a native module is a synthetic module entry plus a symbol table whose
+exports map to `minivm/types.Value`; inline-only symbols use a native intrinsic
+marker while host-backed symbols store the `interp.HostFunction` value.
 
 ## Binding strategies
 
@@ -12,8 +17,8 @@ compile time.
 2. **Host function** — bound to a Go `interp.HostFunction` placed in the constant
    pool; emitted as `CONST_GET <i>; CALL`. Used for I/O and runtime helpers.
 
-Builtins are statically typed; calling one with the wrong type/arity is a compile
-error (`TypeMismatch`/`ArityMismatch`), not a runtime `TypeError`.
+Native functions are statically typed; calling one with the wrong type/arity is a
+compile error (`TypeMismatch`/`ArityMismatch`), not a runtime `TypeError`.
 
 ## Core builtins (M0–M3)
 
@@ -28,6 +33,21 @@ error (`TypeMismatch`/`ArityMismatch`), not a runtime `TypeError`.
 | `bool` | `(int\|float\|str) -> bool` | inline (`!= 0` / nonempty) |
 | `abs` | `(int) -> int`, `(float) -> float` | inline (branch / `F64_ABS`) |
 | `min` / `max` | `(int,int)->int`, `(float,float)->float` | inline (compare + `SELECT` / `F64_MIN`/`MAX`) |
+
+## `operator` native module (M8)
+
+`operator` uses Python's standard function names for syntax operators:
+
+| function | syntax |
+|---|---|
+| `add`, `sub`, `mul`, `truediv`, `floordiv`, `mod`, `pow` | `+`, `-`, `*`, `/`, `//`, `%`, `**` |
+| `and_`, `or_`, `xor`, `lshift`, `rshift` | `&`, `|`, `^`, `<<`, `>>` |
+| `neg`, `pos`, `invert`, `abs` | unary `-`, unary `+`, `~`, `abs` |
+| `eq`, `ne`, `lt`, `le`, `gt`, `ge` | comparisons |
+| `contains`, `truth`, `not_` | `b in a`, `bool(x)`, `not x` |
+
+These functions are not first-class runtime values; they are compile-time native
+symbols and must be called directly.
 
 `print` is the canonical host function. Its Go shape (per minivm
 [host-integration](https://github.com/siyul-park/minivm/blob/main/docs/host-integration.md)):
@@ -55,13 +75,15 @@ A first-class lazy `range` object is deferred to M6 (it is naturally a generator
 | M5 | `isinstance` (limited, for class hierarchy), `@dataclass`, `@staticmethod` |
 | M6 | `iter`, `next`, lazy `range` object |
 | M7 | exception classes `Exception`, `ValueError`, `KeyError`, `IndexError`, … |
-| M8 | a curated typed stdlib subset (`math`, `random`, …) exposed as host modules |
+| M8 | native `builtins` and `operator` modules plus source module imports; curated typed stdlib native modules remain future library work |
 | M10 | `isinstance(x, T)` narrows arbitrary union/`Any` members (lowered to `REF_TEST`) |
 
 ## Host-function ABI (for embedders)
 
-minipy programs run inside a host Go program that calls minivm `interp.New`. The
-host provides the implementations behind builtin/stdlib host functions. Contract:
+minipy programs run inside a host Go program that calls minivm `interp.New`.
+Native modules provide host functions for their own exported symbols; compiler
+lowering helpers create any extra host functions needed for non-symbol runtime
+operations. Contract:
 
 - A host function has a `*types.FunctionType` (params/returns) that **must match**
   the type minipy assigns to the builtin; minipy emits calls assuming this ABI.
@@ -72,10 +94,9 @@ host provides the implementations behind builtin/stdlib host functions. Contract
 - Resource and policy limits (heap, fuel, I/O sinks) are the host's to set via
   minivm options — minipy does not bypass them.
 
-A minipy compilation therefore produces both a `program.Program` and a manifest of
-required host functions (name → `FunctionType`), so an embedder knows exactly what
-to register. Standard builtins ship as a default registry the CLI installs
-automatically.
+Native functions that need host support are inserted into the program constant
+pool as `interp.HostFunction` values. Inline native functions emit bytecode
+directly.
 
 ## Out of scope
 

@@ -1393,8 +1393,8 @@ func TestCompileErrors(t *testing.T) {
 		"x: int = 1\nprint(str(x is 1))\n":                          token.TypeMismatch,
 		"try:\n    x = 1\nexcept ValueError:\n    pass\nprint(x)\n": token.UseBeforeDefinition,
 		// Python 3.13 parse-only forms
-		"import math\n":                                   token.UnsupportedFeature,
-		"from math import sqrt\n":                         token.UnsupportedFeature,
+		"import math\n":                                   token.ModuleNotFound,
+		"from math import sqrt\n":                         token.ModuleNotFound,
 		"async def f():\n    return None\n":               token.UnsupportedFeature,
 		"async for x in xs:\n    pass\n":                  token.UnsupportedFeature,
 		"async with cm:\n    pass\n":                      token.UnsupportedFeature,
