@@ -9,12 +9,15 @@ Types are written with Python type-hint syntax and map onto minivm runtime types
 |---|---|---|
 | `int` | `i64` | signed 64-bit, **wraps** on overflow; no bigint |
 | `float` | `f64` | IEEE-754 double |
-| `bool` | `i32` | `True`=1, `False`=0 (`BoxBool`) |
+| `bool` | `i1` | `True`=1, `False`=0 (`BoxI1`); shares the 32-bit slot with `i32`/`i8` |
 | `str` | `String` | immutable UTF-32 codepoint sequence, interned |
 | `None` (`NoneType`) | `REF_NULL` | the single null value |
 
-`bool` is represented as `i32` but is **a distinct type** from `int` in minipy's
-checker (unlike CPython where `bool` ⊂ `int`). A `bool` is not assignable to an
+`bool` lowers to `i1` (which shares minivm's 32-bit slot with `i32`/`i8`) but is
+**a distinct type** from `int` in minipy's checker (unlike CPython where `bool` ⊂
+`int`). There is no `i1` const opcode, so literals are pushed as `i32` and
+normalized to `i1` via `!= 0`; comparisons, `*.eqz`, membership, and conversions
+already yield `i1`, so bool values are uniformly `i1`-kinded at runtime. A `bool` is not assignable to an
 `int` target without `int(b)`; this avoids accidental `True + 1` style code.
 Arithmetic on `bool` is rejected — convert explicitly.
 
@@ -49,8 +52,9 @@ holds only `int`. A heterogeneous `list` requires `list[Any]` (dynamic, M10).
 
 ### dict key types
 
-minivm maps key by **value identity** for `i32/i64/f32/f64` and by **heap ref
-identity** otherwise. So `dict[int, V]` and `dict[float, V]` use the specialized
+minivm maps key by **value identity** for `i1/i8/i32/i64/f32/f64` and by **heap ref
+identity** otherwise. So `dict[bool, V]` (`i1`), `dict[int, V]` and `dict[float, V]`
+use the specialized
 maps; `dict[str, V]` uses the generic `*Map` keyed by interned-string ref
 identity (correct because equal strings share one ref). Keys must be a hashable
 primitive or `str`; `dict[list, …]` is rejected.

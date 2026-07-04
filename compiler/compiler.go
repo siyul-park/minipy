@@ -1694,17 +1694,7 @@ func (c *Compiler) expr(n ast.Expr) {
 	case *ast.FloatLit:
 		c.emit(instr.F64_CONST, math.Float64bits(x.Value))
 	case *ast.BoolLit:
-		// bool lowers to i1. There is no i1 const opcode, so push the value as
-		// i32 and normalize to i1 via `!= 0` so the result carries KindI1 — this
-		// keeps bool literals interchangeable with comparison results (e.g. as
-		// map keys, where the verifier matches key kinds exactly).
-		if x.Value {
-			c.emit(instr.I32_CONST, 1)
-		} else {
-			c.emit(instr.I32_CONST, 0)
-		}
-		c.emit(instr.I32_CONST, 0)
-		c.emit(instr.I32_NE)
+		c.emitBool(x.Value)
 	case *ast.NoneLit:
 		c.emit(instr.REF_NULL)
 	case *ast.StrLit:
@@ -2484,6 +2474,21 @@ func (c *Compiler) methodCall(x *ast.CallExpr, attr *ast.Attribute) {
 	}
 }
 
+// emitBool pushes a bool literal as an i1 value. There is no i1 const opcode,
+// so the value is pushed as i32 and normalized to i1 via `!= 0`, giving the
+// result KindI1 — matching comparison results so bool literals stay
+// interchangeable with them (e.g. as map keys, where the verifier matches key
+// kinds exactly).
+func (c *Compiler) emitBool(v bool) {
+	if v {
+		c.emit(instr.I32_CONST, 1)
+	} else {
+		c.emit(instr.I32_CONST, 0)
+	}
+	c.emit(instr.I32_CONST, 0)
+	c.emit(instr.I32_NE)
+}
+
 func (c *Compiler) emitZeroValue(t types.Type) {
 	switch {
 	case types.Equal(t, types.Int):
@@ -2491,7 +2496,7 @@ func (c *Compiler) emitZeroValue(t types.Type) {
 	case types.Equal(t, types.Float):
 		c.emit(instr.F64_CONST, 0)
 	case types.Equal(t, types.Bool):
-		c.emit(instr.I32_CONST, 0)
+		c.emitBool(false)
 	case types.Equal(t, types.Str):
 		c.constGet(vmtypes.String(""))
 	default:
@@ -3023,10 +3028,9 @@ func mapEntries(i *interp.Interpreter, ref vmtypes.Boxed) ([]vmtypes.Boxed, []vm
 
 func mapKey(v vmtypes.Boxed) vmtypes.MapKey {
 	switch v.Kind() {
-	// bool keys may arrive as i1 (comparisons) or i32 (literals); canonicalize
-	// to one i32 key so the two representations hash and compare alike.
-	case vmtypes.KindI1, vmtypes.KindI32:
-		return vmtypes.MapKey{Kind: vmtypes.KindI32, Bits: uint64(uint32(v.I32()))}
+	// bool lowers to i1 uniformly (literals and comparison results alike).
+	case vmtypes.KindI1:
+		return vmtypes.MapKey{Kind: vmtypes.KindI1, Bits: uint64(uint32(v.I32()))}
 	case vmtypes.KindI64:
 		return vmtypes.MapKey{Kind: vmtypes.KindI64, Bits: uint64(v.I64())}
 	case vmtypes.KindF32:
