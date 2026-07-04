@@ -59,7 +59,7 @@ pushed left then right; the binary op pops both.
 | `& \| ^ << >>` | `I64_AND/OR/XOR/SHL/SHR_S` | — (int only) |
 | unary `-` | `I64_CONST 0` `SWAP` `I64_SUB` | `F64_NEG` |
 | unary `~` | `I64_CONST -1` `I64_XOR` | — |
-| `== != < <= > >=` | `I64_EQ/NE/LT_S/LE_S/GT_S/GE_S` → i32 | `F64_EQ/NE/LT/LE/GT/GE` → i32 |
+| `== != < <= > >=` | `I64_EQ/NE/LT_S/LE_S/GT_S/GE_S` → i1 | `F64_EQ/NE/LT/LE/GT/GE` → i1 |
 
 `int / int` always yields `float` (matches Python true division): convert both
 operands with `I64_TO_F64_S`, then `F64_DIV`. Overflow on `+ - * <<` is **not**
@@ -73,11 +73,12 @@ long enough to become the left operand of the next comparison.
 
 ## Boolean & short-circuit
 
-`a and b` / `a or b` short-circuit via branches (operands are `bool`=i32):
+`a and b` / `a or b` short-circuit via branches (operands are `bool`=i1; comparison
+opcodes and `*.eqz` push runtime kind `i1`, which shares the i32 slot):
 
 ```text
 # a and b
-<a>                 # i32 on stack
+<a>                 # i1 on stack
 DUP
 BR_IF  L_eval_b     # if a != 0, evaluate b
 BR     L_end        # else result is a (false)
@@ -95,7 +96,7 @@ L_end:
 ### if / elif / else
 
 ```text
-<cond>            # i32
+<cond>            # i1
 I32_EQZ           # invert: jump when false
 BR_IF L_else
 <then-block>
@@ -290,7 +291,7 @@ Pattern matching lowers to a decision tree:
 - sequence/mapping/class patterns emit shape tests followed by element/field tests;
 - alternatives (`p1 | p2`) branch to shared success/failure labels;
 - captures bind with `LOCAL_SET`/`GLOBAL_SET` in the selected case arm only;
-- guards run after a pattern succeeds and must leave an i32 bool for `BR_IF`.
+- guards run after a pattern succeeds and must leave an i1 bool for `BR_IF`.
 
 The subject is evaluated once into a temp slot; sub-values are extracted into
 fresh temp slots for recursive tests. Starred sequence captures (`[a, *rest]`)
@@ -320,7 +321,8 @@ stayed a union or `Any`.
   `TypeError` at runtime — **unless** flow analysis already proved the type, in
   which case nothing is emitted. A slot inference resolved to concrete never reaches
   this path.
-- **`isinstance(x, T)`** → `REF_TEST <T>` → i32. In the true branch the checker
+- **`isinstance(x, T)`** → `REF_TEST <T>` (i32 flag) normalized to i1 via `!= 0`,
+  so the `bool` result is uniformly `i1`-kinded. In the true branch the checker
   narrows `x` to `T`, so later uses need no further `REF_CAST`.
 - **Union dispatch.** An operation on an un-narrowed union lowers to a tag switch: a
   `REF_TEST` chain (or jump table) selecting the per-member lowering, each arm

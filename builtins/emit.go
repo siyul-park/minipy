@@ -77,6 +77,9 @@ func emitBool(e module.Emitter, args []ast.Expr) {
 			} else {
 				e.Emit(instr.I32_CONST, 1)
 			}
+			// Normalize to i1 so bool() is uniformly bool-kinded.
+			e.Emit(instr.I32_CONST, 0)
+			e.Emit(instr.I32_NE)
 		case *types.Iterator, *types.Callable, *types.Class:
 			e.Emit(instr.REF_IS_NULL)
 			e.Emit(instr.I32_EQZ)

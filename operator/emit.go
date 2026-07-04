@@ -95,6 +95,10 @@ func emitContains(e module.Emitter, op token.Type, needle, haystack types.Type) 
 		e.Emit(instr.MAP_LOOKUP)
 		e.Emit(instr.SWAP)
 		e.Emit(instr.DROP)
+		// MAP_LOOKUP's presence flag is i32; normalize to i1 so membership is
+		// uniformly bool-kinded like the list/str contains helpers.
+		e.Emit(instr.I32_CONST, 0)
+		e.Emit(instr.I32_NE)
 	case *types.List:
 		e.CallHost(listContains(needle, haystack))
 	default:

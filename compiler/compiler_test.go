@@ -1411,3 +1411,36 @@ func TestCompileErrors(t *testing.T) {
 		code(t, err, want)
 	}
 }
+
+// TestCompileBoolI1 pins down that Python bool is a uniformly i1-kinded value
+// across literals, comparisons, membership, conversions, and dict keys — the
+// value renders as True/False (KindI1) rather than leaking an i32 as None.
+func TestCompileBoolI1(t *testing.T) {
+	cases := map[string]string{
+		"bool literal":        "print(str(True))\nprint(str(False))\n",
+		"comparison":          "print(str(1 == 1))\nprint(str(1 < 0))\n",
+		"list membership":     "print(str(2 in [1, 2]))\nprint(str(3 in [1, 2]))\n",
+		"list not in":         "print(str(3 not in [1, 2]))\n",
+		"str membership":      "print(str('b' in 'abc'))\n",
+		"dict membership":     "d: dict[str, int] = {'x': 1}\nprint(str('x' in d))\nprint(str('y' in d))\n",
+		"bool of empty tuple": "print(str(bool(())))\n",
+		"bool of int":         "print(str(bool(0)))\nprint(str(bool(5)))\n",
+		"bool dict key":       "d: dict[bool, int] = {True: 1, False: 2}\nprint(str(d[True]))\nprint(str(d[False]))\n",
+	}
+	want := map[string]string{
+		"bool literal":        "True\nFalse\n",
+		"comparison":          "True\nFalse\n",
+		"list membership":     "True\nFalse\n",
+		"list not in":         "True\n",
+		"str membership":      "True\n",
+		"dict membership":     "True\nFalse\n",
+		"bool of empty tuple": "False\n",
+		"bool of int":         "False\nTrue\n",
+		"bool dict key":       "1\n2\n",
+	}
+	for name, src := range cases {
+		t.Run(name, func(t *testing.T) {
+			require.Equal(t, want[name], run(t, src))
+		})
+	}
+}

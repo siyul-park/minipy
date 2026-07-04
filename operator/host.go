@@ -46,27 +46,27 @@ func powFloat() *interp.HostFunction {
 
 func listContains(elem, receiver types.Type) *interp.HostFunction {
 	return interp.NewHostFunction(
-		&vmtypes.FunctionType{Params: []vmtypes.Type{receiver.VM(), elem.VM()}, Returns: []vmtypes.Type{vmtypes.TypeI32}},
+		&vmtypes.FunctionType{Params: []vmtypes.Type{receiver.VM(), elem.VM()}, Returns: []vmtypes.Type{vmtypes.TypeI1}},
 		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
 			_, elems := hostabi.ArrayElems(i, params[0])
 			for _, e := range elems {
 				if hostabi.BoxedEqual(i, e, params[1]) {
-					return []vmtypes.Boxed{vmtypes.BoxI32(1)}, nil
+					return []vmtypes.Boxed{vmtypes.BoxI1(true)}, nil
 				}
 			}
-			return []vmtypes.Boxed{vmtypes.BoxI32(0)}, nil
+			return []vmtypes.Boxed{vmtypes.BoxI1(false)}, nil
 		},
 	)
 }
 
 func strContains() *interp.HostFunction {
 	return interp.NewHostFunction(
-		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeString, vmtypes.TypeString}, Returns: []vmtypes.Type{vmtypes.TypeI32}},
+		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeString, vmtypes.TypeString}, Returns: []vmtypes.Type{vmtypes.TypeI1}},
 		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
 			if strings.Contains(hostabi.LoadStr(i, params[0]), hostabi.LoadStr(i, params[1])) {
-				return []vmtypes.Boxed{vmtypes.BoxI32(1)}, nil
+				return []vmtypes.Boxed{vmtypes.BoxI1(true)}, nil
 			}
-			return []vmtypes.Boxed{vmtypes.BoxI32(0)}, nil
+			return []vmtypes.Boxed{vmtypes.BoxI1(false)}, nil
 		},
 	)
 }

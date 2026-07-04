@@ -17,8 +17,8 @@ import (
 // FormatScalar renders a boxed scalar the way Python's str()/print() would.
 func FormatScalar(i *interp.Interpreter, v vmtypes.Boxed) string {
 	switch v.Kind() {
-	// bool lowers to i1; literals still arrive as i32 (shared representation).
-	case vmtypes.KindI1, vmtypes.KindI32:
+	// bool lowers to i1 uniformly (literals and comparison results alike).
+	case vmtypes.KindI1:
 		if v.I32() != 0 {
 			return "True"
 		}
