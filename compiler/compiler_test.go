@@ -1428,17 +1428,18 @@ func TestCompileErrors(t *testing.T) {
 		"x: int = 1\nprint(str(x is 1))\n":                          token.TypeMismatch,
 		"try:\n    x = 1\nexcept ValueError:\n    pass\nprint(x)\n": token.UseBeforeDefinition,
 		// Python 3.13 parse-only forms
-		"import math\n":                                   token.ModuleNotFound,
-		"from math import sqrt\n":                         token.ModuleNotFound,
-		"async def f():\n    return None\n":               token.UnsupportedFeature,
-		"async for x in xs:\n    pass\n":                  token.UnsupportedFeature,
-		"async with cm:\n    pass\n":                      token.UnsupportedFeature,
-		"def f(x):\n    return await x\n":                 token.UnsupportedFeature,
-		"def f(*args):\n    return None\n":                token.UnsupportedFeature,
-		"xs = [*ys]\n":                                    token.UndefinedName,
-		"g = (x for x in xs)\n":                           token.UndefinedName,
-		"print(str(1 @ 2))\n":                             token.UnsupportedFeature,
-		"try:\n    pass\nexcept* ValueError:\n    pass\n": token.UnsupportedFeature,
+		"import math\n":                                    token.ModuleNotFound,
+		"from math import sqrt\n":                          token.ModuleNotFound,
+		"async def f():\n    return None\n":                token.UnsupportedFeature,
+		"async for x in xs:\n    pass\n":                   token.UnsupportedFeature,
+		"async with cm:\n    pass\n":                       token.UnsupportedFeature,
+		"def f(x):\n    return await x\n":                  token.UnsupportedFeature,
+		"def f(*a: int, *b: int):\n    return None\n":      token.SyntaxError,
+		"def f(*xs: int):\n    return None\nf(1, \"a\")\n": token.TypeMismatch,
+		"xs = [*ys]\n":                                     token.UndefinedName,
+		"g = (x for x in xs)\n":                            token.UndefinedName,
+		"print(str(1 @ 2))\n":                              token.UnsupportedFeature,
+		"try:\n    pass\nexcept* ValueError:\n    pass\n":  token.UnsupportedFeature,
 	}
 	for src, want := range cases {
 		_, err := Compile(strings.NewReader(src), WithOutput(&bytes.Buffer{}))
@@ -1472,6 +1473,43 @@ func TestCompileBoolI1(t *testing.T) {
 		"bool of empty tuple": "False\n",
 		"bool of int":         "False\nTrue\n",
 		"bool dict key":       "1\n2\n",
+	}
+	for name, src := range cases {
+		t.Run(name, func(t *testing.T) {
+			require.Equal(t, want[name], run(t, src))
+		})
+	}
+}
+
+// TestCompileVariadic covers variadic *args / **kwargs parameters and their
+// interaction with positional, keyword-only, and default arguments (#9).
+func TestCompileVariadic(t *testing.T) {
+	cases := map[string]string{
+		"args collects surplus positionals": "def f(*xs: int) -> int:\n" +
+			"    total: int = 0\n    for x in xs:\n        total = total + x\n    return total\n" +
+			"print(str(f(1, 2, 3)))\nprint(str(f()))\n",
+		"kwargs collects surplus keywords": "def g(**kw: int) -> int:\n    return len(kw)\n" +
+			"print(str(g(a=1, b=2)))\nprint(str(g()))\n",
+		"positional then args": "def h(a: int, *rest: int) -> int:\n    return a + len(rest)\n" +
+			"print(str(h(10, 1, 2)))\nprint(str(h(10)))\n",
+		"keyword only after bare star": "def k(a: int, *, b: int) -> int:\n    return a + b\n" +
+			"print(str(k(1, b=2)))\n",
+		"defaults with args": "def d(a: int, b: int = 5, *rest: int) -> int:\n    return a + b + len(rest)\n" +
+			"print(str(d(1)))\nprint(str(d(1, 2)))\nprint(str(d(1, 2, 9, 9)))\n",
+		"args and kwargs together": "def m(a: int, *rest: int, **kw: int) -> int:\n" +
+			"    return a + len(rest) + len(kw)\n" +
+			"print(str(m(1, 2, 3, x=4)))\n",
+		"static tuple unpacks into fixed arity": "def p(a: int, b: int) -> int:\n    return a + b\n" +
+			"t: tuple[int, int] = (3, 4)\nprint(str(p(*t)))\n",
+	}
+	want := map[string]string{
+		"args collects surplus positionals":     "6\n0\n",
+		"kwargs collects surplus keywords":      "2\n0\n",
+		"positional then args":                  "12\n10\n",
+		"keyword only after bare star":          "3\n",
+		"defaults with args":                    "6\n3\n5\n",
+		"args and kwargs together":              "4\n",
+		"static tuple unpacks into fixed arity": "7\n",
 	}
 	for name, src := range cases {
 		t.Run(name, func(t *testing.T) {

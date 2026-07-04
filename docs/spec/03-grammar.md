@@ -11,9 +11,12 @@ The compiler has two support tiers:
 
 Parse-only coverage currently includes scheduler forms (`async def`, `async for`,
 `async with`, `await`, async comprehensions) and high-compatibility syntax that still needs runtime/type
-lowering (`*args`, `**kwargs`, dynamic starred calls, `**kwargs` calls, matrix
+lowering (dynamic starred calls `f(*list)`, double-star calls `f(**dict)`, matrix
 multiply, decorator expressions, multiple class bases and class keywords,
-`yield` expressions, and `except*`). See
+`yield` expressions, and `except*`). Variadic `*args`/`**kwargs` **parameters** are
+fully supported (they collect surplus positional/keyword arguments into a
+`list[T]`/`dict[str, T]`); only dynamic unpacking at the **call site** remains
+parse-only. See
 [`../compatibility.md`](../compatibility.md) for the current
 feature-by-feature matrix.
 

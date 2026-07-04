@@ -166,6 +166,15 @@ LOCAL_SET <r>
   reuses the frame) so self/mutual recursion runs in constant frame depth.
 - Default arguments are materialized at the call site by the compiler (it knows
   which args are omitted) — no runtime default machinery.
+- **Variadic parameters.** A `*args: T` parameter is a normal VM parameter of type
+  `list[T]`; a `**kwargs: T` parameter is a normal VM parameter of type
+  `dict[str, T]`. At the call site the binder collects surplus positional arguments
+  into a synthetic `list[T]` display and surplus keyword arguments into a synthetic
+  `dict[str, T]` display, so the existing `ARRAY_NEW_DEFAULT`/`MAP_NEW` lowering
+  builds the aggregate — no runtime argument-binding machinery. Fixed-arity calls
+  are unaffected and still lower directly to `CALL`. Static `*tuple` call arguments
+  expand to individual arguments at compile time; dynamic `*list`/`**dict` unpacking
+  at the call site is not yet lowered.
 
 ## Strings & containers (M3)
 
