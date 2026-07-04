@@ -1829,7 +1829,15 @@ func (c *checker) checkDataclassDefaults(info *class) {
 }
 
 func (c *checker) makeParam(p *ast.Param) parameter {
-	return c.makeParamWithType(p, c.paramType(p))
+	t := c.paramType(p)
+	// A *args parameter binds the collected surplus as list[T]; **kwargs binds
+	// it as dict[str, T]. The annotation gives the element/value type T.
+	if p.Vararg {
+		t = types.NewList(t)
+	} else if p.Kwarg {
+		t = types.NewDict(types.Str, t)
+	}
+	return c.makeParamWithType(p, t)
 }
 
 func (c *checker) makeParamWithType(p *ast.Param, t types.Type) parameter {
@@ -2060,6 +2068,7 @@ func (c *checker) functionStmt(n *ast.Function) {
 }
 
 func (c *checker) checkParamFeatures(params []*ast.Param) {
+	varargs := 0
 	for _, p := range params {
 		if p.Default != nil {
 			dt := c.exprWithHint(p.Default, c.paramType(p))
@@ -2068,8 +2077,11 @@ func (c *checker) checkParamFeatures(params []*ast.Param) {
 				c.errs.Add(p.Default.Pos(), token.TypeMismatch, "default for %q must be %s, got %s", p.Name.Name, pt, dt)
 			}
 		}
-		if p.Vararg || p.Kwarg {
-			c.errs.Add(p.Pos(), token.UnsupportedFeature, "*args and **kwargs parameters are not supported yet")
+		if p.Vararg {
+			varargs++
+			if varargs > 1 {
+				c.errs.Add(p.Pos(), token.SyntaxError, "multiple *args parameters are not allowed")
+			}
 		}
 	}
 }
@@ -3110,9 +3122,20 @@ func (c *checker) checkVariadicCallExtras(n *ast.CallExpr) bool {
 }
 
 func (c *checker) resolveFunctionArgs(n *ast.CallExpr, info *function) ([]ast.Expr, []types.Type, bool) {
-	args := make([]ast.Expr, len(info.params))
-	seen := make([]bool, len(info.params))
-	positional := 0
+	params := info.params
+	varargIdx, kwargIdx := -1, -1
+	for i, p := range params {
+		if p.vararg {
+			varargIdx = i
+		}
+		if p.kwarg {
+			kwargIdx = i
+		}
+	}
+
+	args := make([]ast.Expr, len(params))
+	seen := make([]bool, len(params))
+
 	positionalArgs := append([]ast.Expr(nil), n.Args...)
 	for _, star := range n.StarArgs {
 		expanded, ok := c.expandStarCallArg(star)
@@ -3121,25 +3144,43 @@ func (c *checker) resolveFunctionArgs(n *ast.CallExpr, info *function) ([]ast.Ex
 		}
 		positionalArgs = append(positionalArgs, expanded...)
 	}
-	for _, arg := range positionalArgs {
-		for positional < len(info.params) && info.params[positional].kind == ast.ParamKwOnly {
-			positional++
+
+	// Positional slots are the ordered params that accept a positional argument
+	// (everything before *args that is not keyword-only). Surplus positionals
+	// spill into *args when present.
+	posSlots := make([]int, 0, len(params))
+	for i, p := range params {
+		if p.vararg || p.kwarg || p.kind == ast.ParamKwOnly {
+			continue
 		}
-		if positional >= len(info.params) {
+		posSlots = append(posSlots, i)
+	}
+	var extraPositional []ast.Expr
+	for k, arg := range positionalArgs {
+		if k < len(posSlots) {
+			args[posSlots[k]] = arg
+			seen[posSlots[k]] = true
+			continue
+		}
+		if varargIdx < 0 {
 			c.errs.Add(arg.Pos(), token.ArityMismatch, "%s() takes too many positional arguments", info.name)
 			return nil, nil, false
 		}
-		args[positional] = arg
-		seen[positional] = true
-		positional++
+		extraPositional = append(extraPositional, arg)
 	}
+
+	var extraKw []*ast.Keyword
 	for _, kw := range n.Keywords {
 		idx, ok := info.paramPosition(kw.Name)
-		if !ok {
+		if !ok || params[idx].vararg || params[idx].kwarg {
+			if kwargIdx >= 0 {
+				extraKw = append(extraKw, kw)
+				continue
+			}
 			c.errs.Add(kw.Pos(), token.ArityMismatch, "%s() got an unexpected keyword argument %q", info.name, kw.Name)
 			return nil, nil, false
 		}
-		if info.params[idx].kind == ast.ParamPosOnly {
+		if params[idx].kind == ast.ParamPosOnly {
 			c.errs.Add(kw.Pos(), token.ArityMismatch, "%s() got positional-only argument %q passed as keyword", info.name, kw.Name)
 			return nil, nil, false
 		}
@@ -3150,7 +3191,27 @@ func (c *checker) resolveFunctionArgs(n *ast.CallExpr, info *function) ([]ast.Ex
 		args[idx] = kw.Value
 		seen[idx] = true
 	}
-	for i, p := range info.params {
+
+	// Materialize *args / **kwargs aggregates as synthetic list/dict displays so
+	// the existing display lowering builds the VM array/map parameter.
+	if varargIdx >= 0 {
+		args[varargIdx] = &ast.ListLit{Base: ast.Base{Position: n.Pos()}, Elems: extraPositional}
+		seen[varargIdx] = true
+	}
+	if kwargIdx >= 0 {
+		keys := make([]ast.Expr, len(extraKw))
+		vals := make([]ast.Expr, len(extraKw))
+		for i, kw := range extraKw {
+			key := &ast.StrLit{Base: ast.Base{Position: kw.Pos()}, Value: kw.Name}
+			c.types[key] = types.Str
+			keys[i] = key
+			vals[i] = kw.Value
+		}
+		args[kwargIdx] = &ast.DictLit{Base: ast.Base{Position: n.Pos()}, Keys: keys, Values: vals}
+		seen[kwargIdx] = true
+	}
+
+	for i, p := range params {
 		if seen[i] {
 			continue
 		}
@@ -3162,7 +3223,7 @@ func (c *checker) resolveFunctionArgs(n *ast.CallExpr, info *function) ([]ast.Ex
 	}
 	argTypes := make([]types.Type, len(args))
 	for i, arg := range args {
-		argTypes[i] = c.exprWithHint(arg, info.params[i].typ)
+		argTypes[i] = c.exprWithHint(arg, params[i].typ)
 	}
 	c.callArgs[n] = args
 	return args, argTypes, true

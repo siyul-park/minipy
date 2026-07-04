@@ -77,8 +77,8 @@ Status key:
 | Default parameter value | ✅ | Defaults lower at call sites. |
 | Positional-only parameter | ✅ | Keyword calls to positional-only parameters are rejected. |
 | Keyword-only parameter | ✅ |  |
-| `*args` parameter | ◐ | Parsed, then rejected; vararg representation and dispatch are missing. |
-| `**kwargs` parameter | ◐ | Parsed, then rejected; kwarg representation and dispatch are missing. |
+| `*args` parameter | ✅ | Surplus positional arguments collect into a `list[T]` parameter (`T` from the annotation, else `Any`). |
+| `**kwargs` parameter | ✅ | Surplus keyword arguments collect into a `dict[str, T]` parameter (`T` from the annotation, else `Any`). |
 | Function decorator: bare name | ✅ |  |
 | Function decorator: dotted/call expression | ◐ | Parsed, then rejected. |
 | Generic function type parameters | — | PEP 695-style type parameters are not documented as supported. |
