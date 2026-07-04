@@ -65,7 +65,7 @@ Status key:
 | Wildcard pattern | ✅ |  |
 | Value pattern | ✅ |  |
 | Group pattern | ✅ |  |
-| Sequence pattern | ◐ | Starred tuple patterns are rejected. |
+| Sequence pattern | ✅ | List and tuple starred patterns supported; a starred tuple rest must be homogeneous (binds as `list[T]`). |
 | Mapping pattern | ✅ | Supported under current mapping type restrictions. |
 | Class pattern | ✅ | Dataclass-style destructuring supported under current class restrictions. |
 | OR pattern | ✅ |  |

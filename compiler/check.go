@@ -953,7 +953,26 @@ func (c *checker) checkSequencePattern(pat *ast.SequencePattern, subjT types.Typ
 		}
 	case *types.Tuple:
 		if pat.Star >= 0 {
-			c.errs.Add(pat.Pos(), token.UnsupportedFeature, "starred pattern on a tuple is not supported")
+			prefix := pat.Star
+			suffix := len(pat.Elems) - pat.Star - 1
+			if len(s.Elems) < prefix+suffix {
+				c.errs.Add(pat.Pos(), token.PatternError, "sequence pattern expects at least %d elements, %s has %d", prefix+suffix, subjT, len(s.Elems))
+				return
+			}
+			for i := 0; i < prefix; i++ {
+				c.checkPattern(pat.Elems[i], s.Elems[i])
+			}
+			for j := 0; j < suffix; j++ {
+				c.checkPattern(pat.Elems[prefix+1+j], s.Elems[len(s.Elems)-suffix+j])
+			}
+			// The captured rest must be homogeneous so it binds as list[T].
+			star := pat.Elems[prefix].(*ast.StarPattern)
+			elemType := homogeneous(s.Elems[prefix : len(s.Elems)-suffix])
+			if elemType == types.Invalid {
+				c.errs.Add(star.Pos(), token.TypeMismatch, "starred tuple rest must have homogeneous type")
+				return
+			}
+			c.bindCapture(star.Name, types.NewList(elemType), star.Pos())
 			return
 		}
 		if len(pat.Elems) != len(s.Elems) {
