@@ -1041,6 +1041,40 @@ match d:
 		require.Equal(t, "1\n2\n", run(t, src))
 	})
 
+	t.Run("match tuple with star capture", func(t *testing.T) {
+		src := `t: tuple[int, int, int, int] = (1, 2, 3, 4)
+match t:
+    case (first, *rest):
+        print(str(first))
+        print(str(len(rest)))
+        print(str(rest[0]))
+        print(str(rest[2]))
+`
+		require.Equal(t, "1\n3\n2\n4\n", run(t, src))
+	})
+
+	t.Run("match tuple star between prefix and suffix", func(t *testing.T) {
+		src := `t: tuple[int, int, int, int] = (1, 2, 3, 4)
+match t:
+    case (a, *mid, z):
+        print(str(a))
+        print(str(z))
+        print(str(len(mid)))
+        print(str(mid[0]))
+`
+		require.Equal(t, "1\n4\n2\n2\n", run(t, src))
+	})
+
+	t.Run("match tuple star with no binding", func(t *testing.T) {
+		src := `t: tuple[int, int, int] = (1, 2, 3)
+match t:
+    case (a, *_, z):
+        print(str(a))
+        print(str(z))
+`
+		require.Equal(t, "1\n3\n", run(t, src))
+	})
+
 	t.Run("match class pattern with positional and keyword", func(t *testing.T) {
 		src := `@dataclass
 class Point:
@@ -1382,9 +1416,10 @@ func TestCompileErrors(t *testing.T) {
 		// M9: del, assert, match
 		"n: int = 1\ndel n\nprint(str(n))\n": token.UseBeforeDefinition,
 		"assert 1\n":                         token.TypeMismatch,
-		"x: int = 1\nmatch x:\n    case 1 if 2:\n        pass\n":                               token.TypeMismatch,
-		"v: tuple[int, str] = (1, \"a\")\nmatch v:\n    case (x, _) | (_, x):\n        pass\n": token.PatternError,
-		"s: str = \"a\"\nmatch s:\n    case 1:\n        pass\n":                                token.PatternError,
+		"x: int = 1\nmatch x:\n    case 1 if 2:\n        pass\n":                                  token.TypeMismatch,
+		"v: tuple[int, str] = (1, \"a\")\nmatch v:\n    case (x, _) | (_, x):\n        pass\n":    token.PatternError,
+		"v: tuple[int, str, int] = (1, \"a\", 2)\nmatch v:\n    case (a, *rest):\n        pass\n": token.TypeMismatch,
+		"s: str = \"a\"\nmatch s:\n    case 1:\n        pass\n":                                   token.PatternError,
 		// Exceptions and context managers
 		"try:\n    pass\nexcept int:\n    pass\n": token.TypeMismatch,
 		"raise\n":   token.SyntaxError,

@@ -904,9 +904,30 @@ func (c *Compiler) childSlot(parent int, index int, op instr.Opcode) int {
 func (c *Compiler) emitSequenceTest(pat *ast.SequencePattern, slot int, typ types.Type, next instr.Label) {
 	switch s := typ.(type) {
 	case *types.Tuple:
-		for i, e := range pat.Elems {
+		if pat.Star < 0 {
+			for i, e := range pat.Elems {
+				child := c.childSlot(slot, i, instr.STRUCT_GET)
+				c.emitPatternTest(e, child, s.Elems[i], next)
+			}
+			return
+		}
+		// Tuple length is static, so no runtime length guard is needed: the
+		// checker already validated prefix+suffix against the tuple arity.
+		prefix := pat.Star
+		suffix := len(pat.Elems) - pat.Star - 1
+		for i := 0; i < prefix; i++ {
 			child := c.childSlot(slot, i, instr.STRUCT_GET)
-			c.emitPatternTest(e, child, s.Elems[i], next)
+			c.emitPatternTest(pat.Elems[i], child, s.Elems[i], next)
+		}
+		for j := 0; j < suffix; j++ {
+			srcIdx := len(s.Elems) - suffix + j
+			child := c.childSlot(slot, srcIdx, instr.STRUCT_GET)
+			c.emitPatternTest(pat.Elems[prefix+1+j], child, s.Elems[srcIdx], next)
+		}
+		star := pat.Elems[prefix].(*ast.StarPattern)
+		if star.Name != "" && star.Name != "_" {
+			c.emitTupleRestList(slot, s, prefix, suffix)
+			c.set(star.Name)
 		}
 	case *types.List:
 		if pat.Star < 0 {

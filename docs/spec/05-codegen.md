@@ -294,13 +294,17 @@ Pattern matching lowers to a decision tree:
 - guards run after a pattern succeeds and must leave an i1 bool for `BR_IF`.
 
 The subject is evaluated once into a temp slot; sub-values are extracted into
-fresh temp slots for recursive tests. Starred sequence captures (`[a, *rest]`)
-reuse a `listSlice` host and mapping `**rest` reuses a `dictRest` host. Class
-patterns need no runtime `isinstance` — the static subject type already fixes the
-class — so they only destructure fields. Current restrictions: starred patterns on
-a (heterogeneous) tuple subject and dotted class names (`mod.Class(...)`) are
-rejected as `UnsupportedFeature`. Lowering uses ordered `BR_IF` chains in Python
-case order; `BR_TABLE` for dense scalar cases is a future optimization.
+fresh temp slots for recursive tests. Starred list captures (`[a, *rest]`) reuse an
+`ARRAY_SLICE` for the rest; starred tuple captures (`(a, *rest, z)`) build the rest
+`list` with `ARRAY_NEW_DEFAULT`/`STRUCT_GET`/`ARRAY_SET` (`emitTupleRestList`) since
+tuple arity is static; mapping `**rest` reuses a `dictRest` host that copies the
+source dict minus the consumed keys (no mutation). Class patterns need no runtime
+`isinstance` — the static subject type already fixes the class — so they only
+destructure fields. Current restrictions: a starred tuple rest must be homogeneous
+(binds as `list[T]`; heterogeneous rest is a `TypeMismatch`), and dotted class names
+(`mod.Class(...)`) are rejected as `UnsupportedFeature`. Lowering uses ordered
+`BR_IF` chains in Python case order; `BR_TABLE` for dense scalar cases is a future
+optimization.
 
 ## Unions, `Any` & specialization (M10)
 
