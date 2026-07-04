@@ -111,10 +111,13 @@ listed here for completeness.)
 
 ### f-strings
 
-Supported subset (M3): `f"{expr}"`, `f"{expr!r}"`/`!s`/`!a`, and `:format_spec`.
-The embedded `expr` must be a supported minipy expression of a type with a known
-string conversion. `{expr=}` debug form and nested replacement fields beyond one
-level are deferred.
+Supported subset (M3): `f"{expr}"`, conversions `!s`/`!r`/`!a`, the debug form
+`f"{expr=}"` (whitespace around `=` is preserved), a `:format_spec`, and nested
+replacement fields inside the spec (`f"{x:{width}.{prec}f}"`). Replacement
+expressions and nested format-spec fields evaluate left to right. The embedded
+`expr` must be a supported minipy expression of a type with a known string
+conversion. Nesting inside a format spec is limited to one level; deeper nesting
+is rejected with `UnsupportedFeature`.
 
 ## What the lexer rejects (summary)
 

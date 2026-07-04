@@ -1810,28 +1810,77 @@ func (p *Parser) parseFStringField(body string, pos token.Pos) ast.FStringPart {
 	return &ast.FStringExpr{Base: ast.Base{Position: pos}, Expr: expr, Debug: debug, Conversion: conv, Format: formatParts}
 }
 
+// splitFStringField splits a replacement field body into its expression source,
+// optional debug prefix (`expr=`), conversion rune (s/r/a), and format spec.
+// The scan tracks bracket depth so operators and colons inside the expression
+// (subscripts, walrus, calls) are not mistaken for field separators, and it
+// distinguishes the debug `=` from comparison operators (==, !=, <=, >=, :=).
 func splitFStringField(body string) (expr, debug string, conv rune, format string) {
-	cut := len(body)
-	for i, r := range body {
-		if r == '!' || r == ':' || r == '=' {
-			cut = i
-			break
+	colon, bang, eq := -1, -1, -1
+	depth := 0
+	for i := 0; i < len(body); i++ {
+		switch body[i] {
+		case '(', '[', '{':
+			depth++
+		case ')', ']', '}':
+			depth--
+		case ':':
+			if depth == 0 && colon == -1 && (i+1 >= len(body) || body[i+1] != '=') {
+				colon = i
+			}
+		case '!':
+			if depth == 0 && colon == -1 && i+1 < len(body) && body[i+1] != '=' {
+				bang = i
+			}
+		case '=':
+			if depth == 0 && colon == -1 && bang == -1 && !comparisonEq(body, i) {
+				eq = i
+			}
 		}
 	}
-	expr = strings.TrimSpace(body[:cut])
-	rest := body[cut:]
-	if strings.HasPrefix(rest, "=") {
-		debug = body[:cut] + "="
-		rest = rest[1:]
+
+	// The expression ends at the first field separator that follows it.
+	exprEnd := len(body)
+	for _, p := range []int{eq, bang, colon} {
+		if p >= 0 && p < exprEnd {
+			exprEnd = p
+		}
 	}
-	if strings.HasPrefix(rest, "!") && len(rest) >= 2 {
-		conv = rune(rest[1])
-		rest = rest[2:]
+	expr = strings.TrimSpace(body[:exprEnd])
+
+	if eq >= 0 {
+		// Debug text is the verbatim source up to the conversion or format
+		// boundary, preserving whitespace around `=` exactly (f"{x = }").
+		debugEnd := len(body)
+		if bang >= 0 {
+			debugEnd = bang
+		} else if colon >= 0 {
+			debugEnd = colon
+		}
+		debug = body[:debugEnd]
 	}
-	if strings.HasPrefix(rest, ":") {
-		format = rest[1:]
+	if bang >= 0 && bang+1 < len(body) {
+		conv = rune(body[bang+1])
+	}
+	if colon >= 0 {
+		format = body[colon+1:]
 	}
 	return expr, debug, conv, format
+}
+
+// comparisonEq reports whether the `=` at index i is part of a comparison or
+// assignment operator (==, !=, <=, >=, :=) rather than a debug `=`.
+func comparisonEq(body string, i int) bool {
+	if i+1 < len(body) && body[i+1] == '=' {
+		return true
+	}
+	if i > 0 {
+		switch body[i-1] {
+		case '=', '!', '<', '>', ':':
+			return true
+		}
+	}
+	return false
 }
 
 func parseFStringExpr(src string) (ast.Expr, error) {

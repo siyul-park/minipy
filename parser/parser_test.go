@@ -13,6 +13,37 @@ func parse(src string) (*ast.Module, error) {
 	return Parse(strings.NewReader(src))
 }
 
+func TestSplitFStringField(t *testing.T) {
+	cases := []struct {
+		body   string
+		expr   string
+		debug  string
+		conv   rune
+		format string
+	}{
+		{"x", "x", "", 0, ""},
+		{"x=", "x", "x=", 0, ""},
+		{"x = ", "x", "x = ", 0, ""},
+		{"x =", "x", "x =", 0, ""},
+		{"x= ", "x", "x= ", 0, ""},
+		{"x!r", "x", "", 'r', ""},
+		{"x=!s", "x", "x=", 's', ""},
+		{"x=:03d", "x", "x=", 0, "03d"},
+		{"x:{w}.{p}f", "x", "", 0, "{w}.{p}f"},
+		{"a == b", "a == b", "", 0, ""},
+		{"a != b", "a != b", "", 0, ""},
+		{"(n:=5)", "(n:=5)", "", 0, ""},
+		{"d[k]:>10", "d[k]", "", 0, ">10"},
+	}
+	for _, tc := range cases {
+		expr, debug, conv, format := splitFStringField(tc.body)
+		require.Equalf(t, tc.expr, expr, "expr for %q", tc.body)
+		require.Equalf(t, tc.debug, debug, "debug for %q", tc.body)
+		require.Equalf(t, tc.conv, conv, "conv for %q", tc.body)
+		require.Equalf(t, tc.format, format, "format for %q", tc.body)
+	}
+}
+
 func hasCode(t *testing.T, err error, code token.Code) {
 	t.Helper()
 	el, ok := err.(token.ErrorList)

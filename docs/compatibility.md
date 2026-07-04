@@ -102,7 +102,7 @@ Status key:
 | Boolean literal | ✅ |  |
 | String literal | ✅ |  |
 | Raw string literal | ✅ |  |
-| f-string literal | ◐ | Compiled subset; debug form and nested replacement limits remain. |
+| f-string literal | ◐ | Compiled subset: debug form, `!s`/`!r`/`!a`, and one level of nested format-spec fields. Format spec covers scalar presentation types (`d`/`b`/`o`/`x`/`f`/`e`/`g`/`%`/`s`). |
 | Bytes literal | — | Runtime type and lexer/parser completion are missing. |
 | Imaginary/complex literal | — | Runtime type is missing. |
 | `None` literal | ✅ |  |

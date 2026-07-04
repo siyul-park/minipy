@@ -2726,14 +2726,24 @@ func (c *checker) fstring(n *ast.FString) {
 }
 
 func (c *checker) fstringPart(part ast.FStringPart) {
-	if expr, ok := part.(*ast.FStringExpr); ok {
-		c.expr(expr.Expr)
-		if expr.Conversion != 0 && expr.Conversion != 's' && expr.Conversion != 'r' && expr.Conversion != 'a' {
-			c.errs.Add(expr.Pos(), token.UnsupportedFeature, "unsupported f-string conversion !%c", expr.Conversion)
+	expr, ok := part.(*ast.FStringExpr)
+	if !ok {
+		return
+	}
+	t := c.expr(expr.Expr)
+	if t != types.Invalid && !types.Printable(t) {
+		c.errs.Add(expr.Pos(), token.TypeMismatch, "unsupported type %s in f-string replacement field", t)
+	}
+	if expr.Conversion != 0 && expr.Conversion != 's' && expr.Conversion != 'r' && expr.Conversion != 'a' {
+		c.errs.Add(expr.Pos(), token.UnsupportedFeature, "unsupported f-string conversion !%c", expr.Conversion)
+	}
+	for _, fp := range expr.Format {
+		// Nested replacement fields inside a format spec may not carry their
+		// own format spec: only one level of nesting is supported.
+		if nested, ok := fp.(*ast.FStringExpr); ok && len(nested.Format) > 0 {
+			c.errs.Add(nested.Pos(), token.UnsupportedFeature, "f-string format spec nesting is too deep")
 		}
-		for _, fp := range expr.Format {
-			c.fstringPart(fp)
-		}
+		c.fstringPart(fp)
 	}
 }
 
