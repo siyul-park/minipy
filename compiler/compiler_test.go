@@ -518,7 +518,7 @@ for i, v in enumerate([4, 5]):
 for a, b in zip([1, 2], [3, 4]):
     print(str(a + b))
 x: int = 7
-print(f"x={x!s:03d}")
+print(f"x={x:03d}")
 `
 		require.Equal(t, "a,b\nb\nx-y\n1\n04\n15\n4\n6\nx=007\n", run(t, src))
 	})
@@ -1272,6 +1272,64 @@ with Ctx("a") as a, Ctx("b") as b:
 		_, err := New(broken{}).Compile()
 		require.Error(t, err)
 		require.ErrorContains(t, err, "read source")
+	})
+}
+
+func TestCompileFString(t *testing.T) {
+	t.Run("debug, conversion, and nested format specs run", func(t *testing.T) {
+		cases := []struct {
+			src  string
+			want string
+		}{
+			{"x: int = 5\nprint(f\"{x=}\")", "x=5\n"},
+			{"x: int = 5\nprint(f\"{x = }\")", "x = 5\n"},
+			{"x: int = 5\nprint(f\"{x=!s}\")", "x=5\n"},
+			{"x: int = 5\nprint(f\"{x=:03d}\")", "x=005\n"},
+			{"s: str = \"hi\"\nprint(f\"{s=}\")", "s='hi'\n"},
+			{"x: int = 5\nprint(f\"{x!s}\")", "5\n"},
+			{"x: int = 5\nprint(f\"{x!r}\")", "5\n"},
+			{"s: str = \"hi\"\nprint(f\"{s!r}\")", "'hi'\n"},
+			{"s: str = \"hi\"\nprint(f\"{s!a}\")", "'hi'\n"},
+			{"x: float = 3.14159\nw: int = 8\np: int = 2\nprint(f\"{x:{w}.{p}f}\")", "    3.14\n"},
+			{"x: int = 42\nprint(f\"{x:>6}\")", "    42\n"},
+			{"x: int = 42\nprint(f\"{x:<6}|\")", "42    |\n"},
+			{"x: int = 42\nprint(f\"{x:^6}|\")", "  42  |\n"},
+			{"x: int = 255\nprint(f\"{x:x}\")", "ff\n"},
+			{"x: float = 1.5\nprint(f\"{x:+.2f}\")", "+1.50\n"},
+			{"x: int = 5\nprint(f\"{{literal}} {x}\")", "{literal} 5\n"},
+		}
+		for _, tc := range cases {
+			require.Equalf(t, tc.want, run(t, tc.src), "src: %s", tc.src)
+		}
+	})
+
+	t.Run("nested format specs preserve left-to-right evaluation order", func(t *testing.T) {
+		src := `log: str = ""
+def w() -> int:
+    global log
+    log = log + "w"
+    return 6
+def p() -> int:
+    global log
+    log = log + "p"
+    return 2
+x: float = 3.14159
+print(f"{x:{w()}.{p()}f}")
+print(log)
+`
+		require.Equal(t, "  3.14\nwp\n", run(t, src))
+	})
+
+	t.Run("unsupported conversion is rejected", func(t *testing.T) {
+		src := "x: int = 5\nprint(f\"{x!z}\")\n"
+		_, err := Compile(strings.NewReader(src), WithOutput(io.Discard))
+		code(t, err, token.UnsupportedFeature)
+	})
+
+	t.Run("deeply nested format spec is rejected", func(t *testing.T) {
+		src := "x: int = 5\nw: int = 4\nprint(f\"{x:{w:{w}}}\")\n"
+		_, err := Compile(strings.NewReader(src), WithOutput(io.Discard))
+		code(t, err, token.UnsupportedFeature)
 	})
 }
 

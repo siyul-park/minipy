@@ -2143,8 +2143,15 @@ func (c *Compiler) fieldIndex(x *ast.Attribute) int {
 }
 
 func (c *Compiler) fstring(x *ast.FString) {
+	c.fstringConcat(x.Parts)
+}
+
+// fstringConcat lowers a sequence of f-string parts into a left-associated
+// STRING_CONCAT chain seeded with the empty string. It is reused both for the
+// whole f-string and for a nested format spec (f"{x:{w}.{p}f}").
+func (c *Compiler) fstringConcat(parts []ast.FStringPart) {
 	c.constGet(vmtypes.String(""))
-	for _, part := range x.Parts {
+	for _, part := range parts {
 		c.fstringPart(part)
 		c.emit(instr.STRING_CONCAT)
 	}
@@ -2157,20 +2164,49 @@ func (c *Compiler) fstringPart(part ast.FStringPart) {
 	case *ast.FStringExpr:
 		if p.Debug != "" {
 			c.constGet(vmtypes.String(p.Debug))
-			c.expr(p.Expr)
-			c.callHost(c.nativeHost("builtins", "str"))
+			c.fstringValue(p)
 			c.emit(instr.STRING_CONCAT)
 			return
 		}
-		c.expr(p.Expr)
-		if format, ok := staticFStringFormat(p.Format); ok && format != "" {
-			c.constGet(vmtypes.String(format))
-			c.callHost(c.format(c.types[p.Expr]))
-			return
-		}
-		if !types.Equal(c.types[p.Expr], types.Str) || p.Conversion != 0 || len(p.Format) > 0 {
+		c.fstringValue(p)
+	}
+}
+
+// fstringValue lowers a replacement field to a single string on the stack,
+// applying the conversion (!s/!r/!a) first and then the format spec, matching
+// Python's evaluation order: expression, then any nested format-spec fields.
+func (c *Compiler) fstringValue(p *ast.FStringExpr) {
+	c.expr(p.Expr)
+	valType := c.types[p.Expr]
+
+	conv := p.Conversion
+	// A debug field with neither conversion nor format spec defaults to repr.
+	if p.Debug != "" && conv == 0 && len(p.Format) == 0 {
+		conv = 'r'
+	}
+	switch conv {
+	case 'r', 'a':
+		c.callHost(c.reprHost(valType, conv == 'a'))
+		valType = types.Str
+	case 's':
+		if !types.Equal(valType, types.Str) {
 			c.callHost(c.nativeHost("builtins", "str"))
 		}
+		valType = types.Str
+	}
+
+	if len(p.Format) > 0 {
+		if spec, ok := staticFStringFormat(p.Format); ok {
+			c.constGet(vmtypes.String(spec))
+		} else {
+			c.fstringConcat(p.Format)
+		}
+		c.callHost(c.format(valType))
+		return
+	}
+
+	if conv == 0 && !types.Equal(valType, types.Str) {
+		c.callHost(c.nativeHost("builtins", "str"))
 	}
 }
 
@@ -2760,6 +2796,18 @@ func (c *Compiler) format(t types.Type) *interp.HostFunction {
 	)
 }
 
+// reprHost renders a value with repr()/ascii() rules: strings gain quotes and
+// escapes, other scalars render like str(). It is static per source type, not a
+// runtime __repr__ dispatch.
+func (c *Compiler) reprHost(t types.Type, ascii bool) *interp.HostFunction {
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: []vmtypes.Type{t.VM()}, Returns: []vmtypes.Type{vmtypes.TypeString}},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			return hostabi.AllocString(i, pyRepr(i, params[0], ascii))
+		},
+	)
+}
+
 func (c *Compiler) strIndex() *interp.HostFunction {
 	return interp.NewHostFunction(
 		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeString, vmtypes.TypeI64}, Returns: []vmtypes.Type{vmtypes.TypeString}},
@@ -2890,25 +2938,294 @@ func (c *Compiler) exc() *interp.HostFunction {
 	)
 }
 
+// formatSpec is a parsed Python mini format spec:
+// [[fill]align][sign]['0'][width]['.'precision][type].
+type formatSpec struct {
+	fill      byte
+	align     byte // '<' '>' '^' '=' or 0
+	sign      byte // '+' '-' ' ' or 0
+	zero      bool
+	width     int
+	precision int  // -1 when omitted
+	typ       byte // 'd' 'f' 's' … or 0
+}
+
+func parseFormatSpec(spec string) formatSpec {
+	f := formatSpec{fill: ' ', precision: -1}
+	i := 0
+	// [[fill]align]
+	if len(spec) >= 2 && isAlign(spec[1]) {
+		f.fill, f.align = spec[0], spec[1]
+		i = 2
+	} else if len(spec) >= 1 && isAlign(spec[0]) {
+		f.align = spec[0]
+		i = 1
+	}
+	// [sign]
+	if i < len(spec) && (spec[i] == '+' || spec[i] == '-' || spec[i] == ' ') {
+		f.sign = spec[i]
+		i++
+	}
+	// ['#'] alternate form — accepted but not applied
+	if i < len(spec) && spec[i] == '#' {
+		i++
+	}
+	// ['0'] zero-padding implies '=' alignment with '0' fill
+	if i < len(spec) && spec[i] == '0' {
+		f.zero = true
+		if f.align == 0 {
+			f.align, f.fill = '=', '0'
+		}
+		i++
+	}
+	// [width]
+	for i < len(spec) && spec[i] >= '0' && spec[i] <= '9' {
+		f.width = f.width*10 + int(spec[i]-'0')
+		i++
+	}
+	// [grouping] — accepted but not applied
+	if i < len(spec) && (spec[i] == ',' || spec[i] == '_') {
+		i++
+	}
+	// ['.'precision]
+	if i < len(spec) && spec[i] == '.' {
+		i++
+		f.precision = 0
+		for i < len(spec) && spec[i] >= '0' && spec[i] <= '9' {
+			f.precision = f.precision*10 + int(spec[i]-'0')
+			i++
+		}
+	}
+	// [type]
+	if i < len(spec) {
+		f.typ = spec[i]
+	}
+	return f
+}
+
+func isAlign(b byte) bool { return b == '<' || b == '>' || b == '^' || b == '=' }
+
+// pyFormat applies a Python format spec to a boxed scalar. It supports the v1
+// scalar subset: fill/alignment, sign, zero-padding, width, precision, and the
+// common presentation types (d, b, o, x/X, f/F, e/E, g/G, %, s, c).
 func pyFormat(i *interp.Interpreter, v vmtypes.Boxed, spec string) string {
 	if spec == "" {
 		return hostabi.FormatScalar(i, v)
 	}
-	if v.Kind() == vmtypes.KindI64 && strings.HasSuffix(spec, "d") {
-		widthSpec := strings.TrimSuffix(spec, "d")
-		pad := byte(' ')
-		if strings.HasPrefix(widthSpec, "0") {
-			pad = '0'
-			widthSpec = strings.TrimPrefix(widthSpec, "0")
+	f := parseFormatSpec(spec)
+	body, sign, numeric := formatBody(i, v, f)
+	return padFormat(body, sign, f, numeric)
+}
+
+// formatBody renders the value's digits/text without width padding, returning
+// the unsigned body, the sign prefix, and whether the value is numeric (so the
+// caller can apply '=' zero-padding between the sign and the digits).
+func formatBody(i *interp.Interpreter, v vmtypes.Boxed, f formatSpec) (body, sign string, numeric bool) {
+	switch f.typ {
+	case 'd', 'b', 'o', 'x', 'X', 'c':
+		n := hostabi.LoadI64(i, v)
+		if v.Kind() == vmtypes.KindI1 {
+			n = int64(v.I32())
 		}
-		width, _ := strconv.Atoi(widthSpec)
-		s := strconv.FormatInt(hostabi.LoadI64(i, v), 10)
-		if width > len(s) {
-			s = strings.Repeat(string(pad), width-len(s)) + s
+		if f.typ == 'c' {
+			return string(rune(n)), "", false
 		}
-		return s
+		return intBody(n, f)
+	case 'f', 'F', 'e', 'E', 'g', 'G', '%':
+		return floatBody(floatValue(i, v), f)
+	case 's', 0:
+		if isNumericKind(v) && f.typ == 0 {
+			// No explicit type: numbers keep numeric formatting/alignment.
+			if v.Kind() == vmtypes.KindF32 || v.Kind() == vmtypes.KindF64 {
+				return floatBody(floatValue(i, v), f)
+			}
+			if v.Kind() == vmtypes.KindI64 {
+				return intBody(hostabi.LoadI64(i, v), f)
+			}
+		}
+		s := hostabi.FormatScalar(i, v)
+		if f.precision >= 0 && f.precision < len(s) {
+			s = s[:f.precision]
+		}
+		return s, "", false
+	default:
+		return hostabi.FormatScalar(i, v), "", false
+	}
+}
+
+func intBody(n int64, f formatSpec) (body, sign string, numeric bool) {
+	sign = signPrefix(n < 0, f)
+	if n < 0 {
+		n = -n
+	}
+	switch f.typ {
+	case 'b':
+		body = strconv.FormatInt(n, 2)
+	case 'o':
+		body = strconv.FormatInt(n, 8)
+	case 'x':
+		body = strconv.FormatInt(n, 16)
+	case 'X':
+		body = strings.ToUpper(strconv.FormatInt(n, 16))
+	default:
+		body = strconv.FormatInt(n, 10)
+	}
+	return body, sign, true
+}
+
+func floatBody(x float64, f formatSpec) (body, sign string, numeric bool) {
+	sign = signPrefix(math.Signbit(x) && x != 0 || x < 0, f)
+	x = math.Abs(x)
+	prec := f.precision
+	verb := byte('f')
+	switch f.typ {
+	case 'e', 'E', 'g', 'G':
+		verb = f.typ
+		if prec < 0 && (f.typ == 'e' || f.typ == 'E') {
+			prec = 6
+		}
+	case '%':
+		x *= 100
+		verb = 'f'
+		if prec < 0 {
+			prec = 6
+		}
+	default: // 'f','F', or numeric default
+		verb = 'f'
+		if prec < 0 {
+			prec = 6
+		}
+	}
+	body = strconv.FormatFloat(x, verb, prec, 64)
+	if f.typ == 'E' || f.typ == 'G' {
+		body = strings.ToUpper(body)
+	}
+	if f.typ == '%' {
+		body += "%"
+	}
+	return body, sign, true
+}
+
+func signPrefix(negative bool, f formatSpec) string {
+	if negative {
+		return "-"
+	}
+	switch f.sign {
+	case '+':
+		return "+"
+	case ' ':
+		return " "
+	}
+	return ""
+}
+
+func floatValue(i *interp.Interpreter, v vmtypes.Boxed) float64 {
+	switch v.Kind() {
+	case vmtypes.KindF32:
+		return float64(v.F32())
+	case vmtypes.KindF64:
+		return v.F64()
+	case vmtypes.KindI1:
+		return float64(v.I32())
+	default:
+		return float64(hostabi.LoadI64(i, v))
+	}
+}
+
+func isNumericKind(v vmtypes.Boxed) bool {
+	switch v.Kind() {
+	case vmtypes.KindI64, vmtypes.KindF32, vmtypes.KindF64:
+		return true
+	default:
+		return false
+	}
+}
+
+// padFormat applies width, fill, and alignment to an already-rendered body.
+func padFormat(body, sign string, f formatSpec, numeric bool) string {
+	full := sign + body
+	pad := f.width - len([]rune(full))
+	if pad <= 0 {
+		return full
+	}
+	fill := f.fill
+	align := f.align
+	if align == 0 {
+		if numeric {
+			align = '>'
+		} else {
+			align = '<'
+		}
+	}
+	switch align {
+	case '<':
+		return full + strings.Repeat(string(fill), pad)
+	case '^':
+		left := pad / 2
+		return strings.Repeat(string(fill), left) + full + strings.Repeat(string(fill), pad-left)
+	case '=':
+		return sign + strings.Repeat(string(fill), pad) + body
+	default: // '>'
+		return strings.Repeat(string(fill), pad) + full
+	}
+}
+
+// pyRepr renders repr(v)/ascii(v) for the supported scalar set. Strings are
+// quoted and escaped; other scalars fall back to str()-style rendering.
+func pyRepr(i *interp.Interpreter, v vmtypes.Boxed, ascii bool) string {
+	if v.Kind() == vmtypes.KindRef && v.Ref() != 0 {
+		if val, err := i.Load(v.Ref()); err == nil {
+			if s, ok := val.(vmtypes.String); ok {
+				return pyStrRepr(string(s), ascii)
+			}
+		}
 	}
 	return hostabi.FormatScalar(i, v)
+}
+
+// pyStrRepr quotes a string the way CPython's repr()/ascii() do: prefer single
+// quotes, switch to double quotes only when the value has a single quote and no
+// double quote, and escape control characters (plus non-ASCII when ascii).
+func pyStrRepr(s string, ascii bool) string {
+	quote := byte('\'')
+	if strings.Contains(s, "'") && !strings.Contains(s, "\"") {
+		quote = '"'
+	}
+	var b strings.Builder
+	b.WriteByte(quote)
+	for _, r := range s {
+		switch r {
+		case rune(quote):
+			b.WriteByte('\\')
+			b.WriteRune(r)
+		case '\\':
+			b.WriteString(`\\`)
+		case '\n':
+			b.WriteString(`\n`)
+		case '\r':
+			b.WriteString(`\r`)
+		case '\t':
+			b.WriteString(`\t`)
+		default:
+			switch {
+			case r < 0x20 || r == 0x7f:
+				fmt.Fprintf(&b, `\x%02x`, r)
+			case ascii && r > 0x7f:
+				switch {
+				case r > 0xffff:
+					fmt.Fprintf(&b, `\U%08x`, r)
+				case r > 0xff:
+					fmt.Fprintf(&b, `\u%04x`, r)
+				default:
+					fmt.Fprintf(&b, `\x%02x`, r)
+				}
+			default:
+				b.WriteRune(r)
+			}
+		}
+	}
+	b.WriteByte(quote)
+	return b.String()
 }
 
 const omittedSliceBound = math.MinInt64
