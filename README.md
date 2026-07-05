@@ -14,7 +14,7 @@ without preserving CPython's fully dynamic object model.
 - **Direct minivm target** — the compiler emits minivm programs and verifies the
   optimized bytecode before returning it.
 - **Static source types** — `int`, `float`, `bool`, `str`, `None`, containers,
-  tuples, classes, iterators, `Callable`, closed unions, `Optional`, and `Any` are
+  tuples, classes, iterators, `Callable`, closed unions, `T | None`, and `Any` are
   modeled separately from minivm runtime types.
 - **Whole-program inference** — annotations are optional where the checker can
   infer a concrete, union, or `Any` type from assignments, defaults, returns, and
@@ -52,11 +52,12 @@ the compiler.
 | `builtins/` | Native `builtins` module and exception hierarchy. |
 | `operator/` | Native `operator` module and shared operator semantics. |
 | `hostabi/` | Runtime host ABI helpers and iterator/coroutine bridge types. |
-| `compiler/` | Loader, checker, lowering, optimizer/verification pipeline, and import support. |
+| `compiler/` | Loader, checker, lowerer, optimizer/verification pipeline, and import support. |
 | `cmd/minipy/` | CLI and REPL. |
+| `docs/README.md` | Documentation map and ownership guide. |
 | `docs/spec/` | Implementation-facing language specification. |
 | `docs/compatibility.md` | Python 3.13 feature compatibility matrix. |
-| `docs/roadmap.md` | Completed milestone history and remaining work. |
+| `docs/roadmap.md` | Completed work and remaining gaps. |
 | `docs/coding-style.md` | Project conventions for code and documentation changes. |
 
 ## Build and test
@@ -80,13 +81,15 @@ go run ./cmd/minipy repl
 
 ## Documentation
 
+Start with [Documentation](docs/README.md) for the full documentation map.
+
 - [Overview](docs/spec/00-overview.md)
 - [Lexical structure](docs/spec/01-lexical.md)
 - [Types](docs/spec/02-types.md)
 - [Grammar](docs/spec/03-grammar.md)
 - [Static semantics](docs/spec/04-static-semantics.md)
 - [Code generation](docs/spec/05-codegen.md)
-- [Builtins and standard functions](docs/spec/06-builtins.md)
+- [Builtins and native modules](docs/spec/06-builtins.md)
 - [Python 3.13 compatibility matrix](docs/compatibility.md)
 - [Roadmap](docs/roadmap.md)
 - [Coding style](docs/coding-style.md)
