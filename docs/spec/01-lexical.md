@@ -1,5 +1,28 @@
 # Lexical Structure
 
+Tokenization, indentation, literal scanning, and lexical diagnostics for minipy
+source text.
+
+## When to Read
+
+Read this when changing the lexer, adding or removing token kinds, changing
+literal syntax, or diagnosing whitespace and indentation behavior.
+
+For syntax built from these tokens, read `03-grammar.md`. For unsupported syntax
+that still tokenizes successfully, read `04-static-semantics.md`.
+
+## Source of Truth
+
+| Concern | Source |
+|---|---|
+| token kinds and spelling | `token/token.go` |
+| scanner behavior | `lexer/lexer.go` |
+| parser use of tokens | `parser/parser.go` |
+| grammar built from tokens | `docs/spec/03-grammar.md` |
+| diagnostics | `token/error.go` |
+
+## Summary
+
 The lexer is an indentation-aware, rune-based scanner over an `io.Reader`. It
 emits one token at a time and accumulates lexical diagnostics instead of failing
 on the first malformed token.
@@ -7,7 +30,7 @@ on the first malformed token.
 minipy follows Python-like lexical rules where they fit the implemented subset,
 but it is stricter about some whitespace and literal forms.
 
-## Structure tokens
+## Structure Tokens
 
 The token stream includes:
 
@@ -19,10 +42,10 @@ Blank lines and comment-only lines do not emit `NEWLINE`. A final `NEWLINE` is
 emitted at end-of-file if the last physical line contained tokens, followed by
 open `DEDENT`s and a single `EOF`.
 
-Tabs in leading indentation are rejected. Spaces are counted one column at a
-time; form feed is skipped in indentation measurement.
+Tabs in leading indentation are rejected. Spaces are counted one column at a time;
+form feed is skipped in indentation measurement.
 
-## Comments and whitespace
+## Comments and Whitespace
 
 - `#` starts a comment outside strings and runs to the physical line ending.
 - Spaces, tabs, and form feed inside a logical line separate tokens.
@@ -56,7 +79,7 @@ with as import from is del assert async await
 The composite comparison spellings `not in` and `is not` are represented by
 comparison operator tokens after parsing their two-token source forms.
 
-## Operators and delimiters
+## Operators and Delimiters
 
 The lexer recognizes:
 
@@ -73,7 +96,7 @@ Support is phase-specific:
   semantics are not implemented by the checker/operator layer.
 - `->` is accepted only in function return annotations.
 
-## Numeric literals
+## Numeric Literals
 
 Supported numeric literals are bounded to minipy runtime types:
 
@@ -84,7 +107,7 @@ Supported numeric literals are bounded to minipy runtime types:
 Integers must fit in signed 64 bits. Floats parse as IEEE-754 `float64`.
 Imaginary literals (`1j`) are rejected because minipy has no complex type.
 
-## String literals
+## String Literals
 
 The lexer supports:
 
@@ -124,6 +147,13 @@ feature diagnostics during parsing/checking.
 
 ## Encoding
 
-The lexer skips a leading UTF-8 byte-order mark (`U+FEFF`) if present. It does
-not implement Python source encoding cookies; input is expected to be UTF-8 text
-as supplied by the caller.
+The lexer skips a leading UTF-8 byte-order mark (`U+FEFF`) if present. It does not
+implement Python source encoding cookies; input is expected to be UTF-8 text as
+supplied by the caller.
+
+## Related Docs
+
+- `docs/README.md` — documentation map and ownership guide.
+- `docs/spec/03-grammar.md` — grammar built from lexer tokens.
+- `docs/spec/04-static-semantics.md` — checker diagnostics for unsupported forms.
+- `docs/compatibility.md` — user-facing lexical and syntax compatibility status.
