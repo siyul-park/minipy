@@ -1,126 +1,144 @@
-# minipy — Native Modules & Host ABI
+# Builtins and Native Modules
 
-minipy ships small typed native modules. Each native function is either
-**lowered inline** to opcodes or **bound to a minivm host function**. Bare
-builtin lookup is a fallback to the native `builtins` module, so
-`import builtins; builtins.print(x)` and `from builtins import print as p` use the
-same lowering as bare `print(x)`. The `operator` native module exposes Python's
-operator-function names (`add`, `floordiv`, `eq`, `not_`, `contains`, ...) and
-owns the language's operator semantics: `a + b`, `==`, `in`, and unary operators
-route through the same code as `operator.add(a, b)`.
+minipy exposes Python-like builtins through a native module named `builtins`.
+Unqualified builtin names resolve through the module registry fallback, so source
+programs can call `print`, `len`, `range`, and related functions directly.
 
-## Architecture
+The `operator` module is also native. Syntax operators and `operator.*` calls use
+the same operator implementation, so the documented operator behavior has one
+source of truth.
 
-Native modules live in their own packages behind a small interface set in the
-`module` package, so they never depend on compiler internals and the Go compiler
-enforces their independence:
+## Native module contract
 
-- **`module`** defines `Module`/`Symbol` and the narrow `Checker`/`Emitter`/`Runtime`
-  boundary interfaces a symbol uses for type-checking, code generation, and its
-  runtime value, plus a dependency-injected `Registry` (no global state).
-- **`builtins`** implements the `builtins` module (standard functions + the
-  exception hierarchy). **`operator`** implements the `operator` module and the
-  shared operator type rules and lowerings. The two never reference each other.
-- **`hostabi`** holds the shared host↔VM helpers both use.
-- The compiler injects the registry and implements the boundary interfaces;
-  `builtins` is the fallback module for unqualified names.
+A native module symbol carries:
 
-Internally, a native module is a module entry plus a symbol table whose exports
-map to `minivm/types.Value`; inline-only symbols use a native intrinsic marker
-while host-backed symbols store the `interp.HostFunction` value.
+- a type-check function
+- a bytecode emit function
+- an optional runtime value/host function
 
-## Binding strategies
+Native functions are callable by name, but they are not first-class values. A
+program cannot store `print` in a variable and call it later.
 
-1. **Inline** — the call is replaced by opcodes (no function call overhead).
-   Example: `len(lst)` → `ARRAY_LEN`.
-2. **Host function** — bound to a Go `interp.HostFunction` placed in the constant
-   pool; emitted as `CONST_GET <i>; CALL`. Used for I/O and runtime helpers.
+## `builtins`
 
-Native functions are statically typed; calling one with the wrong type/arity is a
-compile error (`TypeMismatch`/`ArityMismatch`), not a runtime `TypeError`.
+Implemented builtin functions:
 
-## Core builtins (M0–M3)
+| Function | Arity | Accepted argument types | Result |
+|---|---:|---|---|
+| `print(x)` | 1 | printable values | `None` |
+| `str(x)` | 1 | printable values | `str` |
+| `int(x)` | 1 | `int`, `float`, `bool`, `str` | `int` |
+| `float(x)` | 1 | `int`, `float`, `bool`, `str` | `float` |
+| `bool(x)` | 1 | convertible values and supported containers | `bool` |
+| `abs(x)` | 1 | `int`, `float` | same as input |
+| `len(x)` | 1 | `str`, list, dict, set, tuple | `int` |
+| `enumerate(xs)` | 1 | `list[T]` | `list[tuple[int, T]]` |
+| `zip(a, b)` | 2 | `list[A]`, `list[B]` | `list[tuple[A, B]]` |
+| `range(stop)` | 1 | `int` | `Iterator[int]` |
+| `range(start, stop)` | 2 | `int`, `int` | `Iterator[int]` |
+| `range(start, stop, step)` | 3 | `int`, `int`, `int` | `Iterator[int]` |
+| `iter(x)` | 1 | iterable values | `Iterator[T]` |
+| `next(it)` | 1 | `Iterator[T]` | `T` |
+| `isinstance(x, T)` | 2 | value plus supported type/class expression | `bool` |
 
-| builtin | signature | binding |
-|---|---|---|
-| `print` | `(*vals) -> None` (v1: `(str) -> None` + per-type overloads) | host |
-| `len` | `(str) -> int`, `(list[T]) -> int`, `(dict[K,V]) -> int` | inline (`STRING_LEN`/`ARRAY_LEN`/`MAP_LEN`) |
-| `range` | `(int) \| (int,int) \| (int,int,int) -> range` | inline (drives `for` desugar; no object) |
-| `int` | `(float) -> int`, `(bool) -> int`, `(str) -> int` | inline conv (`F64_TO_I64_S`) / host (parse) |
-| `float` | `(int) -> float`, `(str) -> float` | inline (`I64_TO_F64_S`) / host (parse) |
-| `str` | `(int\|float\|bool) -> str` | host (format) |
-| `bool` | `(int\|float\|str) -> bool` | inline (`!= 0` / nonempty) |
-| `abs` | `(int) -> int`, `(float) -> float` | inline (branch / `F64_ABS`) |
-| `min` / `max` | `(int,int)->int`, `(float,float)->float` | inline (compare + `SELECT` / `F64_MIN`/`MAX`) |
+`range(..., 0)` is diagnosed statically when the zero step is a constant integer
+literal, including a unary sign.
 
-## `operator` native module (M8)
+## Printable and convertible values
 
-`operator` uses Python's standard function names for syntax operators:
+Printable values are:
 
-| function | syntax |
-|---|---|
-| `add`, `sub`, `mul`, `truediv`, `floordiv`, `mod`, `pow` | `+`, `-`, `*`, `/`, `//`, `%`, `**` |
-| `and_`, `or_`, `xor`, `lshift`, `rshift` | `&`, `|`, `^`, `<<`, `>>` |
-| `neg`, `pos`, `invert`, `abs` | unary `-`, unary `+`, `~`, `abs` |
-| `eq`, `ne`, `lt`, `le`, `gt`, `ge` | comparisons |
-| `contains`, `truth`, `not_` | `b in a`, `bool(x)`, `not x` |
+- `int`, `float`, `bool`, `str`, `None`
+- printable lists, dicts, sets, and tuples
+- printable closed unions
+- `Any`
 
-These functions are not first-class runtime values; they are compile-time native
-symbols and must be called directly.
+Convertible values for `int`, `float`, `str`, and numeric/truth operations are
+limited by each builtin's checker rule. `int` and `float` parse strings through
+host functions when needed; numeric/boolean conversions use VM opcodes where
+possible.
 
-`print` is the canonical host function. Its Go shape (per minivm
-[host-integration](https://github.com/siyul-park/minivm/blob/main/docs/host-integration.md)):
+`bool` and `operator.truth` accept scalar convertible values and these container
+kinds: list, dict, set, tuple, and iterator. Tuple truthiness is based on arity.
+Reference-like iterator/callable/class values use nullness.
 
-```go
-print := interp.NewHostFunction(
-    &types.FunctionType{Params: []types.Type{types.TypeString}, Returns: nil},
-    func(vm *interp.Interpreter, args []types.Boxed) ([]types.Boxed, error) {
-        s, _ := vm.Load(args[0].Ref()).(types.String)
-        fmt.Println(string(s))   // host policy decides the sink
-        return nil, nil
-    },
-)
+## Iteration builtins
+
+`iter` accepts lists, dicts, sets, iterators, and strings. Dict iteration produces
+keys; set iteration produces elements; string iteration produces strings.
+
+`next` consumes `Iterator[T]`. End-of-iteration follows the runtime iterator /
+coroutine protocol and traps through the VM when the iterator is exhausted.
+
+`enumerate` and `zip` currently work on lists and eagerly produce lists of tuples.
+
+## Exceptions
+
+`builtins` also provides the builtin exception hierarchy used by the checker and
+runtime error paths. The checker seeds these classes into the class table so
+exception identity is shared with ordinary class/type checks.
+
+Supported exception classes include:
+
+```text
+BaseException
+Exception
+ArithmeticError
+LookupError
+AssertionError
+TypeError
+NameError
+UnboundLocalError
+ValueError
+IndexError
+KeyError
+RuntimeError
+StopIteration
 ```
 
-`range` does not create a runtime object in v1; it only configures the `for`
-loop's bounds at compile time ([`05-codegen.md`](05-codegen.md#for-range-and-iterables)).
-A first-class lazy `range` object is deferred to M6 (it is naturally a generator).
+Exception instances carry a class id and message field in their runtime struct
+shape. `raise` and `except` use that class identity; `except` targets must inherit
+from `BaseException`.
 
-## Later builtins (by milestone)
+## `operator`
 
-| milestone | adds |
-|---|---|
-| M3 | list methods `append/pop`, dict `get/keys/values/items`, str `upper/lower/split/join/find`, `enumerate`, `zip` |
-| M5 | `isinstance` (limited, for class hierarchy), `@dataclass`, `@staticmethod` |
-| M6 | `iter`, `next`, lazy `range` object |
-| M7 | exception classes `Exception`, `ValueError`, `KeyError`, `IndexError`, … |
-| M8 | native `builtins` and `operator` modules plus source module imports; curated typed stdlib native modules remain future library work |
-| M10 | `isinstance(x, T)` narrows arbitrary union/`Any` members (lowered to `REF_TEST`) |
+The native `operator` module exports the functions used by syntax lowering.
 
-## Host-function ABI (for embedders)
+Binary operator functions:
 
-minipy programs run inside a host Go program that calls minivm `interp.New`.
-Native modules provide host functions for their own exported symbols; compiler
-lowering helpers create any extra host functions needed for non-symbol runtime
-operations. Contract:
+```text
+add sub mul truediv floordiv mod pow and_ or_ xor lshift rshift
+```
 
-- A host function has a `*types.FunctionType` (params/returns) that **must match**
-  the type minipy assigns to the builtin; minipy emits calls assuming this ABI.
-- Arguments arrive as typed `[]types.Boxed` (no reflection). Primitives are inline
-  (`args[i].I64()`, `.F64()`, `.Bool()`); refs (`str`, `list`, …) are loaded with
-  `vm.Load(args[i].Ref())`.
-- Returns are `[]types.Boxed`; a `-> None` builtin returns `nil`.
-- Resource and policy limits (heap, fuel, I/O sinks) are the host's to set via
-  minivm options — minipy does not bypass them.
+Comparison functions:
 
-Native functions that need host support are inserted into the program constant
-pool as `interp.HostFunction` values. Inline native functions emit bytecode
-directly.
+```text
+eq ne lt le gt ge
+```
 
-## Out of scope
+Unary/logical helpers:
 
-`eval`, `exec`, `compile`, `globals`, `locals`, `vars`, `dir`, `getattr`,
-`setattr`, `hasattr`, `__import__`, `open` (until M8 stdlib policy), `input`
-(host-policy dependent), and any builtin returning an untyped/dynamic value in the
-static core. Reflective/dynamic builtins, if ever added, belong to the opt-in M10
-inference/union layer.
+```text
+neg pos invert contains not_ abs truth
+```
+
+The syntax forms `+`, `-`, `*`, `/`, `//`, `%`, `**`, bitwise operators, shifts,
+comparisons, membership, unary operators, and logical truth helpers delegate to
+these same type rules and emitters.
+
+## Native call restrictions
+
+Native calls do not support keyword arguments, starred arguments, or dynamic
+`**kwargs` unpacking. Those forms are parsed, then rejected by the checker for
+native symbols.
+
+Native modules may be imported explicitly:
+
+```python
+import operator
+from builtins import len
+```
+
+The imported module object is still compile-time-only; it may be used as an
+attribute receiver (`operator.add(1, 2)`) but not stored or passed as a runtime
+value.
