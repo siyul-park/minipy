@@ -1,17 +1,40 @@
 # Python 3.13 Compatibility Matrix
 
+User-facing support matrix for minipy compared with Python 3.13 syntax and
+behavior.
+
+## When to Read
+
+Read this when you need a quick answer about whether a Python feature is
+implemented, restricted, parse-only, or out of scope in minipy.
+
+For normative details, follow the owning spec document instead of treating this
+matrix as the complete language specification.
+
+## Source of Truth
+
+| Concern | Source |
+|---|---|
+| lexical behavior | `docs/spec/01-lexical.md` |
+| type behavior | `docs/spec/02-types.md` |
+| accepted syntax | `docs/spec/03-grammar.md` |
+| checker restrictions | `docs/spec/04-static-semantics.md` |
+| lowering/runtime behavior | `docs/spec/05-codegen.md` |
+| builtins/native modules | `docs/spec/06-builtins.md` |
+| planned/deferred work | `docs/roadmap.md` |
+
+## Legend
+
 This matrix compares minipy with Python 3.13 syntax and behavior. It describes
 what the current compiler accepts, checks, and lowers; it is not a roadmap for
 full CPython compatibility.
-
-Legend:
 
 - ✅ implemented and lowered
 - ◐ partially implemented or implemented with stricter static limits
 - ⏳ parsed or planned, but rejected before lowering
 - ❌ intentionally out of scope
 
-## Source and lexical layer
+## Source and Lexical Layer
 
 | Feature | Status | Notes |
 |---|---:|---|
@@ -141,7 +164,7 @@ Legend:
 | Bytes | ❌ | No runtime type. |
 | General Python object model | ❌ | No descriptors, metaclasses, MRO, dynamic attributes. |
 
-## Builtins and modules
+## Builtins and Modules
 
 | Feature | Status | Notes |
 |---|---:|---|
@@ -154,3 +177,9 @@ Legend:
 | First-class native functions | ❌ | Native symbols are callable names only. |
 | First-class modules/classes | ❌ | Compile-time receiver names only. |
 | Standard library compatibility | ❌ | Only registered native/source modules are available. |
+
+## Related Docs
+
+- `docs/README.md` — documentation map and ownership guide.
+- `docs/spec/` — normative language and compiler behavior.
+- `docs/roadmap.md` — planned and deferred work.
