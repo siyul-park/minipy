@@ -1,13 +1,34 @@
 # Grammar
 
+Accepted parser grammar, parse-only forms, and syntax notes for minipy source.
+
+## When to Read
+
+Read this when changing parser behavior, adding syntax, changing precedence, or
+checking whether a source form is parsed before the checker rejects it.
+
+For token spelling, read `01-lexical.md`. For checker restrictions on parsed
+forms, read `04-static-semantics.md`.
+
+## Source of Truth
+
+| Concern | Source |
+|---|---|
+| parser implementation | `parser/parser.go` |
+| AST node shapes | `ast/ast.go` |
+| token spelling | `token/token.go`, `docs/spec/01-lexical.md` |
+| checker restrictions | `compiler/check.go`, `docs/spec/04-static-semantics.md` |
+
+## Notation
+
 This file documents the grammar accepted by the parser and the forms that the
-checker/lowerer currently support. Some constructs are intentionally parsed so
-the compiler can issue precise unsupported-feature diagnostics later.
+checker/lowerer currently support. Some constructs are intentionally parsed so the
+compiler can issue precise unsupported-feature diagnostics later.
 
 Notation is EBNF-like: `[]` optional, `{}` repeat, `|` alternatives, and quoted
 strings are tokens or soft keywords.
 
-## Module and blocks
+## Module and Blocks
 
 ```text
 module          ::= { NEWLINE | statement } EOF
@@ -20,7 +41,7 @@ block           ::= ':' simple_stmt_list NEWLINE
 Compound statements may use either an indented suite or an inline simple-statement
 suite, except class bodies which must be indented blocks.
 
-## Simple statements
+## Simple Statements
 
 ```text
 simple_stmt     ::= pass_stmt
@@ -88,7 +109,7 @@ dotted_name     ::= NAME {'.' NAME}
 Imports are supported only at module top level. `from ... import *` parses but is
 rejected by the checker.
 
-## Compound statements
+## Compound Statements
 
 ```text
 compound_stmt   ::= if_stmt | while_stmt | for_stmt | try_stmt | with_stmt
@@ -109,7 +130,7 @@ async_stmt      ::= 'async' ('def' ... | 'for' ... | 'with' ...)
 parse-only until scheduler/runtime support exists. `except*` is parsed via the
 star flag but is not lowered as ExceptionGroup semantics.
 
-## Functions and parameters
+## Functions and Parameters
 
 ```text
 func_def        ::= 'def' NAME '(' [params] ')' ['->' type_expr] block
@@ -128,7 +149,7 @@ assignability.
 Function return annotations are optional; omitted returns are inferred. Generator
 functions must return `Iterator[T]` and may contain `yield` statements.
 
-## Classes and decorators
+## Classes and Decorators
 
 ```text
 class_def       ::= 'class' NAME ['(' class_arg {',' class_arg} [','] ')'] class_block
@@ -144,7 +165,7 @@ The checker supports one base class, no class keywords, `@dataclass`, bare-name
 function decorators, and method/field bodies. Non-name decorator expressions and
 unsupported class decorators produce diagnostics.
 
-## Match statements and patterns
+## Match Statements and Patterns
 
 ```text
 match_stmt      ::= 'match' match_subject ':' NEWLINE INDENT case_clause+ DEDENT
@@ -159,7 +180,8 @@ pattern_elems   ::= seq_elem {',' seq_elem} [',']
 seq_elem        ::= pattern | '*' NAME | '*_'
 mapping_pattern ::= '{' [mapping_item {',' mapping_item} [',' ['**' NAME]]] '}'
 mapping_item    ::= expression ':' pattern
-class_pattern   ::= dotted_name '(' [pattern {',' pattern} [',' keyword_pattern*]] ')'
+class_pattern   ::= dotted_name '(' [pattern {',' pattern} [',' keyword_patterns]] ')'
+keyword_patterns::= keyword_pattern {',' keyword_pattern}
 keyword_pattern ::= NAME '=' pattern
 ```
 
@@ -197,7 +219,7 @@ primary         ::= atom {call | attribute | subscript_expr}
 expressions are parsed but rejected by the checker; yield statements in generator
 functions are supported. `await` is parse-only.
 
-## Calls and primaries
+## Calls and Primaries
 
 ```text
 call            ::= '(' [argument {',' argument} [',']] ')'
@@ -213,11 +235,11 @@ literal         ::= INT | FLOAT | STRING | FSTRING | 'True' | 'False' | 'None'
 ```
 
 Known minipy function calls support positional arguments, keyword arguments,
-defaults, `*tuple` expansion, `*args`, and `**kwargs` parameters. Dynamic
-`**expr` call unpacking is parsed but rejected. Keyword/starred calls to native
-functions, builtin methods, and dynamic callable values remain limited.
+defaults, `*tuple` expansion, `*args`, and `**kwargs` parameters. Dynamic `**expr`
+call unpacking is parsed but rejected. Keyword/starred calls to native functions,
+builtin methods, and dynamic callable values remain limited.
 
-## Displays and comprehensions
+## Displays and Comprehensions
 
 ```text
 list_display    ::= '[' [star_expr {',' star_expr} [',']] ']'
@@ -240,7 +262,7 @@ List, dict, set, and generator comprehensions are supported with name targets.
 Async comprehensions are parse-only. Starred list/set elements and dict unpacking
 are type-checked with the restrictions in `04-static-semantics.md`.
 
-## Type expressions
+## Type Expressions
 
 ```text
 type_expr       ::= type_atom {'|' type_atom}
@@ -252,3 +274,11 @@ type_args       ::= type_expr {',' type_expr}
 Supported generics are `list[T]`, `dict[K, V]`, `set[T]`, `tuple[...]`,
 `Iterator[T]`, `Callable[[...], R]`, and class/module-qualified class names.
 Unknown generic names are rejected by the checker.
+
+## Related Docs
+
+- `docs/README.md` — documentation map and ownership guide.
+- `docs/spec/01-lexical.md` — tokens used by this grammar.
+- `docs/spec/02-types.md` — annotation and source type semantics.
+- `docs/spec/04-static-semantics.md` — checker restrictions on parsed forms.
+- `docs/compatibility.md` — user-facing syntax support matrix.
