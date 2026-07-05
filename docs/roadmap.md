@@ -1,17 +1,34 @@
 # Roadmap
 
-This roadmap records the current implementation state and the remaining known
-gaps. It intentionally avoids stale milestone claims; the language spec in
-`docs/spec/` is the source of truth for shipped behavior.
+Current implementation state, explicit restrictions, and remaining known work for
+minipy.
 
-Legend:
+## When to Read
+
+Read this when deciding what is shipped, deliberately restricted, planned, or out
+of scope.
+
+Do not use this file as the normative language specification. Shipped behavior is
+owned by `docs/spec/`; compatibility status is summarized in
+`docs/compatibility.md`.
+
+## Source of Truth
+
+| Concern | Source |
+|---|---|
+| shipped language behavior | `docs/spec/` |
+| user-facing support matrix | `docs/compatibility.md` |
+| compiler architecture | `docs/spec/00-overview.md` |
+| contributor patterns | `docs/coding-style.md` |
+
+## Legend
 
 - ✅ shipped
 - ◐ shipped with explicit restrictions
 - ⏳ parsed/planned but rejected before lowering
 - ❌ out of scope unless the project direction changes
 
-## Shipped core
+## Shipped Core
 
 ### Compiler pipeline ✅
 
@@ -26,7 +43,7 @@ Legend:
 - Containers: `list[T]`, `dict[K, V]`, `set[T]`, fixed tuples.
 - Classes, single inheritance, methods, `@dataclass` construction, builtin
   exception classes.
-- `Iterator[T]`, `Callable[[...], R]`, closed unions, `T | None` optional style.
+- `Iterator[T]`, `Callable[[...], R`, closed unions, `T | None` optional style.
 - Whole-program inference for unannotated locals/globals/params/returns where
   supported.
 - Flow narrowing for `isinstance(name, T)` and `name is/is not None`.
@@ -50,13 +67,12 @@ Legend:
 
 ### Native modules ✅
 
-- `builtins`: `print`, `str`, `int`, `float`, `bool`, `abs`, `len`,
-  `enumerate`, `zip`, `range`, `iter`, `next`, `isinstance`, and builtin
-  exceptions.
+- `builtins`: `print`, `str`, `int`, `float`, `bool`, `abs`, `len`, `enumerate`,
+  `zip`, `range`, `iter`, `next`, `isinstance`, and builtin exceptions.
 - `operator`: syntax operator semantics and native `operator.*` functions share
   one implementation.
 
-## Current explicit restrictions
+## Current Explicit Restrictions
 
 These are implemented with deliberate limits, not undocumented bugs.
 
@@ -76,7 +92,7 @@ These are implemented with deliberate limits, not undocumented bugs.
 - `except*` is parsed but ExceptionGroup semantics are not implemented.
 - Async forms parse for diagnostics but are rejected.
 
-## Remaining work
+## Remaining Work
 
 ### P0 correctness/consistency
 
@@ -108,7 +124,7 @@ These are implemented with deliberate limits, not undocumented bugs.
 - More CPython-compatible diagnostics where doing so does not complicate the
   compiler pipeline.
 
-## Out of scope by default
+## Out of Scope by Default
 
 - Full CPython object model, descriptors, metaclasses, monkey patching, and MRO
   compatibility.
@@ -116,3 +132,10 @@ These are implemented with deliberate limits, not undocumented bugs.
 - Arbitrary precision integer semantics.
 - Complex numbers unless minivm/runtime support is added deliberately.
 - A full standard library clone.
+
+## Related Docs
+
+- `docs/README.md` — documentation map and ownership guide.
+- `docs/spec/` — source of truth for shipped language/compiler behavior.
+- `docs/compatibility.md` — user-facing support matrix.
+- `docs/coding-style.md` — contributor patterns for keeping docs/code aligned.
