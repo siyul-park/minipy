@@ -1,11 +1,35 @@
 # Types
 
+Source-level type system, assignability, inference, narrowing, and specialization
+rules for minipy.
+
+## When to Read
+
+Read this when changing source types, annotation parsing, assignability,
+printability, inference, narrowing, or function specialization.
+
+For syntax of annotations, read `03-grammar.md`. For checker behavior that uses
+these types, read `04-static-semantics.md`. For minivm runtime representation,
+read `05-codegen.md`.
+
+## Source of Truth
+
+| Concern | Source |
+|---|---|
+| source type definitions | `types/types.go` |
+| annotation parsing | `parser/parser.go` |
+| type resolution and inference | `compiler/check.go` |
+| runtime mapping | `compiler/compiler.go`, `docs/spec/05-codegen.md` |
+| builtin/operator type rules | `builtins/`, `operator/`, `docs/spec/06-builtins.md` |
+
+## Summary
+
 minipy uses a source-level static type system that is stricter than minivm's
 runtime type model. The checker tracks distinctions such as `bool` versus `int`,
-container element types, class layouts, and closed unions before lowering to
-minivm types.
+container element types, class layouts, callable signatures, and closed unions
+before lowering to minivm types.
 
-## Type universe
+## Type Universe
 
 | Source type | Meaning | Runtime mapping |
 |---|---|---|
@@ -18,9 +42,9 @@ minivm types.
 | `list[T]` | homogeneous mutable sequence | minivm array of `T` |
 | `dict[K, V]` | homogeneous map | minivm map `K -> V` |
 | `set[T]` | homogeneous set | minivm map `T -> bool` |
-| `tuple[T, ...]` | fixed arity heterogeneous tuple | minivm struct |
+| `tuple[T1, T2, ...]` | fixed-arity tuple, possibly heterogeneous | minivm struct |
 | class type | declared fields and methods | minivm struct |
-| `Iterator[T]` | iterator/coroutine-like producer | ref |
+| `Iterator[T]` | source iterator type | ref |
 | `Callable[[...], R]` | callable value type | minivm function/ref path |
 | `A | B` | closed union | dynamic ref with narrowing |
 | module type | compile-time imported module receiver | compile-time only |
@@ -29,7 +53,7 @@ minivm types.
 cannot keep a bounded concrete or union type. Operators, calls, and narrowing
 still try to recover concrete information where possible.
 
-## Annotation syntax
+## Annotation Syntax
 
 The parser accepts these annotation forms:
 
@@ -50,6 +74,8 @@ collapses to that member.
 `type Name = expr` creates a compile-time alias once `expr` resolves to a type.
 Aliases are scoped through the same module key system as other compile-time
 symbols.
+
+`Optional[T]` is not a separate spelling in the implementation. Use `T | None`.
 
 ## Inference
 
@@ -82,16 +108,16 @@ generation with an unresolved type variable is a compiler bug.
 For example, `int` is not assignable to `float`; write `float(x)` explicitly.
 `bool` is not assignable to `int`.
 
-## Numeric types
+## Numeric Types
 
 `int` is signed 64-bit and `float` is `float64`. minipy does not implement
 Python's arbitrary-precision integers, complex numbers, or implicit mixed numeric
 arithmetic. Operators reject unsupported type combinations during checking.
 
-## Containers and keys
+## Containers and Keys
 
-Lists, dictionaries, and sets are homogeneous. Empty list/dict/set displays need
-a type hint from an annotation or expected context because there is no element to
+Lists, dictionaries, and sets are homogeneous. Empty list/dict/set displays need a
+type hint from an annotation or expected context because there is no element to
 infer from.
 
 Dictionary keys and set elements are limited to hashable scalar source types:
@@ -112,13 +138,12 @@ from fields and default-field ordering checks. Other class decorators and comple
 decorator expressions are rejected.
 
 Methods require a first `self` parameter. `self` may omit an annotation; if it is
-annotated, it must match the containing class type. `__init__` must return
-`None`.
+annotated, it must match the containing class type. `__init__` must return `None`.
 
 Builtin exception classes are seeded into the class table so `raise`, `except`,
 and `isinstance` can reason about their identities.
 
-## Callable and functions
+## Callable and Functions
 
 Function values are represented as `Callable[[P...], R]`. Direct calls to known
 minipy functions support positional arguments, keyword arguments, default values,
@@ -138,7 +163,7 @@ checker creates monomorphic instantiations for concrete call-site argument tuple
 when the specialized body type-checks, up to a fixed per-function cap. Calls fall
 back to the union/`Any` body when specialization is not possible.
 
-## Unions and narrowing
+## Unions and Narrowing
 
 Closed unions support flow-sensitive narrowing in two guard forms:
 
@@ -159,9 +184,17 @@ impossible branches.
 `Optional[T]` is represented as `T | None`; there is no separate optional type in
 the implementation.
 
-## Printable types
+## Printable Types
 
 `print`, `str`, and f-string replacement fields accept printable types. Printable
-values include primitives, `None`, homogeneous containers/tuples, printable
-closed unions, and `Any`. User class instances are not generally printable unless
+values include primitives, `None`, homogeneous containers/tuples, printable closed
+unions, and `Any`. User class instances are not generally printable unless
 converted through an implemented path.
+
+## Related Docs
+
+- `docs/README.md` — documentation map and ownership guide.
+- `docs/spec/03-grammar.md` — annotation syntax.
+- `docs/spec/04-static-semantics.md` — checker behavior that applies these types.
+- `docs/spec/05-codegen.md` — runtime representation.
+- `docs/spec/06-builtins.md` — builtin and operator type rules.
