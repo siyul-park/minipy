@@ -1,11 +1,36 @@
 # Static Semantics
 
+Checker behavior for names, modules, types, class layouts, call targets, control
+flow, unsupported features, and diagnostics.
+
+## When to Read
+
+Read this when changing checker behavior, diagnostics, type resolution,
+specialization, narrowing, imports, pattern validation, or supported/rejected
+statement forms.
+
+For syntax accepted by the parser before these checks, read `03-grammar.md`. For
+how checked forms lower to bytecode, read `05-codegen.md`.
+
+## Source of Truth
+
+| Concern | Source |
+|---|---|
+| checker implementation | `compiler/check.go` |
+| type lattice | `types/types.go`, `docs/spec/02-types.md` |
+| AST shapes | `ast/ast.go` |
+| parser shape | `parser/parser.go`, `docs/spec/03-grammar.md` |
+| native call rules | `builtins/`, `operator/`, `docs/spec/06-builtins.md` |
+| diagnostics | `token/error.go` |
+
+## Summary
+
 The checker resolves names, modules, types, class layouts, call targets, control
-flow, and unsupported-feature diagnostics before bytecode generation. Any
-lexical, syntactic, loading, or semantic error stops `Compile` and returns a
+flow, and unsupported-feature diagnostics before bytecode generation. Any lexical,
+syntactic, loading, or semantic error stops `Compile` and returns a
 `token.ErrorList`.
 
-## Scope and bindings
+## Scope and Bindings
 
 ### Modules
 
@@ -20,7 +45,7 @@ bindings to modules, symbols, or native symbols.
 Imports are supported only at module top level. Relative imports resolve from the
 current module/package context. `from ... import *` is parsed but rejected.
 
-### Globals and locals
+### Globals and Locals
 
 - A top-level annotated assignment declares a global slot.
 - An unannotated first assignment declares a global or local with the value type.
@@ -34,7 +59,7 @@ current module/package context. `from ... import *` is parsed but rejected.
 `del name` marks a binding definitely uninitialized. Later reads reuse the same
 use-before-definition diagnostic as any other uninitialized binding.
 
-## Control flow
+## Control Flow
 
 - `break` and `continue` require an enclosing loop.
 - `return` requires an enclosing function.
@@ -47,7 +72,7 @@ use-before-definition diagnostic as any other uninitialized binding.
 returns or raises and has no `else`, the negative narrowing of the guard applies
 to the rest of the enclosing block.
 
-## Type resolution
+## Type Resolution
 
 Annotations resolve through primitive names, aliases, classes, imported module
 attributes, and generic forms:
@@ -64,7 +89,7 @@ unsupported attribute annotations are diagnostics.
 `type Name = expr` records a compile-time type alias once `expr` resolves to a
 valid type.
 
-## Inference rules
+## Inference Rules
 
 The checker uses whole-program inference, but it does not infer across arbitrary
 runtime reflection. Important cases:
@@ -101,7 +126,7 @@ parameter types. It is skipped when:
 Skipped calls fall back to the original union/`Any` body. The cap is fixed by the
 implementation (`maxSpecializations`).
 
-## Narrowing and static truth
+## Narrowing and Static Truth
 
 The checker recognizes:
 
@@ -112,13 +137,13 @@ name is not None
 ```
 
 for bindings whose current type is a union or `Any`. It overlays narrowed types in
-true and false branches. In a specialized function body, when the narrowed value
-is already concrete, the checker can statically determine a guard result and the
-code generator prunes the impossible branch.
+true and false branches. In a specialized function body, when the narrowed value is
+already concrete, the checker can statically determine a guard result and the
+lowerer prunes the impossible branch.
 
 ## Expressions
 
-### Literals and displays
+### Literals and Displays
 
 - Empty list/dict/set displays require an expected type from an annotation or
   context.
@@ -130,7 +155,7 @@ code generator prunes the impossible branch.
 - Starred set elements accept sets.
 - Dict unpacking accepts dicts; dynamic call `**kwargs` unpacking is rejected.
 
-### Indexing and slicing
+### Indexing and Slicing
 
 - Lists require `int` indexes and return their element type.
 - Dicts require assignable key types and return the value type.
@@ -178,7 +203,7 @@ match the callable, and its body must be assignable to the callable result.
 Replacement fields must be printable. Conversions are limited to `!s`, `!r`, and
 `!a`. Format specs may contain one level of nested replacement fields.
 
-### Async and yield expressions
+### Async and Yield Expressions
 
 `async def`, `async for`, `async with`, async comprehensions, `await`, and yield
 expressions parse but are rejected before lowering. Yield statements are supported
@@ -209,7 +234,7 @@ Constraints:
 - `__init__` must return `None`
 - dataclass fields with defaults must not precede non-default fields
 
-### Pattern matching
+### Pattern Matching
 
 The checker validates each pattern against the subject type and declares capture
 bindings. Sequence patterns require list or tuple subjects; mapping patterns
@@ -224,7 +249,7 @@ or compatible exception construction paths according to the checker/lowerer.
 
 `except*` syntax is parsed but ExceptionGroup semantics are not implemented.
 
-### With statements
+### With Statements
 
 `with` statements are checked and lowered through context-manager-style attribute
 lookups. `async with` is parse-only.
@@ -235,3 +260,12 @@ Semantic errors use `token.Error` codes such as `TypeMismatch`, `UndefinedName`,
 `UseBeforeDefinition`, `ArityMismatch`, `UnsupportedType`, `UnsupportedFeature`,
 `PatternError`, and related codes. The rendered error name follows the associated
 Python exception class declared in `token/error.go`.
+
+## Related Docs
+
+- `docs/README.md` — documentation map and ownership guide.
+- `docs/spec/02-types.md` — source type system used by the checker.
+- `docs/spec/03-grammar.md` — syntax accepted before checker validation.
+- `docs/spec/05-codegen.md` — lowering of checked forms.
+- `docs/spec/06-builtins.md` — native builtin and operator checker rules.
+- `docs/compatibility.md` — user-facing support matrix.
