@@ -1,174 +1,169 @@
-# minipy — Coding Style
+# Coding Style
 
-Adapted from minivm's
-[coding-patterns](https://github.com/siyul-park/minivm/blob/main/docs/coding-patterns.md)
-for this project. Read code like a behavior specification: a reader should grasp
-*what* a package does and *where* the complexity lives without simulating the VM
-in their head.
+This document captures conventions for changing minipy code and documentation.
+The implementation is the source of truth; when behavior changes, update the
+spec, compatibility matrix, and roadmap in the same change.
 
-## Core philosophy
+## Principles
 
-- **Readability over cleverness.** Explicit behavior beats hidden magic.
-- **Push complexity down.** Keep public APIs (`lexer.Lex`, `parser.Parse`,
-  `compiler.Compile`) small even when the implementation is involved.
-- **Top-down.** Declare callers above callees; reading a file downward follows
-  execution. Policy first, mechanics later.
-- **Small surface.** Fewer files, types, functions, and arguments — each doing
-  one conceptual thing (orchestrate, transform, validate, emit, or normalize).
+- Keep the language subset explicit. A construct should be documented as lowered,
+  parse-only, restricted, or out of scope.
+- Prefer static checks over runtime surprises. Unsupported constructs should fail
+  in the checker before lowering.
+- Keep package dependencies directional and simple.
+- Keep native behavior centralized: `builtins` owns builtin functions and
+  exception classes; `operator` owns operator syntax and `operator.*` behavior.
+- Avoid implicit coercions unless the type rules document them. minipy's source
+  type system intentionally distinguishes `bool` from `int` and `int` from
+  `float`.
 
-## Project shape
+## Package responsibilities
 
-The pipeline is one package per phase, mirroring the Go standard library
-(`go/token`, `go/ast`, `go/parser`) and minivm's package split:
+| Package | Responsibility |
+|---|---|
+| `token` | Token kinds, positions, diagnostic codes, and rendered Python-style error names. |
+| `lexer` | Rune scanner, indentation handling, literal scanning, and lexical diagnostics. |
+| `ast` | Data-only syntax tree nodes for modules, statements, expressions, patterns, and f-strings. |
+| `parser` | Recursive-descent parser for supported and parse-only syntax forms. |
+| `types` | Source-level type lattice and mapping to minivm runtime types. |
+| `module` | Native/source module registry interfaces used by checker and lowerer. |
+| `builtins` | Native `builtins` module, builtin type rules, emitters, host helpers, and exception hierarchy. |
+| `operator` | Native `operator` module and the single source of operator type/lowering semantics. |
+| `hostabi` | Runtime helper value shapes used by host functions and iterator/coroutine bridges. |
+| `compiler` | Module loader, checker, specializer, lowerer, optimizer/verification pipeline, and import support. |
+| `cmd/minipy` | CLI and REPL front ends. |
+| `docs` | Implementation-facing specs and status documents. |
+
+## Dependency direction
+
+Follow the existing layering:
 
 ```text
-token    lexical tokens, positions, the shared diagnostic vocabulary
-ast      syntax tree nodes (plain data; every node carries a token.Pos)
-lexer    io.Reader -> []token.Token
-parser   io.Reader -> *ast.Module
-types    minipy source types (int/float/bool/str/None) + mapping to minivm types
-compiler type checker (`checker`, check.go) + lowering (`compiler`, compiler.go);
-         Compile(io.Reader) -> *program.Program
-cmd      the CLI and REPL
+token
+  -> lexer
+  -> ast
+  -> parser
+  -> types
+  -> module
+  -> builtins / operator
+  -> compiler
+  -> cmd/minipy
 ```
 
-Dependency direction is one-way and acyclic: `token <- {lexer, ast, parser,
-types, compiler}`, `compiler -> {ast, parser, types, minivm}`,
-`cmd -> {compiler, minivm}`.
+The actual graph is not a strict chain, but changes should preserve these rules:
 
-### minivm is used directly
+- `token` must not depend on syntax, type, or compiler packages.
+- `lexer` must not depend on `ast`, `parser`, `types`, or `compiler`.
+- `ast` may depend on `token` for positions only.
+- `parser` builds AST nodes and should not perform semantic checks that belong in
+  `compiler/check.go`.
+- `types` may map to minivm runtime types but must not depend on checker or
+  lowerer state.
+- `builtins` and `operator` depend on `module`, `types`, and syntax interfaces;
+  they should not depend on each other.
+- `compiler` is the integration layer and may depend on syntax, types, modules,
+  native modules, host ABI helpers, and minivm.
 
-minipy compiles to minivm and runs on its interpreter. minivm packages
-(`program`, `instr`, `interp`, `types`, `optimize`) are imported where needed —
-no wrapper layer. Import minivm's `types` as `vmtypes` to keep it distinct from
-minipy's own `types`.
+## Diagnostics
 
-### Inputs are io.Reader
+- User-input errors should be reported through `token.Error` and accumulated in
+  `token.ErrorList`.
+- Prefer precise error codes such as `SyntaxError`, `UnsupportedFeature`,
+  `UnsupportedType`, `TypeMismatch`, `UndefinedName`, `UseBeforeDefinition`,
+  `ArityMismatch`, `PatternError`, and related codes already defined in `token`.
+- Do not panic for malformed user programs. Panics are acceptable only for
+  internal compiler invariants that should be unreachable after checking.
+- When adding a new diagnostic class, update `token/error.go`, tests, and docs.
 
-Source-consuming entry points (`lexer.Lex`, `parser.Parse`, `compiler.Compile`)
-take an `io.Reader`, not a string. Callers wrap with `strings.NewReader` or pass
-an `*os.File` directly.
+## Lexer conventions
 
-### Errors are Python-consistent
+- Keep token spelling and token names in `token/token.go` synchronized with
+  `docs/spec/01-lexical.md`.
+- The lexer should emit recoverable diagnostics and continue scanning when
+  possible.
+- Soft keywords stay as `NAME`; the parser decides whether a soft keyword starts a
+  special form.
+- Do not split f-strings into multiple token kinds unless the parser and docs are
+  updated together.
 
-Every diagnostic is a `*token.Error` with a catalogue `Code` and a source
-position. `Code.Python()` maps it to the CPython exception name a user would see
-for the same mistake (`TypeError`, `NameError`, `SyntaxError`, `ValueError`), and
-that is what `Error()` renders. A phase collects a `token.ErrorList` and reports
-**every** error it can before aborting — never fail-on-first.
+## Parser conventions
 
-## File layout (fixed order per file)
+- The parser may accept parse-only syntax so the checker can report a better
+  unsupported-feature error. Document every parse-only form.
+- Keep precedence centralized in the expression parser and update
+  `docs/spec/03-grammar.md` when adding an operator.
+- Parse syntax shape only. Type checking, scope rules, module resolution,
+  constructor legality, and runtime support checks belong in the checker.
+- Preserve source positions from the first token of each node.
+- When adding a syntax node, update `ast`, parser tests, static semantics, codegen
+  docs, and compatibility matrix.
 
-1. Public type
-2. Private type
-3. Public const
-4. Private const
-5. Public var
-6. Private var (incl. interface-compliance assertions)
-7. Constructors (`New<Type>`)
-8. Public functions
-9. Public methods
-10. Private methods
-11. Private functions
+## Type and checker conventions
 
-## Naming
+- Prefer concrete types and closed unions over `Any`.
+- Do not introduce implicit numeric promotion without documenting the rule and
+  updating operator tests.
+- A construct that cannot be lowered must produce a checker diagnostic before
+  code generation.
+- Keep flow narrowing and static-truth pruning mirrored between checker and
+  lowerer when specializations make branches unreachable.
+- When adding a type form, update `types`, annotation parsing, `resolveType`,
+  assignability/printability as needed, lowering, and docs.
 
-- Intent-based: names describe the caller-visible outcome, not the mechanism.
-- Prefer **one clear word**. Grow to two words only when the local context cannot
-  disambiguate it. Avoid suffixes like `Helper`, `Manager`, `Data`, `Info` unless
-  the type already has that meaning in the package.
-- Shortest clear name; avoid one-letter names except domain standards
-  (`VM`, `i` for the interpreter receiver in host functions). Short local names
-  are good when the surrounding function already supplies the noun.
-- Constructors are `New<Type>`. The primary parse-like entry point is `Parse`/
-  `Lex`/`Compile`; secondary targets get a `Parse<Type>` form.
-- Prefer functional options (`WithOutput`) over config structs; apply defaults
-  before options.
+## Code generation conventions
 
-## Control flow
+- Lower only checked forms. The lowerer may assume the checker has rejected
+  unsupported syntax and invalid types.
+- Keep native operation semantics in `builtins` or `operator`; do not duplicate
+  native type rules directly in the lowerer.
+- Preserve minivm type pools and handler tables around optimizer passes as the
+  current pipeline does.
+- Verify every compiled program before returning it from `Compile`.
+- For closure/capture changes, keep checker capture metadata and lowerer boxing
+  behavior in sync.
+- For specialization changes, keep per-specialization type tables isolated from
+  the fallback function body.
 
-- Prefer guard clauses, early returns, and small helpers over `goto` or flag-heavy
-  control flow. `goto` is reserved for tight lexer/state-machine code where it is
-  clearer than duplicated scanning logic.
-- Check an expression once, store the result, and pass that result through the
-  branch that needs it. Assignment, `global`, and `nonlocal` paths must not
-  re-type-check the same RHS.
-- Share pure predicates instead of duplicating checker/codegen logic. Keep the
-  shared helper private and small.
+## Native module conventions
 
-## Error handling
+A native symbol should provide a coherent triple:
 
-- Wrap propagated errors with `%w` and context: `fmt.Errorf("assemble: %w", err)`.
-- Constructors that intentionally stay error-free may store setup errors and have
-  the public operation return them with context (`New(...).Compile()` reports
-  source read errors as `read source: ...`).
-- Diagnostics from a compile phase are values (`token.ErrorList`), not panics.
-- Panic only for violated internal invariants; recover at execution boundaries.
+1. checker rule
+2. emitter callback
+3. optional runtime value / host function
 
-## Checker rules
+Native symbols are callable names, not first-class values. If that changes, update
+`module`, checker name resolution, lowering, docs, and compatibility status.
 
-- Name resolution follows the language model: local, captured/nonlocal, global,
-  builtin. Keep the global path as a helper instead of jumping to labels.
-- Temporary names that are not real bindings, such as comprehension targets, use
-  an overlay map. Do not create and later delete module globals or function locals
-  for temporary compiler scopes.
-- Checker and codegen must resolve class methods the same way, including inherited
-  methods. Use the shared method lookup path instead of reading only the immediate
-  class map.
+## Documentation checklist
 
-## Lowering to minivm
+For any language or runtime behavior change, update the relevant files:
 
-- The `compiler` (the lowering half, compiler.go) assumes a validated AST: it
-  relies on the type table and never re-reports errors.
-- The entry function has no module-level locals (`bp == sp`) and no entry-frame
-  `RETURN` — it halts by running off the end of its code. Branch targets must
-  stay within the code (the block analysis rejects a jump to `len(code)`), so
-  `module` emits a trailing `NOP` as a landing pad for any merge label bound at
-  the very end.
-- Prefer inline opcode sequences over host functions. Use a host function only
-  when an operation cannot be lowered inline today (e.g. `**` and float `%`,
-  which need a loop/temporaries the module-entry frame has no locals for). Such
-  cases are documented at their definition as future inline/extension-op work.
-- Prefer existing minivm primitives over compiler-side materialization. Dict/set
-  iteration and comprehensions use `MAP_ITER`, not `MAP_KEYS` plus an array loop.
-- Preserve Python evaluation rules while lowering: chained comparisons evaluate
-  each operand once and short-circuit after the first false comparison.
-- Use standard library building blocks for linear work: `strings.Builder` for
-  repeated concatenation, `strings.Repeat` for padding, and exponentiation by
-  squaring for integer powers.
+- `docs/spec/01-lexical.md` for tokens, literals, indentation, and f-strings.
+- `docs/spec/02-types.md` for type forms, assignability, inference, narrowing,
+  and specialization.
+- `docs/spec/03-grammar.md` for syntax.
+- `docs/spec/04-static-semantics.md` for checker behavior and diagnostics.
+- `docs/spec/05-codegen.md` for lowering/runtime representation.
+- `docs/spec/06-builtins.md` for builtin/operator/native-module behavior.
+- `docs/compatibility.md` for user-facing Python compatibility status.
+- `docs/roadmap.md` for completed work and remaining gaps.
+- `README.md` when the public project summary, package map, or run instructions
+  change.
 
-## Testing
+Avoid stale milestone phrasing in spec files. If a feature is already shipped,
+describe the implementation and restrictions directly. If it is not shipped,
+state whether it is parse-only, rejected, planned, or out of scope.
 
-- Use `go test` with `testify/require` (never `assert`).
-- **One test function per public symbol**; sub-cases are `t.Run` subtests.
-  Name them `Test<Func>` or `Test<Type>_<Method>`. Diagnostic/error-path cases
-  for an entry symbol live in a single companion `Test<Func>Errors` table test
-  (e.g. `TestCompile` + `TestCompileErrors`); do not add further per-feature test
-  functions — fold new behavior in as subtests of the existing pair.
-- Tests are **self-contained**: inline setup, execution, and assertions. The
-  only shared helpers are thin adapters (e.g. wrapping a string in an
-  `io.Reader`, or asserting a diagnostic `Code` is present).
-- Test helper names should be one clear word when possible (`code`, `count`,
-  `ops`, `opcode`). Keep helpers narrow enough that the call site reads plainly.
-- Assert diagnostics on the `Code` (via the typed `token.ErrorList`), not on the
-  rendered string, so message wording can evolve.
-- For lowering changes, add both behavior tests and bytecode-shape tests when the
-  shape matters (for example, `MAP_ITER` present and `MAP_KEYS` absent).
-- Table-driven where every case shares the same shape; explicit `t.Run`
-  otherwise. Do not mix the two at one nesting level.
-- Target ≥80% statement coverage per package.
+## Test checklist
 
-## Documentation
+When changing behavior, add or update tests near the responsible package:
 
-- When implementation behavior changes, update this file and the relevant spec
-  page in the same change. Comments in code must not contradict the spec.
-- Status text must describe the shipped compiler/CLI/REPL, not an old roadmap
-  phase. Annotation docs must say boundary annotations are optional where
-  whole-program inference can solve them.
+- lexer/token tests for tokenization and lexical diagnostics
+- parser tests for AST shape and parse-only forms
+- checker/compiler tests for semantic errors and generated behavior
+- native module tests for builtin/operator type rules and emitters
+- integration tests for CLI/runtime paths where appropriate
 
-## Git
-
-- Commit subject: `<type>(scope): <summary>`, imperative mood, ≤72 chars, one
-  logical concern per commit. Types: `feat fix refactor docs test chore perf ci`.
-- Update this file when the style changes; update the specs in `docs/spec/` when
-  the language changes.
+Docs-only changes do not require runtime test changes, but they should still be
+reviewed against the current code before merging.
