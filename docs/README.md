@@ -24,7 +24,7 @@ not duplicate the full content of each document.
 | builtins and native modules | `docs/spec/06-builtins.md` |
 | Python compatibility status | `docs/compatibility.md` |
 | completed work and remaining gaps | `docs/roadmap.md` |
-| contributor coding patterns | `docs/coding-style.md` |
+| contributor coding patterns | `docs/coding-patterns.md` |
 
 ## Reading Paths
 
@@ -32,7 +32,7 @@ not duplicate the full content of each document.
 
 1. `README.md` for the project summary and commands.
 2. `docs/spec/00-overview.md` for the compiler pipeline and package roles.
-3. `docs/coding-style.md` before making a code or documentation change.
+3. `docs/coding-patterns.md` before making a code or documentation change.
 
 ### Language feature change
 
@@ -54,7 +54,7 @@ not duplicate the full content of each document.
 - Compatibility is a user-facing matrix; keep rows short and link back to the
   owning spec when detail would become repetitive.
 - Roadmap is status-oriented; do not put normative language rules there.
-- Coding style governs contributor decisions; it should reference minivm shared
+- Coding patterns govern contributor decisions; they should follow minivm shared
   patterns and add only minipy-specific rules.
 - README is for orientation, not a full language manual.
 
@@ -84,7 +84,7 @@ rules from the old location.
 ## Related Docs
 
 - `README.md` — public project entry point.
-- `docs/coding-style.md` — code and documentation contribution patterns.
+- `docs/coding-patterns.md` — code and documentation contribution patterns.
 - `docs/spec/00-overview.md` — compiler architecture and execution model.
 - `docs/compatibility.md` — feature support matrix.
 - `docs/roadmap.md` — planned and deferred work.

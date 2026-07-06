@@ -19,7 +19,7 @@ owned by `docs/spec/`; compatibility status is summarized in
 | shipped language behavior | `docs/spec/` |
 | user-facing support matrix | `docs/compatibility.md` |
 | compiler architecture | `docs/spec/00-overview.md` |
-| contributor patterns | `docs/coding-style.md` |
+| contributor patterns | `docs/coding-patterns.md` |
 
 ## Legend
 
@@ -137,4 +137,4 @@ These are implemented with deliberate limits, not undocumented bugs.
 - `docs/README.md` — documentation map and ownership guide.
 - `docs/spec/` — source of truth for shipped language/compiler behavior.
 - `docs/compatibility.md` — user-facing support matrix.
-- `docs/coding-style.md` — contributor patterns for keeping docs/code aligned.
+- `docs/coding-patterns.md` — contributor patterns for keeping docs/code aligned.
