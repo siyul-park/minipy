@@ -58,7 +58,7 @@ the compiler.
 | `docs/spec/` | Implementation-facing language specification. |
 | `docs/compatibility.md` | Python 3.13 feature compatibility matrix. |
 | `docs/roadmap.md` | Completed work and remaining gaps. |
-| `docs/coding-style.md` | Project conventions for code and documentation changes. |
+| `docs/coding-patterns.md` | Project conventions for code and documentation changes. |
 
 ## Build and test
 
@@ -92,7 +92,7 @@ Start with [Documentation](docs/README.md) for the full documentation map.
 - [Builtins and native modules](docs/spec/06-builtins.md)
 - [Python 3.13 compatibility matrix](docs/compatibility.md)
 - [Roadmap](docs/roadmap.md)
-- [Coding style](docs/coding-style.md)
+- [Coding patterns](docs/coding-patterns.md)
 
 ## License
 
