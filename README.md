@@ -1,60 +1,99 @@
 # minipy
 
-**A statically-typed subset of Python that compiles to
-[minivm](https://github.com/siyul-park/minivm) bytecode.**
+minipy is a statically checked Python 3.13-inspired subset compiler targeting
+[minivm](https://github.com/siyul-park/minivm). It parses Python-like source,
+checks it with minipy's own type system, lowers directly to minivm bytecode, and
+runs through minivm's interpreter.
 
-You write Python with type hints. minipy type-checks it ahead of time and emits a
-minivm program that runs on minivm's threaded interpreter and ARM64 trace JIT.
-minipy is not a Python interpreter and is not dynamically typed — it is a small,
-fast, embeddable language that *looks like* Python.
+The project is intentionally a subset, not a drop-in CPython implementation. The
+implemented subset focuses on code that can be checked ahead of time and lowered
+without preserving CPython's fully dynamic object model.
 
 ## Highlights
 
-- **Static, AOT.** Every type is known at compile time; no runtime type dispatch.
-- **Static with whole-program inference.** Boundary annotations are accepted and
-  preferred for clarity, while implemented inference fills in missing function
-  params/returns, module globals, and locals where the program gives enough
-  information.
-- **`int` is int64** (wraps on overflow) — no arbitrary-precision integers.
-- **A real subset.** Every minipy program is valid Python 3.13 source.
-- **Direct lowering.** Typed AST → minivm bytecode (no IR); reuses minivm's
-  optimizer and JIT.
+- **Direct minivm target** — the compiler emits minivm programs and verifies the
+  optimized bytecode before returning it.
+- **Static source types** — `int`, `float`, `bool`, `str`, `None`, containers,
+  tuples, classes, iterators, `Callable`, closed unions, `T | None`, and `Any` are
+  modeled separately from minivm runtime types.
+- **Whole-program inference** — annotations are optional where the checker can
+  infer a concrete, union, or `Any` type from assignments, defaults, returns, and
+  call sites.
+- **Python-like syntax with explicit limits** — functions, classes, imports,
+  control flow, exceptions, pattern matching, comprehensions, slicing, f-strings,
+  generators, and common builtins are supported within the documented subset.
+- **Native module model** — `builtins` and `operator` are registered native
+  modules, and source modules load through explicit `fs.FS` search roots.
 
-```python
-def fib(n: int) -> int:
-    if n < 2:
-        return n
-    return fib(n - 1) + fib(n - 2)
+## Current status
 
-print(str(fib(20)))   # 6765
+The shipped compiler, CLI, and REPL support the language described in
+`docs/spec/`. `docs/compatibility.md` tracks that implementation against Python
+3.13 syntax and expression forms. Forms that parse for diagnostics but still stop
+before lowering are called out explicitly in the spec instead of being hidden in
+old milestone text.
+
+Notable limits include no arbitrary-precision integers, no complex/bytes runtime
+values, no scheduler/coroutine semantics for `async`/`await`, no dynamic
+`**kwargs` call unpacking, no first-class module/class/native-function values,
+and no CPython standard-library compatibility beyond native modules supplied to
+the compiler.
+
+## Repository map
+
+| Path | Purpose |
+|---|---|
+| `token/` | Token kinds, positions, and diagnostic codes. |
+| `lexer/` | Python-like indentation lexer and literal scanner. |
+| `ast/` | Plain AST nodes for statements, expressions, patterns, and f-strings. |
+| `parser/` | Recursive-descent parser for the supported grammar and parse-only forms. |
+| `types/` | Source-level type lattice and mapping to minivm types. |
+| `module/` | Native/source module registry contracts. |
+| `builtins/` | Native `builtins` module and exception hierarchy. |
+| `operator/` | Native `operator` module and shared operator semantics. |
+| `hostabi/` | Runtime host ABI helpers and iterator/coroutine bridge types. |
+| `compiler/` | Loader, checker, lowerer, optimizer/verification pipeline, and import support. |
+| `cmd/minipy/` | CLI and REPL. |
+| `docs/README.md` | Documentation map and ownership guide. |
+| `docs/spec/` | Implementation-facing language specification. |
+| `docs/compatibility.md` | Python 3.13 feature compatibility matrix. |
+| `docs/roadmap.md` | Completed work and remaining gaps. |
+| `docs/coding-style.md` | Project conventions for code and documentation changes. |
+
+## Build and test
+
+```sh
+go test ./...
+go run ./cmd/minipy --help
 ```
 
-## Status
+Run a file:
 
-Compiler, CLI, and REPL are implemented for the documented subset. The
-specification remains the source of truth for supported syntax and staged
-constraints; start at the overview:
+```sh
+go run ./cmd/minipy run path/to/program.py
+```
 
-- **[docs/spec/00-overview.md](docs/spec/00-overview.md)** — goals, typing model,
-  int64 rule, compilation pipeline.
+Start the REPL:
+
+```sh
+go run ./cmd/minipy repl
+```
 
 ## Documentation
 
-| Doc | Contents |
-|---|---|
-| [docs/spec/00-overview.md](docs/spec/00-overview.md) | goals, typing philosophy, pipeline |
-| [docs/spec/01-lexical.md](docs/spec/01-lexical.md) | tokens, indentation, literal subset |
-| [docs/spec/02-types.md](docs/spec/02-types.md) | type system + Python→minivm mapping |
-| [docs/spec/03-grammar.md](docs/spec/03-grammar.md) | the subset grammar, tagged by milestone |
-| [docs/spec/04-static-semantics.md](docs/spec/04-static-semantics.md) | typing rules, inference, scoping, errors |
-| [docs/spec/05-codegen.md](docs/spec/05-codegen.md) | lowering each construct to minivm opcodes |
-| [docs/spec/06-builtins.md](docs/spec/06-builtins.md) | builtins + host-function ABI |
-| [docs/roadmap.md](docs/roadmap.md) | milestones M0–M10 |
-| [docs/compatibility.md](docs/compatibility.md) | Python 3.13 syntax compatibility matrix |
-| [docs/reference/](docs/reference/) | upstream CPython 3.13 grammar/lexical/datamodel |
+Start with [Documentation](docs/README.md) for the full documentation map.
+
+- [Overview](docs/spec/00-overview.md)
+- [Lexical structure](docs/spec/01-lexical.md)
+- [Types](docs/spec/02-types.md)
+- [Grammar](docs/spec/03-grammar.md)
+- [Static semantics](docs/spec/04-static-semantics.md)
+- [Code generation](docs/spec/05-codegen.md)
+- [Builtins and native modules](docs/spec/06-builtins.md)
+- [Python 3.13 compatibility matrix](docs/compatibility.md)
+- [Roadmap](docs/roadmap.md)
+- [Coding style](docs/coding-style.md)
 
 ## License
 
-See [LICENSE](LICENSE). Reference material under `docs/reference/` is from the
-CPython documentation, © Python Software Foundation (see
-[docs/reference/SOURCES.md](docs/reference/SOURCES.md)).
+MIT

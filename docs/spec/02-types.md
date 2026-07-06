@@ -1,162 +1,200 @@
-# minipy — Type System
+# Types
 
-minipy is statically typed. Every expression has a type known at compile time.
-Types are written with Python type-hint syntax and map onto minivm runtime types.
+Source-level type system, assignability, inference, narrowing, and specialization
+rules for minipy.
 
-## Primitive types
+## When to Read
 
-| minipy | minivm | Notes |
+Read this when changing source types, annotation parsing, assignability,
+printability, inference, narrowing, or function specialization.
+
+For syntax of annotations, read `03-grammar.md`. For checker behavior that uses
+these types, read `04-static-semantics.md`. For minivm runtime representation,
+read `05-codegen.md`.
+
+## Source of Truth
+
+| Concern | Source |
+|---|---|
+| source type definitions | `types/types.go` |
+| annotation parsing | `parser/parser.go` |
+| type resolution and inference | `compiler/check.go` |
+| runtime mapping | `compiler/compiler.go`, `docs/spec/05-codegen.md` |
+| builtin/operator type rules | `builtins/`, `operator/`, `docs/spec/06-builtins.md` |
+
+## Summary
+
+minipy uses a source-level static type system that is stricter than minivm's
+runtime type model. The checker tracks distinctions such as `bool` versus `int`,
+container element types, class layouts, callable signatures, and closed unions
+before lowering to minivm types.
+
+## Type Universe
+
+| Source type | Meaning | Runtime mapping |
 |---|---|---|
-| `int` | `i64` | signed 64-bit, **wraps** on overflow; no bigint |
-| `float` | `f64` | IEEE-754 double |
-| `bool` | `i1` | `True`=1, `False`=0 (`BoxI1`); shares the 32-bit slot with `i32`/`i8` |
-| `str` | `String` | immutable UTF-32 codepoint sequence, interned |
-| `None` (`NoneType`) | `REF_NULL` | the single null value |
+| `int` | signed 64-bit integer | `i64` |
+| `float` | IEEE-754 `float64` | `f64` |
+| `bool` | truth value, distinct from `int` | `i1`/integer boolean |
+| `str` | immutable string value | minivm string |
+| `None` | absence of value | ref/null-like value |
+| `Any` | dynamic fallback top type | dynamic ref |
+| `list[T]` | homogeneous mutable sequence | minivm array of `T` |
+| `dict[K, V]` | homogeneous map | minivm map `K -> V` |
+| `set[T]` | homogeneous set | minivm map `T -> bool` |
+| `tuple[T1, T2, ...]` | fixed-arity tuple, possibly heterogeneous | minivm struct |
+| class type | declared fields and methods | minivm struct |
+| `Iterator[T]` | source iterator type | ref |
+| `Callable[[...], R]` | callable value type | minivm function/ref path |
+| `A | B` | closed union | dynamic ref with narrowing |
+| module type | compile-time imported module receiver | compile-time only |
 
-`bool` lowers to `i1` (which shares minivm's 32-bit slot with `i32`/`i8`) but is
-**a distinct type** from `int` in minipy's checker (unlike CPython where `bool` ⊂
-`int`). There is no `i1` const opcode, so literals are pushed as `i32` and
-normalized to `i1` via `!= 0`; comparisons, `*.eqz`, membership, and conversions
-already yield `i1`, so bool values are uniformly `i1`-kinded at runtime. A `bool` is not assignable to an
-`int` target without `int(b)`; this avoids accidental `True + 1` style code.
-Arithmetic on `bool` is rejected — convert explicitly.
+`Any` is not a general escape hatch for all code. It is used when inference
+cannot keep a bounded concrete or union type. Operators, calls, and narrowing
+still try to recover concrete information where possible.
 
-### Numeric coercion
+## Annotation Syntax
 
-There is **no implicit `int`→`float`** widening. Mixed arithmetic is a
-`TypeMismatch`; convert with `float(x)` / `int(x)`.
+The parser accepts these annotation forms:
 
 ```python
-a: int = 3
-b: float = 1.5
-c = a + b          # ERROR: TypeMismatch (int + float)
-c = float(a) + b   # OK -> float
+x: int
+y: list[str]
+z: dict[str, int]
+p: set[int]
+t: tuple[int, str]
+f: Callable[[int, str], bool]
+o: int | None
 ```
 
-Rationale: implicit widening hides the `I64_TO_F64_S` conversion and complicates
-inference; explicit is simple and predictable.
+`None` is accepted as an annotation atom. `A | B` is normalized into a closed
+union; duplicate members collapse, nested unions flatten, and a single member
+collapses to that member.
 
-## Container types
+`type Name = expr` creates a compile-time alias once `expr` resolves to a type.
+Aliases are scoped through the same module key system as other compile-time
+symbols.
 
-| minipy | minivm | Notes |
-|---|---|---|
-| `list[T]` | `*Array` (typed, elem = lowering of `T`) | mutable, homogeneous |
-| `tuple[T1, T2, …]` | `*Struct` (one field per element) | immutable, fixed arity, heterogeneous |
-| `dict[K, V]` | `*Map` (generic) / `*TypedMap[int32\|int64\|float32\|float64]` | native `MAP_*`; primitive-key specializations via `NewMapForType` |
-| `set[T]` | `*Map` with `V = bool`/unit | (M4) modeled on map keys |
-| `bytes` | `[]i8` array | (deferred) binary blob |
+`Optional[T]` is not a separate spelling in the implementation. Use `T | None`.
 
-Containers are **homogeneous** where Python allows heterogeneous: `list[int]`
-holds only `int`. A heterogeneous `list` requires `list[Any]` (dynamic, M10).
-`tuple` is the heterogeneous fixed-shape container and lowers to a struct.
+## Inference
 
-### dict key types
+Whole-program inference covers:
 
-minivm maps key by **value identity** for `i1/i8/i32/i64/f32/f64` and by **heap ref
-identity** otherwise. So `dict[bool, V]` (`i1`), `dict[int, V]` and `dict[float, V]`
-use the specialized
-maps; `dict[str, V]` uses the generic `*Map` keyed by interned-string ref
-identity (correct because equal strings share one ref). Keys must be a hashable
-primitive or `str`; `dict[list, …]` is rejected.
+- unannotated globals and locals from their first assignment
+- unannotated function parameters from default values or from `Any` when no
+  stronger source exists
+- unannotated returns by joining all value-return branches, with `None` for no
+  value-return
+- lambda parameter types from an expected `Callable` context
+- comprehension targets from iterable element types
+- pattern-capture variables from the matched subject type
+- tuple/list unpacking targets from the value being unpacked
 
-## Callable types
-
-| minipy | minivm |
-|---|---|
-| `def`/function value | `*Function` |
-| nested `def` / `lambda` capturing names | `*Closure` (+ `UPVAL_*`) |
-| `Callable[[A, B], R]` | `*FunctionType{Params:[A,B], Returns:[R]}` |
-
-Function-type equality is **structural**, matching minivm `FunctionType` (params
-and returns compared positionally; captures do not affect type identity, so a
-closure and a plain function with the same signature are type-equal).
-
-## Class types
-
-A `class` (M5) lowers to a minivm `*Struct`:
-
-- Annotated class fields become struct fields, in declaration order, addressed by
-  index. Field type = lowering of the annotation.
-- Methods are `*Function` constants taking the instance struct as first parameter
-  (`self`).
-- Instances are created via `STRUCT_NEW`; attribute access is `STRUCT_GET`/`SET`
-  with the statically resolved field index.
-
-Single inheritance only, with fields appended (base fields first). No MRO, no
-multiple inheritance, no metaclasses.
-
-## Special form types
-
-| minipy annotation | meaning | minivm |
-|---|---|---|
-| `Optional[T]` (= `T \| None`) | `T` or `None` | `ref` (dynamic slot) + null check |
-| `A \| B` / `Union[A, B]` | closed disjunction (tagged) | `ref` + runtime tag |
-| `Any` | open top / fully dynamic | `ref` |
-| `Iterator[T]` / generator | lazy producer of `T` | coroutine / `Iterator` heap value (M6) |
-
-`Optional[T]` uses a `ref` slot so it can hold either a `T` value or
-`REF_NULL`; reads narrow with a null test (`REF_IS_NULL`) before use. In the
-static core, `T | None` (PEP 604) is the **only** union form accepted; a general
-`Union[A, B]` of non-`None` types, with the tagged runtime dispatch it needs, is
-the **M10** layer (below).
-
-### Unions, `Any`, and the dynamic boundary (M10)
-
-The M10 layer generalizes the single `Optional` slot into first-class **unions**,
-and adds whole-program inference so unannotated code still resolves to concrete
-types. Three pieces:
-
-- **`Union[A, B]` / `A | B`** — a **closed** disjunction. Lowers to a minivm `ref`
-  boxed with a runtime tag. Assignable from any member (`S <: A|B` iff `S <: A` or
-  `S <: B`); a union is assignable to `T` only if **every** member is
-  (`A|B <: T` iff `A <: T` and `B <: T`). Using a union requires narrowing
-  (`isinstance` / `is None`) to a member, or an operation valid for all members.
-- **`Any`** — the **open top** of the type lattice (`concrete < union < Any`),
-  used only where no bounded union fits. A value typed `Any` is stored verbatim as
-  a self-describing `Boxed`; crossing `Any → T` inserts a checked cast (`REF_CAST`,
-  runtime `TypeError` on failure), `T → Any` is always free.
-- **Whole-program inference & specialization** - in M10 *inference mode* the checker
-  assigns each unannotated binding its **narrowest** consistent type from all uses,
-  and **monomorphizes** polymorphic functions per concrete instantiation
-  (generic-style), reserving union/`Any` slots for genuinely dynamic values. See
-  [`../roadmap.md`](../roadmap.md) M10 and
-  [`05-codegen.md`](05-codegen.md#unions-any--specialization-m10).
-
-This is the seam for a future gradual/dynamic mode and is **not** part of the
-static core.
-
-## Type grammar (annotations)
-
-Annotations are ordinary expressions in Python; minipy accepts only this subset:
-
-```text
-type:
-    | NAME                         # int, float, bool, str, None, <class name>
-    | NAME '[' type (',' type)* ']'  # list[int], dict[str,int], tuple[int,str], Callable[...], Optional[int]
-    | type ('|' type)+             # union: T | None (Optional, core); A | B (M10)
-```
-
-Union members beyond `None` are handled by the always-on M10 inference/union
-layer. Anything else in annotation position (arbitrary expressions, string
-forward refs beyond names, `Literal`, `Annotated`, `TypeVar`, generics with
-bounds) is `UnsupportedType`. Generic *user* classes are deferred.
+Inference is deterministic and must finish before code generation. Inference
+variables must resolve to a concrete type, closed union, or `Any`; reaching code
+generation with an unresolved type variable is a compiler bug.
 
 ## Assignability
 
-`S` is assignable to `T` (`S <: T`) iff:
+`AssignableTo(src, dst)` is intentionally simple:
 
-1. `S` and `T` are the same primitive; or
-2. `T` is `Any`; or `S` is `Any` (with inserted cast, M10); or
-3. `T = Optional[U]` and `S <: U` or `S = None`; or
-4. both are `list[E]`/`dict[K,V]`/`tuple[…]` with **invariant** element types
-   (`list[int]` is **not** assignable to `list[Any]`); or
-5. both are callables, params contravariant / return covariant — **v1 uses
-   invariance** for simplicity (exact signature match); or
-6. **(M10)** `T = A | B | …` (union) and `S` is assignable to **some** member; a
-   union source `S = A | B | …` is assignable to `T` only when **every** member is
-   assignable to `T`. `Optional[U]` is the special case `U | None`.
+- exact structural equality is assignable
+- any concrete value assignable to a union member may flow into that union
+- a union may flow into a wider union that admits all of its members
+- any value may flow into `Any`
+- implicit numeric coercion is not allowed
 
-No implicit numeric widening (rule above). `bool`↮`int` is not assignability.
-Failures are `TypeMismatch`. The full algorithm is in
-[`04-static-semantics.md`](04-static-semantics.md); lowering of each type to
-opcodes is in [`05-codegen.md`](05-codegen.md).
+For example, `int` is not assignable to `float`; write `float(x)` explicitly.
+`bool` is not assignable to `int`.
+
+## Numeric Types
+
+`int` is signed 64-bit and `float` is `float64`. minipy does not implement
+Python's arbitrary-precision integers, complex numbers, or implicit mixed numeric
+arithmetic. Operators reject unsupported type combinations during checking.
+
+## Containers and Keys
+
+Lists, dictionaries, and sets are homogeneous. Empty list/dict/set displays need a
+type hint from an annotation or expected context because there is no element to
+infer from.
+
+Dictionary keys and set elements are limited to hashable scalar source types:
+`int`, `float`, `bool`, and `str`.
+
+Tuples are fixed arity and may be heterogeneous. Tuple indexing must use a
+constant integer index so the checker can select the exact field type.
+
+## Classes
+
+A class type contains a name and a fixed ordered field list. Class bodies support
+annotated fields, methods, and `pass`. Supported inheritance is single-base
+inheritance; multiple bases and class keywords are parsed but rejected by the
+checker.
+
+`@dataclass` is the supported class decorator. It enables constructor arguments
+from fields and default-field ordering checks. Other class decorators and complex
+decorator expressions are rejected.
+
+Methods require a first `self` parameter. `self` may omit an annotation; if it is
+annotated, it must match the containing class type. `__init__` must return `None`.
+
+Builtin exception classes are seeded into the class table so `raise`, `except`,
+and `isinstance` can reason about their identities.
+
+## Callable and Functions
+
+Function values are represented as `Callable[[P...], R]`. Direct calls to known
+minipy functions support positional arguments, keyword arguments, default values,
+positional-only parameters, keyword-only parameters, `*args`, and `**kwargs` in
+function definitions.
+
+At call sites:
+
+- `*tuple` calls into known minipy functions can expand when the tuple has a
+  statically known arity.
+- `**expr` dynamic call unpacking is parsed but rejected.
+- Keyword/starred calls to native functions, builtin methods, or dynamic callable
+  values are restricted as documented in the grammar/static semantics.
+
+Polymorphic functions with union or `Any` parameters are specializable. The
+checker creates monomorphic instantiations for concrete call-site argument tuples
+when the specialized body type-checks, up to a fixed per-function cap. Calls fall
+back to the union/`Any` body when specialization is not possible.
+
+## Unions and Narrowing
+
+Closed unions support flow-sensitive narrowing in two guard forms:
+
+```python
+if isinstance(x, T):
+    ...
+
+if x is None:
+    ...
+if x is not None:
+    ...
+```
+
+The true and false branches receive narrowed overlay types. If a guard result is
+statically known inside a specialization, the checker and code generator can skip
+impossible branches.
+
+`Optional[T]` is represented as `T | None`; there is no separate optional type in
+the implementation.
+
+## Printable Types
+
+`print`, `str`, and f-string replacement fields accept printable types. Printable
+values include primitives, `None`, homogeneous containers/tuples, printable closed
+unions, and `Any`. User class instances are not generally printable unless
+converted through an implemented path.
+
+## Related Docs
+
+- `docs/README.md` — documentation map and ownership guide.
+- `docs/spec/03-grammar.md` — annotation syntax.
+- `docs/spec/04-static-semantics.md` — checker behavior that applies these types.
+- `docs/spec/05-codegen.md` — runtime representation.
+- `docs/spec/06-builtins.md` — builtin and operator type rules.

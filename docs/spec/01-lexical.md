@@ -1,130 +1,159 @@
-# minipy — Lexical Structure
+# Lexical Structure
 
-The minipy lexer is a strict subset of CPython 3.13's
-([reference](../reference/python-lexical.md)). Same tokens, same indentation
-rules; fewer literal forms. A minipy source file is UTF-8.
+Tokenization, indentation, literal scanning, and lexical diagnostics for minipy
+source text.
 
-## Lines, comments, joining
+## When to Read
 
-- Source is UTF-8 (no encoding-declaration cookie support; a leading UTF-8 BOM is
-  ignored). Physical line endings `LF`, `CR LF`, `CR` are all accepted.
-- `#` begins a comment to end of line.
-- **Explicit** line joining with trailing `\` and **implicit** joining inside
-  `() [] {}` work exactly as in Python.
-- Blank/whitespace-only lines produce no `NEWLINE`.
+Read this when changing the lexer, adding or removing token kinds, changing
+literal syntax, or diagnosing whitespace and indentation behavior.
 
-## Indentation (INDENT / DEDENT)
+For syntax built from these tokens, read `03-grammar.md`. For unsupported syntax
+that still tokenizes successfully, read `04-static-semantics.md`.
 
-Identical to Python: leading whitespace drives an indent stack that emits
-`INDENT`/`DEDENT` tokens (algorithm in [reference](../reference/python-lexical.md#indentation--indent--dedent)).
+## Source of Truth
 
-minipy is **stricter** about whitespace:
+| Concern | Source |
+|---|---|
+| token kinds and spelling | `token/token.go` |
+| scanner behavior | `lexer/lexer.go` |
+| parser use of tokens | `parser/parser.go` |
+| grammar built from tokens | `docs/spec/03-grammar.md` |
+| diagnostics | `token/error.go` |
 
-- **Spaces only.** A tab in leading indentation is a `LexError` (no tab→space
-  expansion, no `TabError` ambiguity). Recommended unit: 4 spaces.
-- Mixed tab/space indentation never occurs because tabs are rejected outright.
+## Summary
+
+The lexer is an indentation-aware, rune-based scanner over an `io.Reader`. It
+emits one token at a time and accumulates lexical diagnostics instead of failing
+on the first malformed token.
+
+minipy follows Python-like lexical rules where they fit the implemented subset,
+but it is stricter about some whitespace and literal forms.
+
+## Structure Tokens
+
+The token stream includes:
+
+- `NEWLINE` for logical line endings outside parentheses, brackets, and braces.
+- `INDENT` and `DEDENT` for indentation changes at the start of logical lines.
+- `EOF`, rendered as the Python `ENDMARKER` concept in docs.
+
+Blank lines and comment-only lines do not emit `NEWLINE`. A final `NEWLINE` is
+emitted at end-of-file if the last physical line contained tokens, followed by
+open `DEDENT`s and a single `EOF`.
+
+Tabs in leading indentation are rejected. Spaces are counted one column at a time;
+form feed is skipped in indentation measurement.
+
+## Comments and Whitespace
+
+- `#` starts a comment outside strings and runs to the physical line ending.
+- Spaces, tabs, and form feed inside a logical line separate tokens.
+- A backslash followed immediately by a physical newline joins the physical lines.
+- A bare backslash elsewhere is a lexical error.
+- Newlines inside `()`, `[]`, and `{}` do not emit `NEWLINE`.
 
 ## Tokens
 
-```text
-NAME NUMBER STRING FSTRING_START FSTRING_MIDDLE FSTRING_END
-NEWLINE INDENT DEDENT ENDMARKER
-<keyword>  <operator>  <delimiter>
-```
+The actual token kinds are defined in `token/token.go`. Literals are split into
+`INT`, `FLOAT`, `STRING`, and `FSTRING`; f-strings are represented by one `FSTRING`
+token whose literal text is parsed later by the parser.
 
-### Identifiers
+Identifiers use Unicode letters, Unicode digits after the first rune, and `_`.
+The lexer recognizes the full Python reserved keyword set so a reserved word can
+never be used as an identifier. Soft keywords such as `match`, `case`, and `type`
+are lexed as `NAME` and interpreted by the parser only in statement positions
+where they introduce a supported form.
 
-`xid_start xid_continue*`, NFKC-normalized, case-sensitive — same as Python.
-Dunder names (`__x__`) are allowed only where the spec defines them (e.g.
-`__init__`); other dunders are reserved and rejected (`UnsupportedFeature`).
+## Keywords
 
-### Keywords
-
-minipy reserves the **same** keyword set as Python (so a program never
-accidentally uses one as a name), but several keywords are **not yet accepted by
-the grammar** and produce `UnsupportedFeature` until their milestone:
-
-| Status | Keywords |
-|---|---|
-| Supported (by milestone) | `False True None and or not if elif else while for in break continue pass def return` (M0–M2); `class` (M5); `lambda nonlocal global` (M4); `yield` (M6); `try except finally raise with as is` (M7); `import from` (M8); `del assert` (M9) |
-| Reserved, **rejected until planned support** | `async await` (post-M10) |
-
-Soft keywords `match`/`case` are accepted by the parser in M9 for structural
-pattern matching. Soft keyword `type` remains rejected until a type-alias milestone
-is scheduled; use annotations.
-
-> `is` / `is not`: identity comparison is deferred. Use `x is None` only once M7
-> defines `None`-identity; until then `== None` is rejected in favor of a future
-> `is None` form. (Tracked in [`../roadmap.md`](../roadmap.md).)
-
-### Operators
-
-All Python operators are lexed. `@` (matrix multiply) and `:=` (walrus) are
-**lexed but rejected** by the grammar (`UnsupportedFeature`).
+Reserved keyword tokens are:
 
 ```text
-+   -   *   **  /   //  %
-<<  >>  &   |   ^   ~
-<   >   <=  >=  ==  !=
+True False None
+and or not if elif else while for in break continue pass
+def return class lambda global nonlocal yield try except finally raise
+with as import from is del assert async await
 ```
 
-### Delimiters
+The composite comparison spellings `not in` and `is not` are represented by
+comparison operator tokens after parsing their two-token source forms.
+
+## Operators and Delimiters
+
+The lexer recognizes:
 
 ```text
-(  )  [  ]  {  }  ,  :  .  ;  =  ->
-+=  -=  *=  /=  //=  %=  &=  |=  ^=  >>=  <<=  **=
++ - * ** / // % << >> & | ^ ~ @
+< > <= >= == != = += -= *= /= //= %= &= |= ^= <<= >>= **=
+:= -> ( ) [ ] { } , : . ;
 ```
 
-`;` (multiple simple statements on one line) is lexed; the grammar accepts it
-(M0) but the style guide discourages it.
+Support is phase-specific:
 
-## Literals
+- `:=` is parsed as a named expression when the target is a name.
+- `@` is tokenized and can appear in expression syntax, but matrix-multiply
+  semantics are not implemented by the checker/operator layer.
+- `->` is accepted only in function return annotations.
 
-### Numeric
+## Numeric Literals
 
-- **Integer** — decimal, `0x`/`0o`/`0b`, underscores allowed. Value must fit
-  signed 64-bit at compile time, else `IntOverflow`. (`int` = int64.)
-- **Float** — point/exponent forms with underscores → minivm `f64`.
-- **Imaginary** (`j`) — **rejected** (no `complex`).
+Supported numeric literals are bounded to minipy runtime types:
 
-```python
-0          255    0xFF    0o17    0b1010    1_000_000     # int
-3.14       1e10   .5      2.       6.022_140_76e23        # float
-3.14j                                                     # ERROR: no complex
+- decimal, binary (`0b`), octal (`0o`), and hexadecimal (`0x`) integer literals
+- underscores in digit sequences
+- decimal floating-point literals with optional exponent
+
+Integers must fit in signed 64 bits. Floats parse as IEEE-754 `float64`.
+Imaginary literals (`1j`) are rejected because minipy has no complex type.
+
+## String Literals
+
+The lexer supports:
+
+- single-quoted, double-quoted, and triple-quoted strings
+- raw strings with `r`/`R`
+- f-strings with `f`/`F`
+- adjacent plain string concatenation in the parser
+
+`b`/`B` and `u`/`U` prefixes are recognized only to diagnose that bytes/unicode
+prefix forms are unsupported. They still scan the following string so parsing can
+continue.
+
+Escapes decoded by the lexer are:
+
+```text
+\n \t \r \\ \' \" \0 \a \b \f \v \xhh \uhhhh \Uhhhhhhhh
 ```
 
-### Boolean / None
+Unknown escapes are preserved as a backslash plus the escaped character, matching
+Python's lenient behavior for ordinary strings. Named Unicode escapes
+(`\N{...}`) are not implemented.
 
-`True`, `False` → `bool`; `None` → `NoneType`. (Atoms, not literals lexically, but
-listed here for completeness.)
+## F-strings
 
-### Strings
+An f-string is lexed as a single decoded `FSTRING` token. The parser later splits
+it into literal and replacement-field parts.
 
-- Quote forms: `'…' "…" '''…''' """…"""`.
-- Prefixes: plain, `r`/`R` (raw), `f`/`F` (f-string). **`b`/`B` (bytes) and
-  `u`/`U` are rejected** in M0–M2; `bytes` arrives later (see roadmap).
-- Standard escape sequences (`\n \t \\ \" \' \xhh \uXXXX \UXXXXXXXX \N{…}`).
-- **Adjacent string concatenation** (`"a" "b"` → `"ab"`) is supported at compile
-  time.
-- A `str` is a sequence of Unicode codepoints, mapped to minivm `String`
-  (UTF-32, interned, immutable) — see [`02-types.md`](02-types.md).
+Supported replacement-field features:
 
-### f-strings
+- `{expr}`
+- debug text such as `{x=}` and `{x = }`
+- conversions `!s`, `!r`, and `!a`
+- format specs, including one level of nested replacement fields inside the spec
 
-Supported subset (M3): `f"{expr}"`, conversions `!s`/`!r`/`!a`, the debug form
-`f"{expr=}"` (whitespace around `=` is preserved), a `:format_spec`, and nested
-replacement fields inside the spec (`f"{x:{width}.{prec}f}"`). Replacement
-expressions and nested format-spec fields evaluate left to right. The embedded
-`expr` must be a supported minipy expression of a type with a known string
-conversion. Nesting inside a format spec is limited to one level; deeper nesting
-is rejected with `UnsupportedFeature`.
+Unsupported or invalid f-string constructs are reported as syntax or unsupported
+feature diagnostics during parsing/checking.
 
-## What the lexer rejects (summary)
+## Encoding
 
-| Form | Result |
-|---|---|
-| tab in indentation | `LexError` |
-| imaginary literal `…j` | `LexError` |
-| bytes/`u` string prefix (pre-roadmap) | `UnsupportedFeature` |
-| integer literal not fitting int64 | `IntOverflow` |
-| `@`, `:=` | lexed, rejected at parse |
+The lexer skips a leading UTF-8 byte-order mark (`U+FEFF`) if present. It does not
+implement Python source encoding cookies; input is expected to be UTF-8 text as
+supplied by the caller.
+
+## Related Docs
+
+- `docs/README.md` — documentation map and ownership guide.
+- `docs/spec/03-grammar.md` — grammar built from lexer tokens.
+- `docs/spec/04-static-semantics.md` — checker diagnostics for unsupported forms.
+- `docs/compatibility.md` — user-facing lexical and syntax compatibility status.

@@ -1,234 +1,271 @@
-# minipy — Static Semantics
+# Static Semantics
 
-How minipy type-checks and resolves names before codegen. Input: the AST from
-[`03-grammar.md`](03-grammar.md). Output: a typed AST where every expression node
-carries a resolved type ([`02-types.md`](02-types.md)) and every name carries a
-resolved storage slot.
+Checker behavior for names, modules, types, class layouts, call targets, control
+flow, unsupported features, and diagnostics.
 
-## Annotation requirements
+## When to Read
 
-Annotations are **optional everywhere** (M10, always on): unannotated boundaries
-are solved by whole-program inference rather than rejected. Annotations, where
-present, seed the solver and stay fixed.
+Read this when changing checker behavior, diagnostics, type resolution,
+specialization, narrowing, imports, pattern validation, or supported/rejected
+statement forms.
 
-| Site | Annotation | If missing |
-|---|---|---|
-| function parameter | optional | inferred (defaults to `Any`) |
-| function return | optional (`-> T`) | inferred from the body's returns |
-| class field | required | `MissingAnnotation` |
-| module-level global | optional | inferred from first assignment |
-| local variable | optional (inferred) | inferred from initializer |
-| `lambda` params | optional (inferred from call site, M4) | inferred |
+For syntax accepted by the parser before these checks, read `03-grammar.md`. For
+how checked forms lower to bytecode, read `05-codegen.md`.
 
-`MissingAnnotation` now fires only where inference cannot constrain a binding —
-e.g. a `lambda` used without a Callable context, or a class field with neither
-annotation nor default. See [`../roadmap.md`](../roadmap.md) M10 for the inference
-model and its current deferrals.
+## Source of Truth
 
-## Local type inference
-
-Locals use **assign-once declaration inference**:
-
-1. The **first** assignment to a local in a scope **declares** it; its type is the
-   inferred type of the RHS expression.
-2. Later assignments must be **assignable** ([`02-types.md`](02-types.md)) to that
-   declared type, else `TypeMismatch`. A local does not change type.
-3. An explicit annotation (`x: T = e`) fixes the type to `T` and checks `e <: T`.
-4. A name read before any assignment on all paths is `UseBeforeDefinition`.
-
-```python
-def f(n: int) -> int:
-    total = 0          # total: int (inferred)
-    i = 0              # i: int
-    while i < n:
-        total = total + i   # ok: int <: int
-        i = i + 1
-    total = "done"     # ERROR: TypeMismatch (str not <: int)
-    return total
-```
-
-There is **no flow-sensitive narrowing** in v1 except the single special case of
-`Optional[T]` (below). `if isinstance(...)` narrowing is the **M10** generalization
-of that rule to any union member (see [whole-program inference](#whole-program-inference--specialization-m10)).
-
-### Optional narrowing (the one flow rule)
-
-A value of type `Optional[T]` is narrowed to `T` inside the true-branch of an
-`x is not None` test (and to `None` in the false branch), and symmetrically for
-`x is None`. Outside such a guard, member/operator use of an `Optional[T]`
-(other than comparison to `None`) is `PossiblyNone`.
-
-```python
-def length(s: Optional[str]) -> int:
-    if s is None:
-        return 0
-    return len(s)      # s narrowed to str here
-```
-
-(`is`/`is not` against `None` is enabled at M7; until then `Optional` use is
-limited. See [`03-grammar.md`](03-grammar.md).)
-
-### Whole-program inference & specialization (M10)
-
-The M10 layer is **always on** (full design in [`../roadmap.md`](../roadmap.md)
-M10):
-
-1. **Whole-program inference.** With `MissingAnnotation` relaxed, the checker
-   infers each unannotated binding in the lattice `concrete < closed-union < Any`.
-   Annotated boundaries are fixed seeds. An unannotated global takes its
-   first-assignment type; an unannotated function return is the **join** of the
-   body's return expressions; an unannotated parameter defaults to `Any` (the
-   top), recovered to a concrete member by narrowing where needed.
-2. **Narrowing & specialization.** `isinstance(x, T)` and `x is`/`is not None`
-   narrow a union to a member inside the guarded branch (and across the rest of a
-   block after a returning `if`), generalizing the `Optional` rule; a use proven
-   concrete needs no runtime check. An inferred-polymorphic function compiles as a
-   single union/`Any`-typed body (per-type monomorphization is a deferred
-   optimization). The lowering is in
-   [`05-codegen.md`](05-codegen.md#unions-any--specialization-m10).
-
-## Expression typing (rules summary)
-
-- **Literals:** `NUMBER` int→`int`, float→`float`; `True/False`→`bool`;
-  `None`→`NoneType`; string→`str`.
-- **Arithmetic** (`+ - * // % ** << >> & | ^ ~`): both operands same numeric type.
-  `int op int → int`; `float` supports `+ - * / ** ` (and `// %` via float
-  floor/mod) → `float`. **Mixed int/float is `TypeMismatch`.** No `bool`
-  arithmetic. `+` also concatenates `str`/`list`. `*` repeats `str`/`list` by
-  `int` (M3).
-- **True division `/`:** `int / int → float` (always float, like Python). `//`
-  keeps `int`.
-- **Comparison** (`== != < <= > >=`): operands must be the same comparable type;
-  result `bool`. `in`/`not in` require a container RHS (M3).
-- **Boolean** (`and`/`or`/`not`): operands must be `bool` (no truthiness coercion
-  of arbitrary types in v1); result `bool`. `and`/`or` short-circuit but, with
-  `bool` operands, the result type is `bool`.
-- **Conditional `a if c else b`:** `c: bool`; result is the common type of `a`,
-  `b` (must be mutually assignable).
-- **Call:** callee must be a function/closure/class type; arity and argument
-  types checked positionally; result = return type. Builtins per
-  [`06-builtins.md`](06-builtins.md).
-- **Index `a[i]`:** `list[T][int]→T`, `dict[K,V][K]→V`, `str[int]→str`,
-  `tuple` requires a constant `int` index → that element's type.
-- **Attribute `a.x`:** `a` must be a class instance; `x` a declared field/method.
-
-Division/modulo by zero is **not** a static error (value unknown); it traps at
-runtime (`ZeroDivisionError`, from minivm `ErrDivideByZero`).
-
-## Scopes and name resolution
-
-minipy resolves names statically by LEGB, mapping each to a minivm slot:
-
-| Scope | minivm storage | Opcode |
-|---|---|---|
-| local (function body, params) | frame local | `LOCAL_GET/SET/TEE` (u8 index) |
-| enclosing (captured by nested fn) | closure upvalue | `UPVAL_GET/SET` (u8 index) |
-| module global | VM global | `GLOBAL_GET/SET/TEE` (u16 index) |
-| builtin | host function / inline | `CONST_GET` + `CALL`, or inline opcodes |
-
-Rules:
-
-- A name assigned in a function is **local** to it unless declared `global` or
-  `nonlocal` (M4).
-- `global x` binds `x` to the module global slot; `nonlocal x` binds to the nearest
-  enclosing function local that defines `x` (else `NoBindingForNonlocal`).
-- A nested function reading an enclosing local **captures** it: the enclosing
-  variable is promoted to a closure upvalue and the nested function becomes a
-  `*Closure` (`CLOSURE_NEW`). Capture is by reference cell when the inner function
-  also writes it (`REF_NEW`/`UPVAL_*`), by value otherwise.
-- Comprehension targets are temporary overlay bindings. They are visible inside
-  the comprehension element and filters, but they do not declare or overwrite a
-  module global or enclosing local of the same name.
-- Redefining a name in the same scope with an incompatible type is `TypeMismatch`;
-  shadowing in a nested scope is allowed.
-- Local slot indices are assigned densely per frame (params first); globals get
-  u16 indices in module order; functions/strings/large constants go to the program
-  constant pool referenced by `CONST_GET`.
-
-## Module semantics (M8)
-
-`Compile` accepts explicit module search roots through `WithModules(fs.FS)` and
-`WithModulePath(fs.FS, dirs...)`. No implicit search path is added by the compiler
-API. The CLI adds the script directory first, then every `--path/-p` entry; the
-REPL adds the current working directory plus `--path/-p`.
-
-Resolution follows CPython's import machinery. The loader runs an ordered finder
-chain (the `sys.meta_path` analog): a **builtin finder** (CPython's
-`BuiltinImporter`) that resolves native modules from the injected module registry,
-followed by a **path finder** (`PathFinder` + `FileFinder`) that walks the search
-roots. The first finder to locate a module wins, so native modules take precedence
-over same-named files. A located module is described by a spec (`ModuleSpec`
-analog) that a loader then realizes.
-
-- Top-level `a` first checks native modules registered by the compiler
-  (`builtins`, `operator`), then searches each path entry in order, preferring
-  `a/__init__.py` packages over `a.py` modules within the same entry.
-- Dotted imports resolve children only inside the already selected parent
-  package. If the parent is a plain module, the diagnostic is
-  `ModuleNotFound`.
-- `import a.b` loads parents first and binds the local name `a` unless `as` is
-  used; `from a import x` binds a symbol exported by `a`, or falls back to the
-  submodule `a.x`.
-- Relative imports anchor at the current package, or at the containing package
-  for plain modules. Going beyond the top level is `ImportError`; relative
-  imports from `__main__` are also `ImportError`.
-- Imports are allowed only at module top level. `from ... import *` is rejected
-  with `UnsupportedFeature`. Circular imports are rejected with `ImportError`.
-- Imported module objects are compile-time only. They may be used as attribute
-  receivers (`m.x`, `m.f()`, `m.C`) but are not first-class runtime values.
-
-Imported modules use qualified global keys (`pkg.mod.name`) in the flat VM global
-space; the entry module keeps bare keys for backward-compatible single-file
-programs. Native modules are injected into the compiler as a registry of modules
-(`builtins`, `operator`, and future stdlib), not hardcoded: `builtins` supplies
-builtin functions and the exception class hierarchy; `operator` supplies
-Python-style operator function names such as `add`, `floordiv`, `eq`, `not_`, and
-`contains`, and is the single source of the language's operator semantics. Native
-modules win over filesystem modules of the same name. Normal source definitions
-still shadow bare builtin fallback names inside their own module; explicit
-`import builtins` or `from builtins import print` reaches the native module.
-
-Source roots follow the pip site-packages layout: alongside import packages, a
-root may hold installed-distribution metadata directories
-`<distribution>-<version>.dist-info/` (each with at least `METADATA`, `WHEEL`, and
-`RECORD`). The loader indexes these to map top-level import names to
-distributions, honoring distribution-name-vs-import-name differences (for example
-the `Pillow` distribution providing the `PIL` import package). Import resolution
-itself remains file-based; `RECORD` hashes are informational and not enforced at
-import.
-
-## Class semantics (M5)
-
-- Field order = declaration order = struct field index order; a subclass appends
-  its fields after the base's.
-- `self` is the first parameter of each method, typed as the class.
-- Method resolution is static (single-inheritance walk, no MRO): a call
-  `obj.m(...)` resolves to the nearest method on the class or its base chain at
-  compile time.
-- `__init__` must assign every non-defaulted field on all paths, else
-  `UninitializedField`.
-
-## Error catalogue
-
-| Error | When |
+| Concern | Source |
 |---|---|
-| `MissingAnnotation` | binding inference cannot constrain (e.g. lambda without Callable context) |
-| `TypeMismatch` | assignment/operator/argument type conflict (incl. operating on an un-narrowed union) |
-| `InvalidUnionMember` | a union annotation member is not a valid type |
-| `ModuleNotFound` | imported module cannot be resolved |
-| `ImportError` | invalid import form after resolution (missing exported name, relative import error, circular import) |
-| `UndefinedName` | name not resolvable in any scope |
-| `UseBeforeDefinition` | local read before assignment on some path |
-| `PossiblyNone` | use of `Optional[T]` without a `None` guard |
-| `UnsupportedFeature` | syntactically valid Python not yet in the active milestone |
-| `UnsupportedType` | annotation outside the type grammar |
-| `IntOverflow` | integer literal exceeds int64 |
-| `ArityMismatch` | wrong number of call arguments |
-| `NoBindingForNonlocal` | `nonlocal x` with no enclosing binding |
-| `UninitializedField` | `__init__` leaves a field unset |
-| `NotComparable` / `NotIterable` / `NotIndexable` | operator applied to unsupported type |
+| checker implementation | `compiler/check.go` |
+| type lattice | `types/types.go`, `docs/spec/02-types.md` |
+| AST shapes | `ast/ast.go` |
+| parser shape | `parser/parser.go`, `docs/spec/03-grammar.md` |
+| native call rules | `builtins/`, `operator/`, `docs/spec/06-builtins.md` |
+| diagnostics | `token/error.go` |
 
-Diagnostics carry source span (line/col), the offending construct, and - for
-`UnsupportedFeature` - the milestone where support is planned, or a note that the
-form is still queued for roadmap triage.
-Compilation reports **all** errors it can before aborting (no fail-on-first).
+## Summary
+
+The checker resolves names, modules, types, class layouts, call targets, control
+flow, and unsupported-feature diagnostics before bytecode generation. Any lexical,
+syntactic, loading, or semantic error stops `Compile` and returns a
+`token.ErrorList`.
+
+## Scope and Bindings
+
+### Modules
+
+Each source file is checked as a module. The entry module uses `__main__`; loaded
+source modules use canonical dotted module names derived from the configured
+module search roots.
+
+Top-level declarations and definitions are stored by module-qualified key except
+for `__main__`, whose names remain unqualified. Imports create compile-time
+bindings to modules, symbols, or native symbols.
+
+Imports are supported only at module top level. Relative imports resolve from the
+current module/package context. `from ... import *` is parsed but rejected.
+
+### Globals and Locals
+
+- A top-level annotated assignment declares a global slot.
+- An unannotated first assignment declares a global or local with the value type.
+- Reassignments must be assignable to the declared type.
+- Reads before initialization are reported.
+- `global` and `nonlocal` are valid only inside functions.
+- `nonlocal` must refer to an enclosing local.
+- Captured locals are boxed when needed so closures and nonlocal writes share the
+  same storage.
+
+`del name` marks a binding definitely uninitialized. Later reads reuse the same
+use-before-definition diagnostic as any other uninitialized binding.
+
+## Control Flow
+
+- `break` and `continue` require an enclosing loop.
+- `return` requires an enclosing function.
+- A non-generator function with a non-`None` result must return on every path.
+- `while` and `for` `else` blocks are checked after the loop body.
+- `try` must have at least one `except` or `finally` clause.
+- Bare `raise` is valid only while checking an `except` handler.
+
+`if` guards participate in flow-sensitive narrowing. When an `if` body always
+returns or raises and has no `else`, the negative narrowing of the guard applies
+to the rest of the enclosing block.
+
+## Type Resolution
+
+Annotations resolve through primitive names, aliases, classes, imported module
+attributes, and generic forms:
+
+```text
+int float bool str None Any
+list[T] dict[K, V] set[T] tuple[...] Iterator[T] Callable[[...], R]
+A | B
+```
+
+Unknown annotation names, unsupported generic names, malformed `Callable`, and
+unsupported attribute annotations are diagnostics.
+
+`type Name = expr` records a compile-time type alias once `expr` resolves to a
+valid type.
+
+## Inference Rules
+
+The checker uses whole-program inference, but it does not infer across arbitrary
+runtime reflection. Important cases:
+
+- unannotated globals/locals bind to the first assigned value type
+- unannotated function parameters with defaults use the default value type
+- unannotated function parameters without stronger information use `Any`
+- unannotated return types join all value-return branch types; no value-return
+  means `None`
+- lambda parameters are inferred only from an expected `Callable` context
+- comprehension targets take the iterable element type
+- tuple/list unpacking targets take their corresponding source element types
+- pattern captures take the matched subject or sub-pattern type
+
+Different assigned types do not implicitly widen a previously declared binding.
+Use an explicit union annotation when a binding may hold multiple types.
+
+## Specialization
+
+A function is specializable when it is not a generator and at least one parameter
+has a union or `Any` type. At a direct minipy call site, if all polymorphic
+parameters receive concrete argument types, the checker attempts to create a
+monomorphic clone for that concrete signature.
+
+Specialization succeeds only when the cloned body type-checks under the concrete
+parameter types. It is skipped when:
+
+- the function is not specializable
+- any polymorphic argument is non-concrete, a union, `Any`, or invalid
+- the per-function specialization cap has been reached
+- the instantiation would recursively re-enter itself
+- checking the clone produces diagnostics
+
+Skipped calls fall back to the original union/`Any` body. The cap is fixed by the
+implementation (`maxSpecializations`).
+
+## Narrowing and Static Truth
+
+The checker recognizes:
+
+```python
+isinstance(name, T)
+name is None
+name is not None
+```
+
+for bindings whose current type is a union or `Any`. It overlays narrowed types in
+true and false branches. In a specialized function body, when the narrowed value is
+already concrete, the checker can statically determine a guard result and the
+lowerer prunes the impossible branch.
+
+## Expressions
+
+### Literals and Displays
+
+- Empty list/dict/set displays require an expected type from an annotation or
+  context.
+- Non-empty lists and sets must be homogeneous.
+- Dict keys and values must be homogeneous.
+- Dict keys and set elements are limited to `int`, `float`, `bool`, and `str`.
+- Tuple displays keep fixed arity and element-specific types.
+- Starred list elements accept lists or homogeneous tuples.
+- Starred set elements accept sets.
+- Dict unpacking accepts dicts; dynamic call `**kwargs` unpacking is rejected.
+
+### Indexing and Slicing
+
+- Lists require `int` indexes and return their element type.
+- Dicts require assignable key types and return the value type.
+- Strings require `int` indexes and return `str`.
+- Tuples require a constant integer index and return the corresponding field type.
+- Slicing is supported for lists and strings; bounds must be `int` when present.
+- Slice assignment is not supported.
+
+### Operators
+
+Operator type rules are centralized in the `operator` package. Syntax operators
+and `operator.*` native calls share the same rules. `and`/`or` require `bool`
+operands and return `bool`; `not` is unary bool negation.
+
+`@` is syntactically accepted but unsupported because no matrix type/semantics are
+implemented.
+
+### Calls
+
+Direct calls to known minipy functions support:
+
+- positional arguments
+- keyword arguments
+- defaults
+- positional-only and keyword-only parameters
+- `*args` and `**kwargs` parameters
+- `*tuple` expansion when the tuple has statically known arity
+
+Unsupported call forms include dynamic `**expr`, keyword/starred calls to native
+functions, keyword/starred calls through dynamic callable values, and starred
+arguments to builtin methods. Constructor calls support keywords/starred arguments
+only through dataclass or `__init__`-derived constructor parameter information.
+
+Native functions cannot be first-class values. Class and module objects are also
+compile-time-only as values; they may appear as call or attribute receivers in the
+supported positions.
+
+### Lambdas
+
+A lambda needs an expected `Callable[[...], R]` type. Its parameter count must
+match the callable, and its body must be assignable to the callable result.
+
+### F-strings
+
+Replacement fields must be printable. Conversions are limited to `!s`, `!r`, and
+`!a`. Format specs may contain one level of nested replacement fields.
+
+### Async and Yield Expressions
+
+`async def`, `async for`, `async with`, async comprehensions, `await`, and yield
+expressions parse but are rejected before lowering. Yield statements are supported
+inside generator functions returning `Iterator[T]`; a generator cannot return a
+value.
+
+## Statements
+
+### Functions
+
+Function definitions are predeclared before bodies are checked, enabling forward
+calls within a module. Nested functions are captured as locals. Omitted return
+annotations are inferred; annotated returns are enforced. Generators must return
+`Iterator[T]` and yield values assignable to `T`.
+
+### Classes
+
+Classes are predeclared before class bodies are checked. Supported class bodies
+contain annotated fields, methods, and `pass`.
+
+Constraints:
+
+- at most one supported base class
+- no class keywords
+- `@dataclass` is the supported class decorator
+- non-name decorator expressions are rejected
+- methods require `self`
+- `__init__` must return `None`
+- dataclass fields with defaults must not precede non-default fields
+
+### Pattern Matching
+
+The checker validates each pattern against the subject type and declares capture
+bindings. Sequence patterns require list or tuple subjects; mapping patterns
+require dict subjects; class patterns require known class subjects and known
+fields.
+
+### Exceptions
+
+Builtin exception classes are seeded into the class table. `except` targets must
+be classes that inherit from `BaseException`. `raise` accepts exception instances
+or compatible exception construction paths according to the checker/lowerer.
+
+`except*` syntax is parsed but ExceptionGroup semantics are not implemented.
+
+### With Statements
+
+`with` statements are checked and lowered through context-manager-style attribute
+lookups. `async with` is parse-only.
+
+## Diagnostics
+
+Semantic errors use `token.Error` codes such as `TypeMismatch`, `UndefinedName`,
+`UseBeforeDefinition`, `ArityMismatch`, `UnsupportedType`, `UnsupportedFeature`,
+`PatternError`, and related codes. The rendered error name follows the associated
+Python exception class declared in `token/error.go`.
+
+## Related Docs
+
+- `docs/README.md` — documentation map and ownership guide.
+- `docs/spec/02-types.md` — source type system used by the checker.
+- `docs/spec/03-grammar.md` — syntax accepted before checker validation.
+- `docs/spec/05-codegen.md` — lowering of checked forms.
+- `docs/spec/06-builtins.md` — native builtin and operator checker rules.
+- `docs/compatibility.md` — user-facing support matrix.

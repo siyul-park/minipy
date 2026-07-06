@@ -1,148 +1,185 @@
-# minipy Python 3.13 Compatibility
+# Python 3.13 Compatibility Matrix
 
-This matrix tracks minipy against the official Python 3.13 language syntax and
-core expression forms. It does not cover the Python standard library.
+User-facing support matrix for minipy compared with Python 3.13 syntax and
+behavior.
 
-Sources:
+## When to Read
 
-- Python 3.13 Language Reference: Simple statements
-- Python 3.13 Language Reference: Compound statements
-- Python 3.13 Language Reference: Expressions
+Read this when you need a quick answer about whether a Python feature is
+implemented, restricted, parse-only, or out of scope in minipy.
 
-Status key:
+For normative details, follow the owning spec document instead of treating this
+matrix as the complete language specification.
 
-| Mark | Meaning |
+## Source of Truth
+
+| Concern | Source |
 |---|---|
-| ✅ | Implemented: parses, type-checks, lowers to minivm, and has coverage. |
-| ◐ | Partial: parsed, compiled only for a subset, or rejected with `UnsupportedFeature`. |
-| — | Not implemented: not represented enough to parse or execute correctly. |
+| lexical behavior | `docs/spec/01-lexical.md` |
+| type behavior | `docs/spec/02-types.md` |
+| accepted syntax | `docs/spec/03-grammar.md` |
+| checker restrictions | `docs/spec/04-static-semantics.md` |
+| lowering/runtime behavior | `docs/spec/05-codegen.md` |
+| builtins/native modules | `docs/spec/06-builtins.md` |
+| planned/deferred work | `docs/roadmap.md` |
 
-## Simple Statements
+## Legend
 
-| Official Python 3.13 feature | Implemented | Remarks |
+This matrix compares minipy with Python 3.13 syntax and behavior. It describes
+what the current compiler accepts, checks, and lowers; it is not a roadmap for
+full CPython compatibility.
+
+- ✅ implemented and lowered
+- ◐ partially implemented or implemented with stricter static limits
+- ⏳ parsed or planned, but rejected before lowering
+- ❌ intentionally out of scope
+
+## Source and Lexical Layer
+
+| Feature | Status | Notes |
 |---|---:|---|
-| Expression statement | ✅ | Supported for compiled expression forms. |
-| Assignment statement | ✅ | Starred unpack assignment supports one `*name` for list/tuple sources. Chained multi-target lowering remains limited. |
-| Augmented assignment statement | ✅ | Matrix augmented assignment `@=` is parsed but unsupported. |
-| Annotated assignment statement | ✅ | Supported for minipy types. |
-| `assert` statement | ✅ |  |
-| `pass` statement | ✅ |  |
-| `del` statement | ✅ |  |
-| `return` statement | ✅ |  |
-| `yield` statement | ✅ | Basic generator yield compiles. |
-| `yield from` statement | ◐ | Parsed, then rejected before lowering. |
-| `raise` statement | ✅ | `raise ... from ...` evaluates/checks cause but does not preserve chained traceback. |
-| `break` statement | ✅ |  |
-| `continue` statement | ✅ |  |
-| `import` statement | ✅ | Injected native modules (`builtins`, `operator`) and source modules resolve through a CPython-style finder chain (native wins) over explicit `fs.FS` search roots; packages, dotted imports, aliases, circular-import diagnostics, and pip `.dist-info` distribution metadata are supported. |
-| `from ... import ...` statement | ✅ | Supports symbols, submodules, aliases, and relative imports. `from ... import *` is rejected. |
-| `from __future__ import ...` statement | ◐ | Parsed as a normal import; no future-feature handling. |
-| `global` statement | ✅ |  |
-| `nonlocal` statement | ✅ |  |
-| `type` alias statement | ✅ | Simple aliases to supported minipy types are available after declaration. |
-| Generic `type` alias parameters | — | PEP 695-style type parameters are not documented as supported. |
+| UTF-8 source input | ✅ | Leading UTF-8 BOM is skipped; encoding cookies are not implemented. |
+| Indentation blocks | ✅ | Spaces only; tabs in indentation are rejected. |
+| Comments | ✅ | `#` line comments outside strings. |
+| Explicit line join | ✅ | Backslash-newline only. |
+| Implicit line join | ✅ | Inside `()`, `[]`, `{}`. |
+| Identifiers | ✅ | Unicode letters/digits plus `_`. |
+| Reserved keywords | ✅ | Full reserved keyword token set. |
+| Soft keywords `match`, `case`, `type` | ✅ | Lexed as `NAME` and interpreted by parser in context. |
+| Integer literals | ◐ | Python spelling forms accepted, but bounded to signed 64-bit. |
+| Float literals | ✅ | Parsed as `float64`. |
+| Imaginary literals | ❌ | No complex type. |
+| String literals | ✅ | Plain/raw/triple strings and adjacent string concatenation. |
+| Bytes literals | ❌ | Prefix recognized only for diagnostics. |
+| f-strings | ◐ | Single token plus parser-split parts; conversions `!s`, `!r`, `!a`; one nested format level. |
+| Named Unicode escapes | ❌ | `\N{...}` is not implemented. |
 
-## Compound Statements
+## Statements
 
-| Official Python 3.13 feature | Implemented | Remarks |
+| Feature | Status | Notes |
 |---|---:|---|
-| `if` statement | ✅ | Includes `elif` and `else`. |
-| `while` statement | ✅ |  |
-| `while ... else` clause | ✅ |  |
-| `for` statement | ✅ | Tuple/list destructuring supported under current type restrictions. |
-| `for ... else` clause | ✅ |  |
-| `async for` statement | ◐ | Parsed, then rejected until scheduler/coroutine support exists. |
-| `try ... except` statement | ✅ |  |
-| `try ... else` clause | ✅ |  |
-| `try ... finally` clause | ✅ |  |
-| `except*` clause | ◐ | Parsed, then rejected; exception-group runtime is missing. |
-| `with` statement | ✅ |  |
-| Multiple context managers in `with` | ✅ | Supported when each context manager type is supported. |
-| `async with` statement | ◐ | Parsed, then rejected until scheduler/coroutine support exists. |
-| `match` statement | ✅ | Pattern restrictions below still apply. |
-| Literal pattern | ✅ |  |
-| Capture pattern | ✅ |  |
-| Wildcard pattern | ✅ |  |
-| Value pattern | ✅ |  |
-| Group pattern | ✅ |  |
-| Sequence pattern | ✅ | List and tuple starred patterns supported; a starred tuple rest must be homogeneous (binds as `list[T]`). |
-| Mapping pattern | ✅ | Supported under current mapping type restrictions. |
-| Class pattern | ✅ | Dataclass-style destructuring supported under current class restrictions. |
-| OR pattern | ✅ |  |
-| AS pattern | ✅ |  |
-| Match guard | ✅ |  |
-| Function definition | ✅ | Includes nested `def`. |
-| Function return annotation | ✅ | Supported for minipy types. |
-| Function parameter annotation | ✅ | Supported for minipy types. |
-| Default parameter value | ✅ | Defaults lower at call sites. |
-| Positional-only parameter | ✅ | Keyword calls to positional-only parameters are rejected. |
-| Keyword-only parameter | ✅ |  |
-| `*args` parameter | ✅ | Surplus positional arguments collect into a `list[T]` parameter (`T` from the annotation, else `Any`). |
-| `**kwargs` parameter | ✅ | Surplus keyword arguments collect into a `dict[str, T]` parameter (`T` from the annotation, else `Any`). |
-| Function decorator: bare name | ✅ |  |
-| Function decorator: dotted/call expression | ◐ | Parsed, then rejected. |
-| Generic function type parameters | — | PEP 695-style type parameters are not documented as supported. |
-| Lambda expression | ✅ |  |
-| Class definition | ✅ |  |
-| Single inheritance | ✅ |  |
-| Multiple inheritance | ◐ | Parsed, then rejected. |
-| Class keyword arguments | ◐ | Parsed, then rejected. |
-| Class decorator: bare name | ✅ |  |
-| Class decorator: dotted/call expression | ◐ | Parsed, then rejected. |
-| Generic class type parameters | — | PEP 695-style type parameters are not documented as supported. |
-| `async def` function | ◐ | Parsed, then rejected until scheduler/coroutine support exists. |
+| `pass` | ✅ | No-op. |
+| Expression statements | ✅ | Value is dropped. |
+| Annotated assignment | ✅ | Declares a typed binding; value optional. |
+| Unannotated assignment | ✅ | First assignment infers binding type. |
+| Tuple/starred unpack assignment | ✅ | Supports list/tuple sources and homogeneous starred rest. |
+| Chained assignment | ◐ | Parsed only into the current assignment representation; avoid relying on CPython multi-target semantics. |
+| Augmented assignment | ◐ | Names and attributes supported; other targets rejected. |
+| `del` | ✅ | Names, list/dict items, and attributes; captured names rejected. |
+| `assert` | ✅ | Throws structured assertion error on false test. |
+| `if`/`elif`/`else` | ✅ | Includes narrowing and static truth pruning. |
+| `while`/`else` | ✅ | `break` skips `else`. |
+| `for`/`else` | ✅ | Iterates supported iterables; tuple target allowed. |
+| `break`/`continue` | ✅ | Checked for loop scope. |
+| `return` | ✅ | Checked for function scope and result type. |
+| `yield` statement | ✅ | Supported in generator functions returning `Iterator[T]`. |
+| `yield` expression | ⏳ | Parsed, rejected by checker. |
+| `yield from` | ⏳ | Parsed/reported as unsupported. |
+| `global` | ✅ | Function-scope declaration. |
+| `nonlocal` | ✅ | Requires enclosing binding. |
+| `type` alias statement | ✅ | Compile-time alias. |
+| `import` | ✅ | Module top-level only. |
+| `from ... import ...` | ✅ | Module top-level only; aliases supported. |
+| `from ... import *` | ⏳ | Parsed, rejected. |
+| `try`/`except`/`else`/`finally` | ✅ | Structured VM error path. |
+| `except*` | ⏳ | Parsed; ExceptionGroup semantics not implemented. |
+| `raise` | ✅ | Includes bare re-raise in `except`. |
+| `with` | ✅ | Context-manager lowering for supported checked forms. |
+| `async def` | ⏳ | Parsed, rejected until scheduler support. |
+| `async for`/`async with` | ⏳ | Parsed, rejected. |
+| `match`/`case` | ✅ | Structural patterns with static checks. |
 
-## Expressions And Literals
+## Definitions
 
-| Official Python 3.13 feature | Implemented | Remarks |
+| Feature | Status | Notes |
 |---|---:|---|
-| Identifier/name expression | ✅ |  |
-| Integer literal | ✅ | Fixed int64, not arbitrary precision. |
-| Floating-point literal | ✅ |  |
-| Boolean literal | ✅ |  |
-| String literal | ✅ |  |
-| Raw string literal | ✅ |  |
-| f-string literal | ◐ | Compiled subset: debug form, `!s`/`!r`/`!a`, and one level of nested format-spec fields. Format spec covers scalar presentation types (`d`/`b`/`o`/`x`/`f`/`e`/`g`/`%`/`s`). |
-| Bytes literal | — | Runtime type and lexer/parser completion are missing. |
-| Imaginary/complex literal | — | Runtime type is missing. |
-| `None` literal | ✅ |  |
-| Ellipsis literal | — | Runtime value/type is missing. |
-| Parenthesized form | ✅ |  |
-| Tuple display | ✅ | Includes tuple packing. |
-| List display | ✅ | `*` unpacking compiles for compatible list/tuple elements. |
-| Set display | ✅ | `*` unpacking compiles for compatible set elements. |
-| Dictionary display | ✅ | `**` unpacking compiles for compatible key/value types. |
-| List comprehension | ✅ |  |
-| Set comprehension | ✅ |  |
-| Dictionary comprehension | ✅ |  |
-| Generator expression | ◐ | Compiles as eager iterator construction on the current VM. |
-| Async comprehension | ◐ | Parsed, then rejected until scheduler/coroutine support exists. |
-| Attribute reference | ✅ | Supported for known minipy objects/classes and imported module members. |
-| Subscription/indexing | ✅ | Tuple index must be constant. |
-| Slicing | ✅ | List and string slicing support optional start/stop/step. |
-| Call expression | ✅ | Positional calls compile. |
-| Keyword call argument | ✅ | Compiles for known minipy functions, methods, and constructors. Dynamic keyword calls remain unsupported. |
-| Starred call argument `*args` | ◐ | `*tuple` calls compile when arity is statically known; dynamic `*list` calls remain unsupported. |
-| Double-star call argument `**kwargs` | ◐ | Parsed, then rejected. |
-| Await expression | ◐ | Parsed, then rejected until scheduler/coroutine support exists. |
-| Unary arithmetic operators | ✅ | `+`, `-`, and `~` supported under current type restrictions. |
-| Arithmetic binary operators | ✅ | `+`, `-`, `*`, `/`, `//`, `%`, and `**` supported under current type restrictions. |
-| Matrix multiplication operator `@` | ◐ | Parsed, then rejected; no matrix type/runtime. |
-| Bitwise binary operators | ✅ | `&`, `|`, `^`, `<<`, and `>>` supported under current type restrictions. |
-| Comparison operators | ✅ | Chained comparisons supported under current type restrictions. |
-| Identity operators `is` / `is not` | ✅ | Supported under current type restrictions. |
-| Membership operators `in` / `not in` | ✅ | Supported under current type restrictions. |
-| Boolean operators `and` / `or` / `not` | ✅ |  |
-| Conditional expression | ✅ |  |
-| Assignment expression `:=` | ✅ | Name targets only. |
-| Lambda expression | ✅ | Also listed under compound-adjacent callable forms. |
-| Expression list | ✅ | Tuple packing and unpacking follow current tuple/list restrictions. |
-| Starred expression | ◐ | Supported in assignment, displays, and statically known tuple calls; rejected elsewhere. |
-| Yield expression | ◐ | Basic `yield` works in generator bodies; expression-position limits remain. |
-| `yield from` expression | ◐ | Parsed, then rejected. |
+| Function definitions | ✅ | Optional annotations, default values, closures. |
+| Positional-only params `/` | ✅ | Checked at call sites. |
+| Keyword-only params `*` | ✅ | Checked at call sites. |
+| `*args` parameter | ✅ | Collected as `list[T]`. |
+| `**kwargs` parameter | ✅ | Collected as `dict[str, T]`. |
+| Function decorators | ◐ | Bare-name decorators recorded; non-name expressions rejected by checker. |
+| Return type inference | ✅ | Joins value-return branches. |
+| Nested functions and closures | ✅ | Captures boxed when needed. |
+| Generator functions | ✅ | `Iterator[T]` result required. |
+| Class definitions | ✅ | Fixed field/method layout. |
+| Single inheritance | ✅ | One supported base class. |
+| Multiple inheritance | ⏳ | Parsed, rejected. |
+| Class keywords/metaclass syntax | ⏳ | Parsed, rejected. |
+| `@dataclass` | ✅ | Field constructor/default checks. |
+| Other class decorators | ⏳ | Rejected. |
+| Methods and `self` | ✅ | `self` required; `__init__` returns `None`. |
 
-## Current Parse-only Queue
+## Expressions
 
-Forms marked partial above generally parse for syntax-aware diagnostics, then
-stop before minivm lowering until the missing runtime, dispatch, or type-system
-support lands.
+| Feature | Status | Notes |
+|---|---:|---|
+| Boolean operations | ✅ | `and`/`or` require bool operands. |
+| Unary operations | ✅ | `+`, `-`, `~`, `not` where typed. |
+| Arithmetic operations | ✅ | Supported numeric/operator combinations only. |
+| Power `**` | ✅ | Through operator semantics. |
+| Matrix multiply `@` | ⏳ | Tokenized/parsed, no semantics. |
+| Comparisons | ✅ | Chained comparisons included. |
+| `is` / `is not` | ✅ | Especially used for `None` narrowing. |
+| `in` / `not in` | ✅ | Supported containers/strings/iterators. |
+| Conditional expressions | ✅ | Arms must have same type. |
+| Named expressions `:=` | ✅ | Name target only. |
+| Lambdas | ◐ | Need expected `Callable` context. |
+| Calls | ✅ | Direct minipy calls support args, kwargs, defaults, `*tuple`, `*args`, `**kwargs` parameters. |
+| Dynamic `**kwargs` call unpack | ⏳ | Parsed, rejected. |
+| Keyword/star native calls | ⏳ | Rejected for native/builtin method/dynamic callable paths. |
+| Attribute access | ◐ | Classes/modules supported; arbitrary object attributes out of scope. |
+| Indexing | ✅ | Lists, dicts, strings, constant tuple indexes. |
+| Slicing | ✅ | Lists and strings. |
+| Slice assignment | ⏳ | Parsed, rejected. |
+| List literals | ✅ | Homogeneous; empty needs hint. |
+| Dict literals | ✅ | Homogeneous; empty needs hint; scalar hashable keys. |
+| Set literals | ✅ | Homogeneous; empty needs hint; scalar hashable elements. |
+| Tuple literals | ✅ | Fixed arity, heterogeneous. |
+| Starred list/set elements | ◐ | Statically typed sources only. |
+| Dict unpacking in displays | ◐ | Dict sources only; dynamic call unpack still unsupported. |
+| List/dict/set comprehensions | ✅ | Eager construction; name targets. |
+| Generator expressions | ✅ | Iterator result. |
+| Async comprehensions | ⏳ | Parsed, rejected. |
+| Await expressions | ⏳ | Parsed, rejected. |
+| F-strings | ◐ | Printable replacement fields, limited conversions/format nesting. |
+
+## Types
+
+| Feature | Status | Notes |
+|---|---:|---|
+| `int`, `float`, `bool`, `str`, `None` | ✅ | Source-level primitive types. |
+| `Any` | ✅ | Dynamic fallback top type. |
+| `list[T]`, `dict[K, V]`, `set[T]` | ✅ | Homogeneous containers. |
+| `tuple[...]` | ✅ | Fixed heterogeneous tuple. |
+| `Iterator[T]` | ✅ | Iteration/generator result type. |
+| `Callable[[...], R]` | ✅ | Used for lambdas/callable values. |
+| `A | B` unions | ✅ | Closed unions, normalized. |
+| `Optional[T]` spelling | ❌ | Use `T | None`; no separate `Optional` generic. |
+| Type aliases | ✅ | `type Name = expr`. |
+| Flow narrowing | ✅ | `isinstance(name, T)` and `name is/is not None`. |
+| Monomorphic specialization | ✅ | For union/Any params with concrete direct call tuples, capped per function. |
+| Arbitrary precision int | ❌ | Uses signed 64-bit. |
+| Complex | ❌ | No runtime type. |
+| Bytes | ❌ | No runtime type. |
+| General Python object model | ❌ | No descriptors, metaclasses, MRO, dynamic attributes. |
+
+## Builtins and Modules
+
+| Feature | Status | Notes |
+|---|---:|---|
+| `print`, `str`, `int`, `float`, `bool`, `abs`, `len` | ✅ | Native builtins. |
+| `range`, `iter`, `next` | ✅ | Iterator paths. |
+| `enumerate`, `zip` | ✅ | List-based eager helpers. |
+| `isinstance` | ✅ | Type/class checks and narrowing support. |
+| Builtin exceptions | ✅ | Seeded class hierarchy. |
+| `operator` module | ✅ | Native functions for syntax operator semantics. |
+| First-class native functions | ❌ | Native symbols are callable names only. |
+| First-class modules/classes | ❌ | Compile-time receiver names only. |
+| Standard library compatibility | ❌ | Only registered native/source modules are available. |
+
+## Related Docs
+
+- `docs/README.md` — documentation map and ownership guide.
+- `docs/spec/` — normative language and compiler behavior.
+- `docs/roadmap.md` — planned and deferred work.
