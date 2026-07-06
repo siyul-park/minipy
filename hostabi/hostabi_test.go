@@ -4,6 +4,8 @@ import (
 	"testing"
 
 	vmtypes "github.com/siyul-park/minivm/types"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestPyFloat(t *testing.T) {
@@ -18,30 +20,23 @@ func TestPyFloat(t *testing.T) {
 		{100, "100.0"},
 	}
 	for _, tt := range tests {
-		if got := PyFloat(tt.in); got != tt.want {
-			t.Errorf("PyFloat(%v) = %q, want %q", tt.in, got, tt.want)
-		}
+		require.Equalf(t, tt.want, PyFloat(tt.in), "PyFloat(%v)", tt.in)
 	}
 }
 
 func TestNewIterator(t *testing.T) {
 	t.Run("empty is done", func(t *testing.T) {
 		it := NewIterator("x", nil)
-		if !it.Done() {
-			t.Fatal("empty iterator should be done")
-		}
+		require.True(t, it.Done())
 	})
 
 	t.Run("walks values then finishes", func(t *testing.T) {
 		it := NewIterator("x", []vmtypes.Boxed{vmtypes.BoxI64(1), vmtypes.BoxI64(2)})
-		if it.Done() || it.Current().(vmtypes.Boxed).I64() != 1 {
-			t.Fatal("first element should be 1")
-		}
-		if !it.Next() || it.Current().(vmtypes.Boxed).I64() != 2 {
-			t.Fatal("second element should be 2")
-		}
-		if it.Next() || !it.Done() {
-			t.Fatal("iterator should be exhausted")
-		}
+		require.False(t, it.Done())
+		require.Equal(t, int64(1), it.Current().(vmtypes.Boxed).I64())
+		require.True(t, it.Next())
+		require.Equal(t, int64(2), it.Current().(vmtypes.Boxed).I64())
+		require.False(t, it.Next())
+		require.True(t, it.Done())
 	})
 }

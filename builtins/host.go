@@ -13,6 +13,52 @@ import (
 	vmtypes "github.com/siyul-park/minivm/types"
 )
 
+type rangeIterator struct {
+	stop, step int64
+	current    vmtypes.Boxed
+	done       bool
+}
+
+func newRangeIterator(start, stop, step int64) *rangeIterator {
+	it := &rangeIterator{stop: stop, step: step, done: true}
+	if step > 0 {
+		it.done = start >= stop
+	} else {
+		it.done = start <= stop
+	}
+	if !it.done {
+		it.current = vmtypes.BoxI64(start)
+	}
+	return it
+}
+
+func (it *rangeIterator) Kind() vmtypes.Kind { return vmtypes.KindRef }
+func (it *rangeIterator) Type() vmtypes.Type { return vmtypes.TypeRef }
+func (it *rangeIterator) String() string     { return "range.iterator" }
+
+func (it *rangeIterator) Current() vmtypes.Value {
+	if it.done {
+		return vmtypes.BoxedNull
+	}
+	return it.current
+}
+
+func (it *rangeIterator) Done() bool { return it.done }
+
+func (it *rangeIterator) Next() bool {
+	if it.done {
+		return false
+	}
+	next := it.current.I64() + it.step
+	if (it.step > 0 && next >= it.stop) || (it.step < 0 && next <= it.stop) {
+		it.current = vmtypes.BoxedNull
+		it.done = true
+		return false
+	}
+	it.current = vmtypes.BoxI64(next)
+	return true
+}
+
 func printHost(out io.Writer) *interp.HostFunction {
 	return interp.NewHostFunction(
 		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeRef}, Returns: nil},
@@ -157,50 +203,4 @@ func strIter() *interp.HostFunction {
 			return []vmtypes.Boxed{vmtypes.BoxRef(addr)}, nil
 		},
 	)
-}
-
-type rangeIterator struct {
-	stop, step int64
-	current    vmtypes.Boxed
-	done       bool
-}
-
-func newRangeIterator(start, stop, step int64) *rangeIterator {
-	it := &rangeIterator{stop: stop, step: step, done: true}
-	if step > 0 {
-		it.done = start >= stop
-	} else {
-		it.done = start <= stop
-	}
-	if !it.done {
-		it.current = vmtypes.BoxI64(start)
-	}
-	return it
-}
-
-func (it *rangeIterator) Kind() vmtypes.Kind { return vmtypes.KindRef }
-func (it *rangeIterator) Type() vmtypes.Type { return vmtypes.TypeRef }
-func (it *rangeIterator) String() string     { return "range.iterator" }
-
-func (it *rangeIterator) Current() vmtypes.Value {
-	if it.done {
-		return vmtypes.BoxedNull
-	}
-	return it.current
-}
-
-func (it *rangeIterator) Done() bool { return it.done }
-
-func (it *rangeIterator) Next() bool {
-	if it.done {
-		return false
-	}
-	next := it.current.I64() + it.step
-	if (it.step > 0 && next >= it.stop) || (it.step < 0 && next <= it.stop) {
-		it.current = vmtypes.BoxedNull
-		it.done = true
-		return false
-	}
-	it.current = vmtypes.BoxI64(next)
-	return true
 }

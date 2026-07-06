@@ -4,19 +4,18 @@ import (
 	"testing"
 
 	"github.com/siyul-park/minipy/types"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestNew(t *testing.T) {
 	m := New()
-	if m.Name() != "builtins" {
-		t.Fatalf("module name = %q", m.Name())
-	}
+	require.Equal(t, "builtins", m.Name())
 	want := []string{"print", "str", "int", "float", "bool", "abs", "len",
 		"enumerate", "zip", "range", "iter", "next", "isinstance"}
 	for _, name := range want {
-		if _, ok := m.Symbol(name); !ok {
-			t.Errorf("missing symbol %q", name)
-		}
+		_, ok := m.Symbol(name)
+		require.Truef(t, ok, "missing symbol %q", name)
 	}
 }
 
@@ -30,23 +29,16 @@ func TestExceptions(t *testing.T) {
 	}
 
 	t.Run("hierarchy", func(t *testing.T) {
-		if base["BaseException"] != "" {
-			t.Error("BaseException must be the root")
-		}
-		if base["Exception"] != "BaseException" {
-			t.Error("Exception must derive from BaseException")
-		}
+		require.Empty(t, base["BaseException"])
+		require.Equal(t, "BaseException", base["Exception"])
 		for _, name := range []string{"ValueError", "TypeError", "IndexError", "KeyError", "StopIteration"} {
-			if base[name] != "Exception" {
-				t.Errorf("%s base = %q, want Exception", name, base[name])
-			}
+			require.Equalf(t, "Exception", base[name], "%s base", name)
 		}
 	})
 
 	t.Run("base precedes subclass", func(t *testing.T) {
-		if order["BaseException"] > order["Exception"] || order["Exception"] > order["ValueError"] {
-			t.Error("declaration order must list bases before subclasses")
-		}
+		require.Less(t, order["BaseException"], order["Exception"])
+		require.Less(t, order["Exception"], order["ValueError"])
 	})
 }
 
@@ -54,47 +46,46 @@ func TestResultFuncs(t *testing.T) {
 	list := types.NewList(types.Int)
 
 	t.Run("len", func(t *testing.T) {
-		if got, ok := lenResult([]types.Type{list}); !ok || !types.Equal(got, types.Int) {
-			t.Fatalf("lenResult(list) = %s, %v", got, ok)
-		}
-		if _, ok := lenResult([]types.Type{types.Int}); ok {
-			t.Fatal("len(int) should be rejected")
-		}
+		got, ok := lenResult([]types.Type{list})
+		require.True(t, ok)
+		require.Truef(t, types.Equal(got, types.Int), "lenResult(list) = %s", got)
+
+		_, ok = lenResult([]types.Type{types.Int})
+		require.False(t, ok)
 	})
 
 	t.Run("abs", func(t *testing.T) {
-		if got, ok := absResult([]types.Type{types.Float}); !ok || !types.Equal(got, types.Float) {
-			t.Fatalf("absResult(float) = %s, %v", got, ok)
-		}
-		if _, ok := absResult([]types.Type{types.Str}); ok {
-			t.Fatal("abs(str) should be rejected")
-		}
+		got, ok := absResult([]types.Type{types.Float})
+		require.True(t, ok)
+		require.Truef(t, types.Equal(got, types.Float), "absResult(float) = %s", got)
+
+		_, ok = absResult([]types.Type{types.Str})
+		require.False(t, ok)
 	})
 
 	t.Run("range", func(t *testing.T) {
-		if got, ok := rangeResult([]types.Type{types.Int, types.Int}); !ok || !types.Equal(got, types.NewIterator(types.Int)) {
-			t.Fatalf("rangeResult = %s, %v", got, ok)
-		}
-		if _, ok := rangeResult([]types.Type{types.Str}); ok {
-			t.Fatal("range(str) should be rejected")
-		}
+		got, ok := rangeResult([]types.Type{types.Int, types.Int})
+		require.True(t, ok)
+		require.Truef(t, types.Equal(got, types.NewIterator(types.Int)), "rangeResult = %s", got)
+
+		_, ok = rangeResult([]types.Type{types.Str})
+		require.False(t, ok)
 	})
 
 	t.Run("enumerate", func(t *testing.T) {
 		got, ok := enumerateResult([]types.Type{list})
 		want := types.NewList(types.NewTuple(types.Int, types.Int))
-		if !ok || !types.Equal(got, want) {
-			t.Fatalf("enumerateResult = %s, %v", got, ok)
-		}
+		require.True(t, ok)
+		require.Truef(t, types.Equal(got, want), "enumerateResult = %s", got)
 	})
 
 	t.Run("iter and next", func(t *testing.T) {
 		it, ok := iterResult([]types.Type{list})
-		if !ok || !types.Equal(it, types.NewIterator(types.Int)) {
-			t.Fatalf("iterResult = %s, %v", it, ok)
-		}
-		if got, ok := nextResult([]types.Type{it}); !ok || !types.Equal(got, types.Int) {
-			t.Fatalf("nextResult = %s, %v", got, ok)
-		}
+		require.True(t, ok)
+		require.Truef(t, types.Equal(it, types.NewIterator(types.Int)), "iterResult = %s", it)
+
+		got, ok := nextResult([]types.Type{it})
+		require.True(t, ok)
+		require.Truef(t, types.Equal(got, types.Int), "nextResult = %s", got)
 	})
 }

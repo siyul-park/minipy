@@ -108,6 +108,44 @@ Keep state, validation, mutation, and cleanup for one behavior near each other.
 Avoid splitting logic across files or helpers unless the split has clear ownership
 or readability benefit.
 
+## Symbol and Algorithm Review
+
+Review every changed file as a symbol set before and after the change. Check
+files, structs, fields, functions, methods, arguments, return values, variables,
+constants, interfaces, and errors.
+
+For each symbol, ask:
+
+1. Can it be removed?
+2. Can it be private?
+3. Can it be merged into an existing symbol?
+4. Can its name be shorter without losing clarity?
+5. Can its caller pass less data?
+6. Can the callee return less data?
+7. Can the behavior live closer to the state it reads or mutates?
+
+Prefer deleting a symbol over renaming it, renaming over wrapping it, and local
+code over a new abstraction. Keep a public symbol only when a real caller or
+documented API boundary needs it.
+
+Review algorithms the same way. Before keeping a complex path, look for a
+simpler or more efficient one:
+
+- one pass instead of multiple passes
+- map/set lookup instead of repeated linear scans
+- early validation instead of late cleanup
+- shared existing phase data instead of recomputing it
+- direct control flow instead of callback or interface indirection
+- clearer O(n) code over clever code with hidden constants
+
+Do not optimize by obscuring behavior. Performance changes need benchmark or
+profile evidence; without evidence, choose the clearest correct algorithm.
+
+Repeat the review loop until another pass finds no smaller public surface, no
+safe deletion, no clearer name, no simpler data flow, and no easier algorithm.
+Stop when the remaining complexity is required by behavior, compatibility, or a
+documented boundary.
+
 ### Keep the Language Subset Explicit
 
 Every construct should be documented as lowered, parse-only, restricted, or out
@@ -146,6 +184,24 @@ function.
 Keep helper names short and direct. Prefer names that describe the operation, not
 the implementation trick.
 
+Name by caller-visible role, not implementation mechanics. Use the shortest
+standard name that stays clear in package, receiver, and local context. Prefer
+one word when context carries the rest: `state`, `frame`, `module`, `target`,
+`source`, `compiler`, `builder`, `cache`, `trace`, and `exit` are better than
+names that repeat the file or subsystem.
+
+Avoid private names that repeat the package, one-letter names outside tight local
+scopes, non-standard abbreviations, and helpers named after a low-level step
+when a role name is enough. Common domain abbreviations such as `ID`, `IP`,
+`ABI`, `VM`, and `CPU` are fine.
+
+Within a file and section, declare callers before callees so the file reads from
+policy to mechanics. A package-level helper should appear after the functions or
+methods that need it unless it is a constructor or shared public utility.
+
+Let one function own a decision. Do not duplicate a helper's eligibility checks
+at every call site when the helper can return failure or fallback itself.
+
 ## Types
 
 Add a type when it owns data with behavior, names a real domain concept, or
@@ -159,6 +215,40 @@ is a real boundary.
 
 Constructors should establish invariants. If a value has no invariants, a struct
 literal may be clearer.
+
+Use this order in every `.go` file:
+
+1. public types
+2. private types
+3. public constants
+4. private constants
+5. public variables
+6. private variables
+7. constructors
+8. public functions
+9. public methods
+10. private methods
+11. private functions
+
+Within each group, keep top-down flow: callers before callees.
+
+Order struct fields by how readers understand the value:
+
+1. lifecycle and policy objects
+2. infrastructure
+3. program data
+4. runtime state
+5. mutable counters
+6. read-only config
+7. sync primitives
+
+Separate those layers with blank lines when it improves scanning. Keep
+`sync.Mutex` and related sync primitives last. Struct literals should follow the
+field declaration order.
+
+Methods show ownership. A function used by one type belongs on that type, even
+if the receiver is not used directly. Keep methods with their owning type; split
+large types by concern only when the ownership remains obvious.
 
 For minipy-specific types:
 
@@ -177,6 +267,10 @@ explicit.
 Prefer options for rare configuration and direct arguments for required behavior.
 Functional options may be declared immediately before the constructor or function
 they configure.
+
+Apply defaults first, then options. Public concrete constructors use `NewType`;
+private concrete constructors use `newType`. Constructors are standalone
+functions, never methods.
 
 Keep builders focused. A builder should construct one thing, validate inputs near
 construction, and avoid becoming a general mutable configuration store.
@@ -322,6 +416,30 @@ contracts.
 
 Keep fixtures small. A test should make the important source, diagnostic, or
 runtime behavior visible near the assertion.
+
+Use `require` for assertions. Avoid direct `t.Fatal`, `t.Fatalf`, `t.Error`, and
+`t.Errorf` in new tests; use `require.NoError`, `require.ErrorIs`,
+`require.Equal`, `require.True`, or `require.Failf` instead.
+
+Top-level tests target public symbols. Use names such as `TestFoo`,
+`TestNewFoo`, and `TestFoo_Bar`. Do not name top-level tests after private
+helpers unless that private shape is itself the contract being protected.
+
+Match test files to production files when adding new test files:
+
+```text
+buffer.go      -> buffer_test.go
+assembler.go   -> assembler_test.go
+```
+
+Keep nesting shallow. Aim for at most one `t.Run` level. Use table-driven tests
+when setup and assertions share one shape; use explicit subtests when cases need
+different setup or clearer labels. Do not mix table-driven and explicit subtest
+styles at the same nesting level.
+
+Defer cleanup immediately after successful allocation. Avoid test helpers for
+fixtures, configured objects, or assertions by default. Duplicated setup is
+acceptable when it keeps the tested API visible.
 
 Use package-local tests for lexer/token/parser/checker behavior, native module
 tests for builtin/operator rules, and integration tests for CLI/runtime paths

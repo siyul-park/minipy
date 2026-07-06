@@ -5,6 +5,8 @@ import (
 	"testing/fstest"
 
 	"github.com/siyul-park/minipy/token"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestDistIndex(t *testing.T) {
@@ -21,28 +23,20 @@ func TestDistIndex(t *testing.T) {
 
 	t.Run("maps import name to distribution", func(t *testing.T) {
 		d, ok := ld.distribution("PIL")
-		if !ok {
-			t.Fatal("expected PIL to resolve to a distribution")
-		}
-		if d.name != "Pillow" || d.version != "9.0.0" {
-			t.Fatalf("got %q %q, want Pillow 9.0.0", d.name, d.version)
-		}
+		require.True(t, ok)
+		require.Equal(t, "Pillow", d.name)
+		require.Equal(t, "9.0.0", d.version)
 	})
 
 	t.Run("import resolves regardless of distribution name", func(t *testing.T) {
 		m := ld.loadModule("PIL", token.Pos{})
-		if m == nil {
-			t.Fatal("import PIL failed")
-		}
-		if !m.isPackage {
-			t.Fatal("PIL should be a package")
-		}
+		require.NotNil(t, m)
+		require.True(t, m.isPackage)
 	})
 
 	t.Run("unknown import has no distribution", func(t *testing.T) {
-		if _, ok := ld.distribution("nope"); ok {
-			t.Fatal("unexpected distribution for unknown import")
-		}
+		_, ok := ld.distribution("nope")
+		require.False(t, ok)
 	})
 
 	t.Run("dist-info without RECORD is ignored", func(t *testing.T) {
@@ -51,9 +45,8 @@ func TestDistIndex(t *testing.T) {
 			"m-1.0.dist-info/METADATA": {Data: []byte("Name: m\nVersion: 1.0\n\n")},
 		}
 		ldBad := newLoader(defaultRegistry(), []searchEntry{{fsys: bad, dir: "."}})
-		if _, ok := ldBad.distribution("m"); ok {
-			t.Fatal("dist-info lacking RECORD must be ignored")
-		}
+		_, ok := ldBad.distribution("m")
+		require.False(t, ok)
 	})
 }
 
@@ -64,10 +57,6 @@ func TestFinderPrecedence(t *testing.T) {
 	ld := newLoader(defaultRegistry(), []searchEntry{{fsys: fsys, dir: "."}})
 
 	m := ld.loadModule("operator", token.Pos{})
-	if m == nil {
-		t.Fatal("import operator failed")
-	}
-	if !m.native {
-		t.Fatal("native operator module should win over operator.py on the path")
-	}
+	require.NotNil(t, m)
+	require.True(t, m.native)
 }

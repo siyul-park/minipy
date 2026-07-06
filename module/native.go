@@ -15,10 +15,6 @@ type Intrinsic struct {
 	Name string
 }
 
-func (v Intrinsic) Kind() vmtypes.Kind { return vmtypes.KindRef }
-func (v Intrinsic) Type() vmtypes.Type { return vmtypes.TypeRef }
-func (v Intrinsic) String() string     { return "<native " + v.Name + ">" }
-
 // CheckFunc type-checks a native call given its argument expressions.
 type CheckFunc func(c Checker, args []ast.Expr, pos token.Pos) types.Type
 
@@ -38,6 +34,13 @@ type funcSymbol struct {
 	value  ValueFunc
 }
 
+// nativeModule is a Module backed by an in-memory symbol table.
+type nativeModule struct {
+	name    string
+	symbols map[string]Symbol
+	names   []string
+}
+
 // NewSymbol builds a Symbol from its type-check, emit, and value behaviors. A nil
 // value defaults to an Intrinsic marker keyed by the qualified symbol name.
 func NewSymbol(module, name string, check CheckFunc, emit EmitFunc, value ValueFunc) Symbol {
@@ -46,23 +49,6 @@ func NewSymbol(module, name string, check CheckFunc, emit EmitFunc, value ValueF
 		value = func(Runtime) vmtypes.Value { return Intrinsic{Name: full} }
 	}
 	return &funcSymbol{module: module, name: name, check: check, emit: emit, value: value}
-}
-
-func (s *funcSymbol) Name() string { return s.name }
-
-func (s *funcSymbol) Check(c Checker, args []ast.Expr, pos token.Pos) types.Type {
-	return s.check(c, args, pos)
-}
-
-func (s *funcSymbol) Emit(e Emitter, args []ast.Expr) { s.emit(e, args) }
-
-func (s *funcSymbol) Value(r Runtime) vmtypes.Value { return s.value(r) }
-
-// nativeModule is a Module backed by an in-memory symbol table.
-type nativeModule struct {
-	name    string
-	symbols map[string]Symbol
-	names   []string
 }
 
 // NewNative builds a native Module from its symbols, preserving their order for
@@ -81,6 +67,20 @@ func NewNative(name string, symbols ...Symbol) Module {
 	}
 	return m
 }
+
+func (v Intrinsic) Kind() vmtypes.Kind { return vmtypes.KindRef }
+func (v Intrinsic) Type() vmtypes.Type { return vmtypes.TypeRef }
+func (v Intrinsic) String() string     { return "<native " + v.Name + ">" }
+
+func (s *funcSymbol) Name() string { return s.name }
+
+func (s *funcSymbol) Check(c Checker, args []ast.Expr, pos token.Pos) types.Type {
+	return s.check(c, args, pos)
+}
+
+func (s *funcSymbol) Emit(e Emitter, args []ast.Expr) { s.emit(e, args) }
+
+func (s *funcSymbol) Value(r Runtime) vmtypes.Value { return s.value(r) }
 
 func (m *nativeModule) Name() string { return m.name }
 

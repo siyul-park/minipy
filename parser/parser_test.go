@@ -53,7 +53,7 @@ func hasCode(t *testing.T, err error, code token.Code) {
 			return
 		}
 	}
-	t.Fatalf("expected diagnostic %s, got %v", code, err)
+	require.Failf(t, "missing diagnostic", "expected diagnostic %s, got %v", code, err)
 }
 
 func TestParse(t *testing.T) {

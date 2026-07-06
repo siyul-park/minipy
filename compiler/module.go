@@ -57,6 +57,41 @@ type loader struct {
 	errs    token.ErrorList
 }
 
+// moduleSpec is a located, not-yet-loaded module description (importlib
+// ModuleSpec analog).
+type moduleSpec struct {
+	name      string
+	origin    string
+	fsys      fs.FS
+	dir       string
+	isPackage bool
+	parent    string
+	builtin   bool
+}
+
+// finder locates a spec for a fully-qualified module name. parent is the
+// already-loaded parent package for submodule resolution, or nil for a
+// top-level import (importlib MetaPathFinder analog).
+type finder interface {
+	findSpec(ld *loader, name string, parent *moduleInfo) (*moduleSpec, bool)
+}
+
+// builtinFinder resolves native modules from the registry: CPython's
+// BuiltinImporter analog, top-level only and highest precedence.
+type builtinFinder struct{}
+
+// pathFinder resolves source modules on the search roots, preferring
+// __init__.py packages over plain modules: CPython's PathFinder + FileFinder
+// with a SourceFileLoader.
+type pathFinder struct{}
+
+// nativeRuntime holds the runtime values of native module symbols, bound to the
+// program's output writer.
+type nativeRuntime struct {
+	modules map[string]map[string]vmtypes.Value
+	out     io.Writer
+}
+
 func newLoader(reg *module.Registry, paths []searchEntry) *loader {
 	if reg == nil {
 		reg = defaultRegistry()
@@ -74,10 +109,10 @@ func newLoader(reg *module.Registry, paths []searchEntry) *loader {
 	return ld
 }
 
-// distribution returns the installed distribution providing a top-level import
-// name, or false if none is installed on the search roots.
-func (ld *loader) distribution(importName string) (*distribution, bool) {
-	return ld.dist.distribution(importName)
+func newNativeRuntime(reg *module.Registry, out io.Writer) *nativeRuntime {
+	rt := &nativeRuntime{out: out}
+	rt.modules = reg.Values(rt)
+	return rt
 }
 
 func (ld *loader) loadEntry(mod *ast.Module) (*moduleInfo, map[string]*moduleInfo) {
@@ -198,84 +233,10 @@ func (ld *loader) loadBuiltin(name string) *moduleInfo {
 	return m
 }
 
-// moduleSpec is a located, not-yet-loaded module description (importlib
-// ModuleSpec analog).
-type moduleSpec struct {
-	name      string
-	origin    string
-	fsys      fs.FS
-	dir       string
-	isPackage bool
-	parent    string
-	builtin   bool
-}
-
-// finder locates a spec for a fully-qualified module name. parent is the
-// already-loaded parent package for submodule resolution, or nil for a
-// top-level import (importlib MetaPathFinder analog).
-type finder interface {
-	findSpec(ld *loader, name string, parent *moduleInfo) (*moduleSpec, bool)
-}
-
-// builtinFinder resolves native modules from the registry: CPython's
-// BuiltinImporter analog, top-level only and highest precedence.
-type builtinFinder struct{}
-
-func (builtinFinder) findSpec(ld *loader, name string, parent *moduleInfo) (*moduleSpec, bool) {
-	if parent != nil || !ld.reg.Has(name) {
-		return nil, false
-	}
-	return &moduleSpec{name: name, origin: "<" + name + ">", builtin: true}, true
-}
-
-// pathFinder resolves source modules on the search roots, preferring
-// __init__.py packages over plain modules: CPython's PathFinder + FileFinder
-// with a SourceFileLoader.
-type pathFinder struct{}
-
-func (pathFinder) findSpec(ld *loader, name string, parent *moduleInfo) (*moduleSpec, bool) {
-	child := name
-	if i := strings.LastIndex(name, "."); i >= 0 {
-		child = name[i+1:]
-	}
-	if parent != nil {
-		if sp := findOnPath(parent.fsys, parent.dir, name, child); sp != nil {
-			sp.parent = parent.name
-			return sp, true
-		}
-		return nil, false
-	}
-	for _, entry := range ld.paths {
-		if sp := findOnPath(entry.fsys, cleanDir(entry.dir), name, child); sp != nil {
-			return sp, true
-		}
-	}
-	return nil, false
-}
-
-func findOnPath(fsys fs.FS, dir, name, child string) *moduleSpec {
-	pkgInit := path.Join(dir, child, "__init__.py")
-	if readable(fsys, pkgInit) {
-		return &moduleSpec{
-			name:      name,
-			origin:    pkgInit,
-			fsys:      fsys,
-			dir:       path.Join(dir, child),
-			isPackage: true,
-		}
-	}
-	file := path.Join(dir, child+".py")
-	if readable(fsys, file) {
-		return &moduleSpec{name: name, origin: file, fsys: fsys, dir: dir}
-	}
-	return nil
-}
-
-func readable(fsys fs.FS, file string) bool {
-	if _, err := fs.Stat(fsys, file); err != nil {
-		return false
-	}
-	return true
+// distribution returns the installed distribution providing a top-level import
+// name, or false if none is installed on the search roots.
+func (ld *loader) distribution(importName string) (*distribution, bool) {
+	return ld.dist.distribution(importName)
 }
 
 func (ld *loader) scan(m *moduleInfo) {
@@ -336,6 +297,78 @@ func (ld *loader) resolveFrom(m *moduleInfo, n *ast.ImportFrom) string {
 	return base
 }
 
+func (ld *loader) cycle(name string) string {
+	start := 0
+	for i, n := range ld.stack {
+		if n == name {
+			start = i
+			break
+		}
+	}
+	parts := append([]string(nil), ld.stack[start:]...)
+	parts = append(parts, name)
+	return strings.Join(parts, " -> ")
+}
+
+func (builtinFinder) findSpec(ld *loader, name string, parent *moduleInfo) (*moduleSpec, bool) {
+	if parent != nil || !ld.reg.Has(name) {
+		return nil, false
+	}
+	return &moduleSpec{name: name, origin: "<" + name + ">", builtin: true}, true
+}
+
+func (pathFinder) findSpec(ld *loader, name string, parent *moduleInfo) (*moduleSpec, bool) {
+	child := name
+	if i := strings.LastIndex(name, "."); i >= 0 {
+		child = name[i+1:]
+	}
+	if parent != nil {
+		if sp := findOnPath(parent.fsys, parent.dir, name, child); sp != nil {
+			sp.parent = parent.name
+			return sp, true
+		}
+		return nil, false
+	}
+	for _, entry := range ld.paths {
+		if sp := findOnPath(entry.fsys, cleanDir(entry.dir), name, child); sp != nil {
+			return sp, true
+		}
+	}
+	return nil, false
+}
+
+func (rt *nativeRuntime) Value(moduleName, symbol string) vmtypes.Value {
+	if symbols := rt.modules[moduleName]; symbols != nil {
+		return symbols[symbol]
+	}
+	return nil
+}
+
+func findOnPath(fsys fs.FS, dir, name, child string) *moduleSpec {
+	pkgInit := path.Join(dir, child, "__init__.py")
+	if readable(fsys, pkgInit) {
+		return &moduleSpec{
+			name:      name,
+			origin:    pkgInit,
+			fsys:      fsys,
+			dir:       path.Join(dir, child),
+			isPackage: true,
+		}
+	}
+	file := path.Join(dir, child+".py")
+	if readable(fsys, file) {
+		return &moduleSpec{name: name, origin: file, fsys: fsys, dir: dir}
+	}
+	return nil
+}
+
+func readable(fsys fs.FS, file string) bool {
+	if _, err := fs.Stat(fsys, file); err != nil {
+		return false
+	}
+	return true
+}
+
 func staticAll(body []ast.Stmt) ([]string, bool, bool) {
 	for _, s := range body {
 		assign, ok := s.(*ast.Assign)
@@ -373,19 +406,6 @@ func stringSequence(e ast.Expr) ([]string, bool) {
 	return names, true
 }
 
-func (ld *loader) cycle(name string) string {
-	start := 0
-	for i, n := range ld.stack {
-		if n == name {
-			start = i
-			break
-		}
-	}
-	parts := append([]string(nil), ld.stack[start:]...)
-	parts = append(parts, name)
-	return strings.Join(parts, " -> ")
-}
-
 func cleanDir(dir string) string {
 	if dir == "" || dir == "." {
 		return "."
@@ -409,24 +429,4 @@ func nativeDisplay(key string) string {
 		return strings.TrimPrefix(key, builtins.Name+".")
 	}
 	return key
-}
-
-// nativeRuntime holds the runtime values of native module symbols, bound to the
-// program's output writer.
-type nativeRuntime struct {
-	modules map[string]map[string]vmtypes.Value
-	out     io.Writer
-}
-
-func newNativeRuntime(reg *module.Registry, out io.Writer) *nativeRuntime {
-	rt := &nativeRuntime{out: out}
-	rt.modules = reg.Values(rt)
-	return rt
-}
-
-func (rt *nativeRuntime) Value(moduleName, symbol string) vmtypes.Value {
-	if symbols := rt.modules[moduleName]; symbols != nil {
-		return symbols[symbol]
-	}
-	return nil
 }

@@ -17,6 +17,12 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+type broken struct{}
+
+func (broken) Read([]byte) (int, error) {
+	return 0, io.ErrUnexpectedEOF
+}
+
 func run(t *testing.T, src string) string {
 	t.Helper()
 	var buf bytes.Buffer
@@ -38,7 +44,7 @@ func code(t *testing.T, err error, want token.Code) {
 			return
 		}
 	}
-	t.Fatalf("expected diagnostic %s, got %v", want, err)
+	require.Failf(t, "missing diagnostic", "expected diagnostic %s, got %v", want, err)
 }
 
 func count(t *testing.T, err error, want token.Code) int {
@@ -52,12 +58,6 @@ func count(t *testing.T, err error, want token.Code) int {
 		}
 	}
 	return count
-}
-
-type broken struct{}
-
-func (broken) Read([]byte) (int, error) {
-	return 0, io.ErrUnexpectedEOF
 }
 
 // checkOnly runs the parser and type checker without lowering, returning the
@@ -1546,7 +1546,7 @@ func requireFuncParam(t *testing.T, constants []vmtypes.Value, parameter vmtypes
 		}
 		return
 	}
-	t.Fatalf("expected function constant with parameter %s", parameter)
+	require.Failf(t, "missing function constant", "expected function constant with parameter %s", parameter)
 }
 
 func TestCompileErrors(t *testing.T) {
@@ -1568,20 +1568,22 @@ func TestCompileErrors(t *testing.T) {
 		"print(str(1 < \"a\"))\n":             token.NotComparable,
 		"z += 1\n":                            token.UndefinedName,
 		// control flow
-		"x: int = 1\nif x:\n    pass\n":        token.TypeMismatch,
-		"for i in 5:\n    pass\n":              token.NotIterable,
-		"break\n":                              token.SyntaxError,
-		"continue\n":                           token.SyntaxError,
-		"for i in range(1.5):\n    pass\n":     token.TypeMismatch,
-		"for i in range():\n    pass\n":        token.ArityMismatch,
-		"for i in range(0, 9, 0):\n    pass\n": token.SyntaxError,
-		"x: int = 1 if True else \"a\"\n":      token.TypeMismatch,
+		"x: int = 1\nif x:\n    pass\n":                           token.TypeMismatch,
+		"for i in 5:\n    pass\n":                                 token.NotIterable,
+		"break\n":                                                 token.SyntaxError,
+		"continue\n":                                              token.SyntaxError,
+		"for i in range(1.5):\n    pass\n":                        token.TypeMismatch,
+		"for i in range():\n    pass\n":                           token.ArityMismatch,
+		"for i in range(0, 9, 0):\n    pass\n":                    token.SyntaxError,
+		"x: int = 1 if True else \"a\"\n":                         token.TypeMismatch,
+		"b: bool = False\nif b:\n    x: int = 1\nprint(str(x))\n": token.UseBeforeDefinition,
 		// functions
 		"return 1\n": token.SyntaxError,
 		"def f(x: int) -> int:\n    return \"x\"\n":              token.TypeMismatch,
 		"def f(x: int) -> int:\n    return x\nprint(f())\n":      token.ArityMismatch,
 		"def f(x: int) -> int:\n    return x\nprint(f(\"x\"))\n": token.TypeMismatch,
 		"def f(x: int) -> int:\n    pass\n":                      token.TypeMismatch,
+		"def f(x: int) -> int:\n    try:\n        if x == 0:\n            raise ValueError(\"bad\")\n        return 1\n    except ValueError:\n        pass\n": token.TypeMismatch,
 		// containers
 		"xs: list[int] = []\nprint(xs[\"0\"])\n":                        token.TypeMismatch,
 		"xs: list[int] = [1]\nxs[0] += 1\n":                             token.UnsupportedFeature,
@@ -1621,6 +1623,7 @@ func TestCompileErrors(t *testing.T) {
 		"n: int = 1\ndel n\nprint(str(n))\n": token.UseBeforeDefinition,
 		"assert 1\n":                         token.TypeMismatch,
 		"x: int = 1\nmatch x:\n    case 1 if 2:\n        pass\n":                                  token.TypeMismatch,
+		"v: int = 0\nmatch v:\n    case 1 as x:\n        pass\nprint(str(x))\n":                   token.UseBeforeDefinition,
 		"v: tuple[int, str] = (1, \"a\")\nmatch v:\n    case (x, _) | (_, x):\n        pass\n":    token.PatternError,
 		"v: tuple[int, str, int] = (1, \"a\", 2)\nmatch v:\n    case (a, *rest):\n        pass\n": token.TypeMismatch,
 		"s: str = \"a\"\nmatch s:\n    case 1:\n        pass\n":                                   token.PatternError,
@@ -1705,6 +1708,8 @@ func TestCompileVariadic(t *testing.T) {
 			"print(str(m(1, 2, 3, x=4)))\n",
 		"static tuple unpacks into fixed arity": "def p(a: int, b: int) -> int:\n    return a + b\n" +
 			"t: tuple[int, int] = (3, 4)\nprint(str(p(*t)))\n",
+		"exception keyword argument": "try:\n    raise ValueError(message=\"boom\")\nexcept ValueError as e:\n    print(e.message)\n",
+		"exception default argument": "try:\n    raise ValueError()\nexcept ValueError as e:\n    print(str(len(e.message)))\n",
 	}
 	want := map[string]string{
 		"args collects surplus positionals":     "6\n0\n",
@@ -1714,6 +1719,8 @@ func TestCompileVariadic(t *testing.T) {
 		"defaults with args":                    "6\n3\n5\n",
 		"args and kwargs together":              "4\n",
 		"static tuple unpacks into fixed arity": "7\n",
+		"exception keyword argument":            "boom\n",
+		"exception default argument":            "0\n",
 	}
 	for name, src := range cases {
 		t.Run(name, func(t *testing.T) {

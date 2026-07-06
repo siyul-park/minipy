@@ -68,47 +68,6 @@ type function struct {
 	mod           *moduleInfo
 }
 
-func newFunction(name string) *function {
-	return &function{
-		name:       name,
-		paramIndex: map[string]int{},
-		locals:     map[string]*local{},
-		children:   map[string]*function{},
-		captures:   map[string]*capture{},
-		globals:    map[string]bool{},
-		nonlocal:   map[string]bool{},
-	}
-}
-
-func (f *function) addParam(p parameter) {
-	if f.paramIndex == nil {
-		f.paramIndex = map[string]int{}
-	}
-	f.paramIndex[p.name] = len(f.params)
-	f.params = append(f.params, p)
-}
-
-func (f *function) setParams(params []parameter) {
-	f.params = params
-	f.paramIndex = make(map[string]int, len(params))
-	for i, p := range params {
-		f.paramIndex[p.name] = i
-	}
-}
-
-func (f *function) paramPosition(name string) (int, bool) {
-	if f.paramIndex != nil {
-		i, ok := f.paramIndex[name]
-		return i, ok
-	}
-	for i, p := range f.params {
-		if p.name == name {
-			return i, true
-		}
-	}
-	return 0, false
-}
-
 // specialization is one monomorphic instantiation of a specializable function:
 // a clone whose parameters are bound to a concrete argument tuple, with its own
 // per-node type table so the same body lowers differently per instantiation.
@@ -153,6 +112,18 @@ type capture struct {
 	boxed bool
 }
 
+type initState struct {
+	locals  map[string]bool
+	globals map[string]bool
+}
+
+type resolvedName struct {
+	key    string
+	module string
+	native module.Symbol
+	kind   string
+}
+
 // checker resolves names and types for a module, producing a per-expression
 // type table and a global symbol table consumed by the compiler.
 type checker struct {
@@ -190,6 +161,22 @@ type checker struct {
 	attrNative map[*ast.Attribute]module.Symbol
 }
 
+// maxSpecializations caps monomorphic instantiations per function; past it,
+// calls fall back to the single union/Any-typed body.
+const maxSpecializations = 8
+
+func newFunction(name string) *function {
+	return &function{
+		name:       name,
+		paramIndex: map[string]int{},
+		locals:     map[string]*local{},
+		children:   map[string]*function{},
+		captures:   map[string]*capture{},
+		globals:    map[string]bool{},
+		nonlocal:   map[string]bool{},
+	}
+}
+
 func newChecker(loaders ...*loader) *checker {
 	var ld *loader
 	if len(loaders) > 0 {
@@ -222,9 +209,34 @@ func newChecker(loaders ...*loader) *checker {
 	return c
 }
 
-// maxSpecializations caps monomorphic instantiations per function; past it,
-// calls fall back to the single union/Any-typed body.
-const maxSpecializations = 8
+func (f *function) addParam(p parameter) {
+	if f.paramIndex == nil {
+		f.paramIndex = map[string]int{}
+	}
+	f.paramIndex[p.name] = len(f.params)
+	f.params = append(f.params, p)
+}
+
+func (f *function) setParams(params []parameter) {
+	f.params = params
+	f.paramIndex = make(map[string]int, len(params))
+	for i, p := range params {
+		f.paramIndex[p.name] = i
+	}
+}
+
+func (f *function) paramPosition(name string) (int, bool) {
+	if f.paramIndex != nil {
+		i, ok := f.paramIndex[name]
+		return i, ok
+	}
+	for i, p := range f.params {
+		if p.name == name {
+			return i, true
+		}
+	}
+	return 0, false
+}
 
 // check walks every top-level statement, accumulating diagnostics.
 func (c *checker) checkProgram(entry *moduleInfo) {
@@ -370,13 +382,6 @@ func moduleKey(module, symbol string) string {
 		return symbol
 	}
 	return module + "." + symbol
-}
-
-type resolvedName struct {
-	key    string
-	module string
-	native module.Symbol
-	kind   string
 }
 
 func (c *checker) resolveName(name string) resolvedName {
@@ -839,7 +844,7 @@ func (c *checker) localBindingExists(name string) bool {
 }
 
 func (c *checker) tryStmt(n *ast.Try) {
-	locals, globals := c.snapshotInits()
+	state := c.snapshotInits()
 	c.checkBlock(n.Body)
 	for _, h := range n.Handlers {
 		if h.Star {
@@ -854,7 +859,7 @@ func (c *checker) tryStmt(n *ast.Try) {
 		c.excepts--
 	}
 	c.checkBlock(n.Orelse)
-	c.restoreInits(locals, globals)
+	c.restoreInits(state)
 	c.checkBlock(n.Finalbody)
 }
 
@@ -933,7 +938,7 @@ func (c *checker) withStmt(n *ast.With) {
 	c.checkBlock(n.Body)
 }
 
-func (c *checker) snapshotInits() (map[string]bool, map[string]bool) {
+func (c *checker) snapshotInits() initState {
 	locals := map[string]bool{}
 	if c.current != nil {
 		for name, l := range c.current.locals {
@@ -944,17 +949,28 @@ func (c *checker) snapshotInits() (map[string]bool, map[string]bool) {
 	for name, g := range c.globals {
 		globals[name] = g.init
 	}
-	return locals, globals
+	return initState{locals: locals, globals: globals}
 }
 
-func (c *checker) restoreInits(locals, globals map[string]bool) {
+func (c *checker) restoreInits(state initState) {
 	if c.current != nil {
 		for name, l := range c.current.locals {
-			l.init = locals[name]
+			l.init = state.locals[name]
 		}
 	}
 	for name, g := range c.globals {
-		g.init = globals[name]
+		g.init = state.globals[name]
+	}
+}
+
+func (c *checker) mergeInits(left, right initState) {
+	if c.current != nil {
+		for name, l := range c.current.locals {
+			l.init = left.locals[name] && right.locals[name]
+		}
+	}
+	for name, g := range c.globals {
+		g.init = left.globals[name] && right.globals[name]
 	}
 }
 
@@ -1039,13 +1055,16 @@ func (c *checker) assertStmt(n *ast.Assert) {
 // guard, and body.
 func (c *checker) matchStmt(n *ast.Match) {
 	subjT := c.expr(n.Subject)
+	state := c.snapshotInits()
 	for _, cs := range n.Cases {
+		c.restoreInits(state)
 		c.checkPattern(cs.Pattern, subjT)
 		if cs.Guard != nil {
 			c.condition(cs.Guard)
 		}
 		c.checkBlock(cs.Body)
 	}
+	c.restoreInits(state)
 }
 
 // bindCapture declares a pattern capture variable in the current scope and marks
@@ -1229,8 +1248,13 @@ func (c *checker) ifStmt(n *ast.If) {
 		return
 	}
 	pos, neg := c.narrowings(n.Cond)
+	state := c.snapshotInits()
 	c.withNarrow(pos, func() { c.checkBlock(n.Body) })
+	left := c.snapshotInits()
+	c.restoreInits(state)
 	c.withNarrow(neg, func() { c.checkBlock(n.Orelse) })
+	right := c.snapshotInits()
+	c.mergeInits(left, right)
 }
 
 func (c *checker) whileStmt(n *ast.While) {
@@ -2585,7 +2609,7 @@ func blockReturns(body []ast.Stmt) bool {
 			if blockReturns(n.Finalbody) {
 				return true
 			}
-			if blockReturns(n.Body) {
+			if len(n.Handlers) == 0 && blockReturns(n.Body) {
 				return true
 			}
 			if len(n.Handlers) > 0 && blockTerminates(n.Body) {
@@ -3773,7 +3797,7 @@ func constructorParams(cls *class) ([]types.Type, int) {
 
 func constructorParamInfos(cls *class) []parameter {
 	if isException(cls) {
-		return []parameter{{name: "message", typ: types.Str}}
+		return []parameter{{name: "message", typ: types.Str, defaultValue: &ast.StrLit{}}}
 	}
 	if init := cls.methods["__init__"]; init != nil {
 		if len(init.params) == 0 {
@@ -4004,33 +4028,4 @@ func (c *checker) methodCallType(n *ast.CallExpr, attr *ast.Attribute) types.Typ
 	}
 	c.errs.Add(n.Pos(), token.UnsupportedFeature, "method %s on %s is not supported", attr.Name, receiver)
 	return types.Invalid
-}
-
-// isConstIntLiteral reports whether e is an int literal, optionally with a unary
-// +/- sign; this catches range(..., 0) statically when possible.
-func isConstIntLiteral(e ast.Expr) bool {
-	switch x := e.(type) {
-	case *ast.IntLit:
-		return true
-	case *ast.UnaryExpr:
-		if x.Op == token.MINUS || x.Op == token.PLUS {
-			_, ok := x.X.(*ast.IntLit)
-			return ok
-		}
-	}
-	return false
-}
-
-// constIntValue evaluates a constant int literal accepted by isConstIntLiteral.
-func constIntValue(e ast.Expr) int64 {
-	switch x := e.(type) {
-	case *ast.IntLit:
-		return x.Value
-	case *ast.UnaryExpr:
-		if x.Op == token.MINUS {
-			return -constIntValue(x.X)
-		}
-		return constIntValue(x.X)
-	}
-	return 0
 }

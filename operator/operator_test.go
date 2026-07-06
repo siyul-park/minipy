@@ -7,6 +7,8 @@ import (
 	"github.com/siyul-park/minipy/operator"
 	"github.com/siyul-park/minipy/token"
 	"github.com/siyul-park/minipy/types"
+
+	"github.com/stretchr/testify/require"
 )
 
 // stubChecker satisfies module.Checker for the type-level rules, counting errors.
@@ -41,12 +43,8 @@ func TestBinaryType(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			c := &stubChecker{}
 			got := operator.BinaryType(c, tt.left, tt.op, tt.right, token.Pos{})
-			if !types.Equal(got, tt.want) {
-				t.Fatalf("got %s, want %s", got, tt.want)
-			}
-			if (c.errs > 0) != tt.wantErr {
-				t.Fatalf("errs=%d, wantErr=%v", c.errs, tt.wantErr)
-			}
+			require.Truef(t, types.Equal(got, tt.want), "got %s, want %s", got, tt.want)
+			require.Equal(t, tt.wantErr, c.errs > 0)
 		})
 	}
 }
@@ -67,52 +65,45 @@ func TestComparable(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			c := &stubChecker{}
 			operator.Comparable(c, tt.op, tt.left, tt.right, token.Pos{})
-			if (c.errs > 0) != tt.wantErr {
-				t.Fatalf("errs=%d, wantErr=%v", c.errs, tt.wantErr)
-			}
+			require.Equal(t, tt.wantErr, c.errs > 0)
 		})
 	}
 }
 
 func TestContainsType(t *testing.T) {
-	if !operator.ContainsType(types.Int, types.NewList(types.Int)) {
-		t.Error("int in list[int] should be allowed")
-	}
-	if operator.ContainsType(types.Int, types.Int) {
-		t.Error("int is not a container")
-	}
+	require.True(t, operator.ContainsType(types.Int, types.NewList(types.Int)))
+	require.False(t, operator.ContainsType(types.Int, types.Int))
 }
 
 func TestOperatorNames(t *testing.T) {
-	if name, ok := operator.BinaryName(token.PLUS); !ok || name != "add" {
-		t.Errorf("BinaryName(PLUS) = %q, %v", name, ok)
-	}
-	if name, ok := operator.CompareName(token.EQ); !ok || name != "eq" {
-		t.Errorf("CompareName(EQ) = %q, %v", name, ok)
-	}
-	if name, ok := operator.UnaryName(token.MINUS); !ok || name != "neg" {
-		t.Errorf("UnaryName(MINUS) = %q, %v", name, ok)
-	}
-	if operator.ContainsName() != "contains" || operator.NotName() != "not_" {
-		t.Error("contains/not_ name mismatch")
-	}
-	if _, ok := operator.BinaryName(token.EQ); ok {
-		t.Error("EQ is not a binary operator name")
-	}
+	name, ok := operator.BinaryName(token.PLUS)
+	require.True(t, ok)
+	require.Equal(t, "add", name)
+
+	name, ok = operator.CompareName(token.EQ)
+	require.True(t, ok)
+	require.Equal(t, "eq", name)
+
+	name, ok = operator.UnaryName(token.MINUS)
+	require.True(t, ok)
+	require.Equal(t, "neg", name)
+
+	require.Equal(t, "contains", operator.ContainsName())
+	require.Equal(t, "not_", operator.NotName())
+
+	_, ok = operator.BinaryName(token.EQ)
+	require.False(t, ok)
 }
 
 func TestNewModuleSymbols(t *testing.T) {
 	m := operator.New()
-	if m.Name() != "operator" {
-		t.Fatalf("module name = %q", m.Name())
-	}
+	require.Equal(t, "operator", m.Name())
 	want := []string{"add", "sub", "mul", "truediv", "floordiv", "mod", "pow",
 		"and_", "or_", "xor", "lshift", "rshift",
 		"eq", "ne", "lt", "le", "gt", "ge",
 		"neg", "pos", "invert", "contains", "not_", "abs", "truth"}
 	for _, name := range want {
-		if _, ok := m.Symbol(name); !ok {
-			t.Errorf("missing symbol %q", name)
-		}
+		_, ok := m.Symbol(name)
+		require.Truef(t, ok, "missing symbol %q", name)
 	}
 }

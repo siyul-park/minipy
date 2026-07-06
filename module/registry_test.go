@@ -5,6 +5,8 @@ import (
 	"testing"
 
 	"github.com/siyul-park/minipy/module"
+
+	"github.com/stretchr/testify/require"
 )
 
 type fakeRuntime struct{}
@@ -25,54 +27,40 @@ func TestRegistry(t *testing.T) {
 	reg := module.NewRegistry([]module.Module{a, b}, module.WithFallback("a"))
 
 	t.Run("Module and Has", func(t *testing.T) {
-		if _, ok := reg.Module("a"); !ok {
-			t.Fatal("module a missing")
-		}
-		if !reg.Has("b") || reg.Has("c") {
-			t.Fatal("Has mismatch")
-		}
+		_, ok := reg.Module("a")
+		require.True(t, ok)
+		require.True(t, reg.Has("b"))
+		require.False(t, reg.Has("c"))
 	})
 
 	t.Run("Fallback", func(t *testing.T) {
-		if reg.FallbackName() != "a" {
-			t.Fatalf("fallback name = %q", reg.FallbackName())
-		}
+		require.Equal(t, "a", reg.FallbackName())
 		m, ok := reg.Fallback()
-		if !ok || m.Name() != "a" {
-			t.Fatal("fallback module mismatch")
-		}
+		require.True(t, ok)
+		require.Equal(t, "a", m.Name())
 	})
 
 	t.Run("Symbol and SymbolByKey", func(t *testing.T) {
-		if _, ok := reg.Symbol("a", "x"); !ok {
-			t.Fatal("a.x missing")
-		}
-		if _, ok := reg.SymbolByKey("b.z"); !ok {
-			t.Fatal("b.z missing")
-		}
-		if _, ok := reg.SymbolByKey("nodot"); ok {
-			t.Fatal("unqualified key should not resolve")
-		}
+		_, ok := reg.Symbol("a", "x")
+		require.True(t, ok)
+		_, ok = reg.SymbolByKey("b.z")
+		require.True(t, ok)
+		_, ok = reg.SymbolByKey("nodot")
+		require.False(t, ok)
 	})
 
 	t.Run("FallbackSymbol", func(t *testing.T) {
-		if _, ok := reg.FallbackSymbol("y"); !ok {
-			t.Fatal("fallback symbol y missing")
-		}
-		if _, ok := reg.FallbackSymbol("z"); ok {
-			t.Fatal("z is not in the fallback module")
-		}
+		_, ok := reg.FallbackSymbol("y")
+		require.True(t, ok)
+		_, ok = reg.FallbackSymbol("z")
+		require.False(t, ok)
 	})
 
 	t.Run("Values default to intrinsics", func(t *testing.T) {
 		vals := reg.Values(fakeRuntime{})
 		v, ok := vals["a"]["x"]
-		if !ok {
-			t.Fatal("a.x has no value")
-		}
-		if _, ok := v.(module.Intrinsic); !ok {
-			t.Fatalf("a.x value = %T, want module.Intrinsic", v)
-		}
+		require.True(t, ok)
+		require.IsType(t, module.Intrinsic{}, v)
 	})
 }
 
@@ -81,17 +69,13 @@ func TestNewNative(t *testing.T) {
 
 	t.Run("Names deduplicated in order", func(t *testing.T) {
 		names := m.Names()
-		if len(names) != 2 || names[0] != "a" || names[1] != "b" {
-			t.Fatalf("names = %v, want [a b]", names)
-		}
+		require.Equal(t, []string{"a", "b"}, names)
 	})
 
 	t.Run("Symbol lookup", func(t *testing.T) {
-		if _, ok := m.Symbol("a"); !ok {
-			t.Fatal("a missing")
-		}
-		if _, ok := m.Symbol("z"); ok {
-			t.Fatal("z should be absent")
-		}
+		_, ok := m.Symbol("a")
+		require.True(t, ok)
+		_, ok = m.Symbol("z")
+		require.False(t, ok)
 	})
 }

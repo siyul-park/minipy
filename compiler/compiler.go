@@ -33,19 +33,6 @@ import (
 // Option configures a Compile call.
 type Option func(*config)
 
-// config holds compile-time options.
-type config struct {
-	out   io.Writer
-	level optimize.Level
-	paths []searchEntry
-	reg   *module.Registry
-}
-
-var (
-	errListIndexValue  = errors.New("list.index value not found")
-	errListSliceLength = errors.New("list slice assignment length mismatch")
-)
-
 // Compiler turns minipy source into a runnable minivm program. It mirrors the
 // package-level Compile convenience function while keeping options reusable for
 // one source stream.
@@ -81,6 +68,14 @@ type Compiler struct {
 	boxed      map[*local]bool
 }
 
+// config holds compile-time options.
+type config struct {
+	out   io.Writer
+	level optimize.Level
+	paths []searchEntry
+	reg   *module.Registry
+}
+
 // loopLabels are the branch targets for the loop currently being lowered: cont
 // for `continue` (re-test for while, the increment step for range-for) and brk
 // for `break` (past any else block).
@@ -100,6 +95,39 @@ type target struct {
 	br    func(instr.Label)
 	brIf  func(instr.Label)
 	try   func(instr.Label, instr.Label, instr.Label, int)
+}
+
+// formatSpec is a parsed Python mini format spec:
+// [[fill]align][sign]['0'][width]['.'precision][type].
+type formatSpec struct {
+	fill      byte
+	align     byte // '<' '>' '^' '=' or 0
+	sign      byte // '+' '-' ' ' or 0
+	zero      bool
+	width     int
+	precision int  // -1 when omitted
+	typ       byte // 'd' 'f' 's' ... or 0
+}
+
+const omittedSliceBound = math.MinInt64
+
+var (
+	errListIndexValue  = errors.New("list.index value not found")
+	errListSliceLength = errors.New("list slice assignment length mismatch")
+)
+
+// trapClasses maps the VM trap codes minipy classifies into dedicated
+// exception types, with the fixed message each bare sentinel error in
+// minivm's interp package renders as. Anything else (host-function errors,
+// future trap kinds) falls through to excInstance for its dynamic message.
+var trapClasses = []struct {
+	code    vmtypes.ErrorCode
+	class   string
+	message string
+}{
+	{interp.TrapCodeDivideByZero, "ZeroDivisionError", "divide by zero"},
+	{interp.TrapCodeIndexOutOfRange, "IndexError", "index out of range"},
+	{interp.TrapCodeTypeMismatch, "TypeError", "type mismatch"},
 }
 
 func mainTarget(b *program.Builder) target {
@@ -166,6 +194,59 @@ func New(r io.Reader, opts ...Option) *Compiler {
 		src = []byte{}
 	}
 	return &Compiler{src: src, err: err, config: config}
+}
+
+// Compile reads minipy source from r, type-checks it, and lowers it into a
+// minivm program. On any lexical, syntactic, or semantic error it returns a
+// token.ErrorList describing every diagnostic found and a nil program.
+func Compile(r io.Reader, opts ...Option) (*program.Program, error) {
+	return New(r, opts...).Compile()
+}
+
+// Compile parses, type-checks, lowers, optimizes, and verifies c's source.
+func (c *Compiler) Compile() (*program.Program, error) {
+	if c.err != nil {
+		return nil, fmt.Errorf("read source: %w", c.err)
+	}
+	mod, parseErr := parser.Parse(bytes.NewReader(c.src))
+
+	ld := newLoader(c.config.reg, c.config.paths)
+	entry, _ := ld.loadEntry(mod)
+	chk := newChecker(ld)
+	chk.checkProgram(entry)
+
+	var errs token.ErrorList
+	if pl, ok := parseErr.(token.ErrorList); ok {
+		errs = append(errs, pl...)
+	}
+	errs = append(errs, ld.errs...)
+	errs = append(errs, chk.errs...)
+	if err := errs.Err(); err != nil {
+		return nil, err
+	}
+
+	native := newNativeRuntime(c.config.reg, c.config.out)
+	b := program.NewBuilder()
+	c.init(b, chk, native)
+	c.module(entry)
+
+	prog, err := b.Build()
+	if err != nil {
+		return nil, fmt.Errorf("assemble program: %w", err)
+	}
+
+	typesPool := append([]vmtypes.Type(nil), prog.Types...)
+	handlers := append([]instr.Handler(nil), prog.Handlers...)
+	optimized, err := optimize.NewOptimizer(c.config.level).Optimize(prog)
+	if err != nil {
+		return nil, fmt.Errorf("optimize program: %w", err)
+	}
+	optimized.Types = typesPool
+	optimized.Handlers = handlers
+	if err := program.Verify(optimized); err != nil {
+		return nil, fmt.Errorf("verify program: %w", err)
+	}
+	return optimized, nil
 }
 
 func defaultConfig() config {
@@ -246,59 +327,6 @@ func (c *Compiler) tmp() int {
 	idx := c.next
 	c.next++
 	return idx
-}
-
-// Compile reads minipy source from r, type-checks it, and lowers it into a
-// minivm program. On any lexical, syntactic, or semantic error it returns a
-// token.ErrorList describing every diagnostic found and a nil program.
-func Compile(r io.Reader, opts ...Option) (*program.Program, error) {
-	return New(r, opts...).Compile()
-}
-
-// Compile parses, type-checks, lowers, optimizes, and verifies c's source.
-func (c *Compiler) Compile() (*program.Program, error) {
-	if c.err != nil {
-		return nil, fmt.Errorf("read source: %w", c.err)
-	}
-	mod, parseErr := parser.Parse(bytes.NewReader(c.src))
-
-	ld := newLoader(c.config.reg, c.config.paths)
-	entry, _ := ld.loadEntry(mod)
-	chk := newChecker(ld)
-	chk.checkProgram(entry)
-
-	var errs token.ErrorList
-	if pl, ok := parseErr.(token.ErrorList); ok {
-		errs = append(errs, pl...)
-	}
-	errs = append(errs, ld.errs...)
-	errs = append(errs, chk.errs...)
-	if err := errs.Err(); err != nil {
-		return nil, err
-	}
-
-	native := newNativeRuntime(c.config.reg, c.config.out)
-	b := program.NewBuilder()
-	c.init(b, chk, native)
-	c.module(entry)
-
-	prog, err := b.Build()
-	if err != nil {
-		return nil, fmt.Errorf("assemble program: %w", err)
-	}
-
-	typesPool := append([]vmtypes.Type(nil), prog.Types...)
-	handlers := append([]instr.Handler(nil), prog.Handlers...)
-	optimized, err := optimize.NewOptimizer(c.config.level).Optimize(prog)
-	if err != nil {
-		return nil, fmt.Errorf("optimize program: %w", err)
-	}
-	optimized.Types = typesPool
-	optimized.Handlers = handlers
-	if err := program.Verify(optimized); err != nil {
-		return nil, fmt.Errorf("verify program: %w", err)
-	}
-	return optimized, nil
 }
 
 // module lowers every top-level statement. The entry function terminates by
@@ -680,20 +708,6 @@ func (c *Compiler) emitCaughtInstance(errSlot, instSlot int) {
 	c.emit(instr.GLOBAL_SET, uint64(instSlot))
 }
 
-// trapClasses maps the VM trap codes minipy classifies into dedicated
-// exception types, with the fixed message each bare sentinel error in
-// minivm's interp package renders as. Anything else (host-function errors,
-// future trap kinds) falls through to excInstance for its dynamic message.
-var trapClasses = []struct {
-	code    vmtypes.ErrorCode
-	class   string
-	message string
-}{
-	{interp.TrapCodeDivideByZero, "ZeroDivisionError", "divide by zero"},
-	{interp.TrapCodeIndexOutOfRange, "IndexError", "index out of range"},
-	{interp.TrapCodeTypeMismatch, "TypeError", "type mismatch"},
-}
-
 // emitTrapInstance lowers a caught VM trap (a null-payload types.Error) into
 // an exception instance. It reads the trap's numeric code natively via
 // ERROR_CODE and matches it against trapClasses entirely in bytecode,
@@ -790,7 +804,7 @@ func (c *Compiler) emitRaise(n *ast.Raise) {
 	if call, ok := n.Exc.(*ast.CallExpr); ok {
 		if name, ok := call.Fn.(*ast.Name); ok {
 			if cls := c.classes[c.symbol(name.Name)]; cls != nil && isException(cls) {
-				c.emitExceptionInstance(cls, call.Args)
+				c.emitExceptionInstance(cls, c.checkedArgs(call))
 				c.emit(instr.I32_CONST, uint64(vmtypes.ErrorCodeNone))
 				c.emit(instr.ERROR_NEW)
 				c.emit(instr.THROW)
@@ -798,7 +812,7 @@ func (c *Compiler) emitRaise(n *ast.Raise) {
 			}
 		} else if attr, ok := call.Fn.(*ast.Attribute); ok {
 			if cls := c.classes[c.attrSym[attr]]; cls != nil && isException(cls) {
-				c.emitExceptionInstance(cls, call.Args)
+				c.emitExceptionInstance(cls, c.checkedArgs(call))
 				c.emit(instr.I32_CONST, uint64(vmtypes.ErrorCodeNone))
 				c.emit(instr.ERROR_NEW)
 				c.emit(instr.THROW)
@@ -2446,15 +2460,12 @@ func (c *Compiler) functionCallArgs(x *ast.CallExpr, info *function) []ast.Expr 
 
 func (c *Compiler) construct(x *ast.CallExpr, cls *class) {
 	if isException(cls) {
-		c.emitExceptionInstance(cls, x.Args)
+		c.emitExceptionInstance(cls, c.checkedArgs(x))
 		return
 	}
 	c.emit(instr.STRUCT_NEW_DEFAULT, c.typeIndex(cls.typ))
 	c.applyFieldDefaults(cls)
-	args := c.callArgs[x]
-	if args == nil {
-		args = x.Args
-	}
+	args := c.checkedArgs(x)
 	if init := cls.methods["__init__"]; init != nil {
 		c.emit(instr.DUP)
 		for _, arg := range args {
@@ -2471,6 +2482,13 @@ func (c *Compiler) construct(x *ast.CallExpr, cls *class) {
 		c.expr(arg)
 		c.emit(instr.STRUCT_SET)
 	}
+}
+
+func (c *Compiler) checkedArgs(x *ast.CallExpr) []ast.Expr {
+	if args, ok := c.callArgs[x]; ok {
+		return args
+	}
+	return x.Args
 }
 
 func (c *Compiler) applyFieldDefaults(cls *class) {
@@ -3268,18 +3286,6 @@ func (c *Compiler) exc() *interp.HostFunction {
 	)
 }
 
-// formatSpec is a parsed Python mini format spec:
-// [[fill]align][sign]['0'][width]['.'precision][type].
-type formatSpec struct {
-	fill      byte
-	align     byte // '<' '>' '^' '=' or 0
-	sign      byte // '+' '-' ' ' or 0
-	zero      bool
-	width     int
-	precision int  // -1 when omitted
-	typ       byte // 'd' 'f' 's' … or 0
-}
-
 func parseFormatSpec(spec string) formatSpec {
 	f := formatSpec{fill: ' ', precision: -1}
 	i := 0
@@ -3557,8 +3563,6 @@ func pyStrRepr(s string, ascii bool) string {
 	b.WriteByte(quote)
 	return b.String()
 }
-
-const omittedSliceBound = math.MinInt64
 
 func normalizeSliceRange(length int, rawStart, rawStop, rawStep int64) (int, int, error) {
 	step := rawStep

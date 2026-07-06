@@ -47,6 +47,24 @@ var compoundStmt = map[token.Type]string{
 
 var simpleKeywordStmt = map[token.Type]string{}
 
+// binPrec maps each binary operator to its precedence; higher binds tighter.
+// It covers bitwise_or (1) down to term (6); comparison sits just above and
+// unary/power just below (parseFactor) per docs/spec/03-grammar.md.
+var binPrec = map[token.Type]int{
+	token.PIPE:        1,
+	token.CARET:       2,
+	token.AMP:         3,
+	token.LSHIFT:      4,
+	token.RSHIFT:      4,
+	token.PLUS:        5,
+	token.MINUS:       5,
+	token.STAR:        6,
+	token.SLASH:       6,
+	token.DOUBLESLASH: 6,
+	token.PERCENT:     6,
+	token.AT:          6,
+}
+
 // New returns a Parser over source read from r. No input is read until Parse
 // pulls tokens from the lexer.
 func New(r io.Reader) *Parser {
@@ -1469,24 +1487,6 @@ func (p *Parser) parseComparison() ast.Expr {
 			return &ast.Compare{Base: ast.Base{Position: x.Pos()}, X: x, Ops: ops, Comparators: rest}
 		}
 	}
-}
-
-// binPrec maps each binary operator to its precedence; higher binds tighter.
-// It covers bitwise_or (1) down to term (6); comparison sits just above and
-// unary/power just below (parseFactor) per docs/spec/03-grammar.md.
-var binPrec = map[token.Type]int{
-	token.PIPE:        1,
-	token.CARET:       2,
-	token.AMP:         3,
-	token.LSHIFT:      4,
-	token.RSHIFT:      4,
-	token.PLUS:        5,
-	token.MINUS:       5,
-	token.STAR:        6,
-	token.SLASH:       6,
-	token.DOUBLESLASH: 6,
-	token.PERCENT:     6,
-	token.AT:          6,
 }
 
 // parseBinary parses left-associative binary operators by precedence climbing.
