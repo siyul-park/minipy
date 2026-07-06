@@ -32,6 +32,10 @@ The `operator` module is also native. Syntax operators and `operator.*` calls us
 the same operator implementation, so the documented operator behavior has one
 source of truth.
 
+The `typing` module is native and annotation-only. It exposes static symbols for
+type resolution and alias compatibility, but no first-class runtime typing
+objects.
+
 ## Native Module Contract
 
 A native module symbol carries:
@@ -170,6 +174,20 @@ The syntax forms `+`, `-`, `*`, `/`, `//`, `%`, `**`, bitwise operators, shifts,
 comparisons, membership, unary operators, and logical truth helpers delegate to
 these same type rules and emitters.
 
+## `typing`
+
+The native `typing` module exports annotation-only names:
+
+```text
+Any Annotated Callable Iterator Literal Optional TypeAlias Union
+```
+
+These names may be imported with `import typing` or `from typing import ...` and
+used in annotations. `Annotated[T, ...]` erases to `T`; `Literal[...]` validates
+statically known scalar values and erases to the scalar base type; `TypeAlias`
+marks legacy annotated alias declarations. Using these names as runtime values or
+calling them is rejected before lowering.
+
 ## Native Call Restrictions
 
 Native calls do not support keyword arguments, starred arguments, or dynamic
@@ -180,12 +198,14 @@ Native modules may be imported explicitly:
 
 ```python
 import operator
+import typing
 from builtins import len
+from typing import Literal
 ```
 
 The imported module object is still compile-time-only; it may be used as an
-attribute receiver (`operator.add(1, 2)`) but not stored or passed as a runtime
-value.
+attribute receiver (`operator.add(1, 2)`, `typing.Literal[1]` in an annotation)
+but not stored or passed as a runtime value.
 
 ## Related Docs
 

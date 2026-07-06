@@ -216,6 +216,72 @@ func TestCheckUnions(t *testing.T) {
 	})
 }
 
+func TestTypingAnnotations(t *testing.T) {
+	t.Run("string forward references resolve without future import", func(t *testing.T) {
+		errs := checkOnly(t, "class Node:\n    next: \"Node | None\"\nxs: list[\"Node\"] = []\n")
+		require.Empty(t, errs)
+	})
+
+	t.Run("Annotated erases to base type", func(t *testing.T) {
+		src := "from typing import Annotated\nx: Annotated[int, \"meta\"] = 2\nprint(str(x + 1))\n"
+		require.Equal(t, "3\n", run(t, src))
+	})
+
+	t.Run("Literal accepts exact literals and erases to base type", func(t *testing.T) {
+		src := "from typing import Literal\nx: Literal[1] = 1\ny: int = x\nprint(str(y + 1))\n"
+		require.Equal(t, "2\n", run(t, src))
+	})
+
+	t.Run("Literal supports multiple string values", func(t *testing.T) {
+		errs := checkOnly(t, "from typing import Literal\nx: Literal[\"a\", \"b\"] = \"b\"\n")
+		require.Empty(t, errs)
+	})
+
+	t.Run("Literal works inside union hints", func(t *testing.T) {
+		errs := checkOnly(t, "from typing import Literal\nx: Literal[1] | str = 1\ny: Literal[1] | str = \"ok\"\n")
+		require.Empty(t, errs)
+	})
+
+	t.Run("typing module attribute annotations resolve", func(t *testing.T) {
+		errs := checkOnly(t, "import typing\nx: typing.Literal[True] = True\ny: typing.Optional[int] = None\n")
+		require.Empty(t, errs)
+	})
+
+	t.Run("TypeAlias annotated assignment declares alias", func(t *testing.T) {
+		src := "from typing import TypeAlias\nVec: TypeAlias = list[int]\nxs: Vec = []\nprint(str(len(xs)))\n"
+		require.Equal(t, "0\n", run(t, src))
+	})
+
+	t.Run("Literal rejects nonmatching literal", func(t *testing.T) {
+		errs := checkOnly(t, "from typing import Literal\nx: Literal[1] = 2\n")
+		require.NotEmpty(t, errs)
+		require.Equal(t, token.TypeMismatch, errs[0].Code)
+	})
+
+	t.Run("typing symbols are annotation-only", func(t *testing.T) {
+		_, err := Compile(strings.NewReader("from typing import Literal\nprint(Literal)\n"), WithOutput(&bytes.Buffer{}))
+		require.Error(t, err)
+		code(t, err, token.UnsupportedFeature)
+	})
+
+	t.Run("invalid typing annotations diagnose precisely", func(t *testing.T) {
+		cases := map[string]token.Code{
+			"x: \"Missing\" = None\n":                               token.UnsupportedType,
+			"from typing import Literal\nx: Literal[[1]] = [1]\n":   token.UnsupportedType,
+			"from typing import Annotated\nx: Annotated[int] = 1\n": token.UnsupportedType,
+			"from typing import TypeAlias\nVec: TypeAlias = 1\n":    token.UnsupportedType,
+			"from typing import TypeAlias\nVec: TypeAlias\n":        token.MissingAnnotation,
+			"@dataclass\nclass Node:\n    next: \"Node\"\n":         token.UnsupportedType,
+			"x: Literal[1] = 1\n":                                   token.UnsupportedType,
+		}
+		for src, want := range cases {
+			errs := checkOnly(t, src)
+			require.NotEmptyf(t, errs, "src=%q", src)
+			require.Equalf(t, want, errs[0].Code, "src=%q", src)
+		}
+	})
+}
+
 func TestCompile(t *testing.T) {
 	t.Run("compiler object API and optimization option", func(t *testing.T) {
 		var buf bytes.Buffer

@@ -1214,8 +1214,13 @@ func (p *Parser) parseTypeAtom() ast.Expr {
 			node = &ast.Attribute{Base: ast.Base{Position: t.Pos}, X: node, Name: part.Literal}
 		}
 		if p.at(token.LBRACKET) {
-			if name == "Callable" {
-				return p.parseCallableType(node.(*ast.Name))
+			switch typeBaseName(node) {
+			case "Annotated":
+				return p.parseAnnotatedType(node)
+			case "Literal":
+				return p.parseLiteralType(node)
+			case "Callable":
+				return p.parseCallableType(node)
 			}
 			p.advance()
 			var args []ast.Expr
@@ -1241,7 +1246,61 @@ func (p *Parser) parseTypeAtom() ast.Expr {
 	return &ast.Name{Base: ast.Base{Position: t.Pos}, Name: ""}
 }
 
-func (p *Parser) parseCallableType(base *ast.Name) ast.Expr {
+func typeBaseName(e ast.Expr) string {
+	switch x := e.(type) {
+	case *ast.Name:
+		return x.Name
+	case *ast.Attribute:
+		return x.Name
+	default:
+		return ""
+	}
+}
+
+func (p *Parser) parseAnnotatedType(base ast.Expr) ast.Expr {
+	pos := base.Pos()
+	p.expect(token.LBRACKET)
+	var args []ast.Expr
+	if !p.at(token.RBRACKET) && !p.at(token.EOF) {
+		args = append(args, p.parseType())
+		for p.at(token.COMMA) {
+			p.advance()
+			if p.at(token.RBRACKET) {
+				break
+			}
+			args = append(args, p.parseExpression())
+		}
+	}
+	p.expect(token.RBRACKET)
+	return typeSubscript(pos, base, args)
+}
+
+func (p *Parser) parseLiteralType(base ast.Expr) ast.Expr {
+	pos := base.Pos()
+	p.expect(token.LBRACKET)
+	var args []ast.Expr
+	for !p.at(token.RBRACKET) && !p.at(token.EOF) {
+		args = append(args, p.parseExpression())
+		if !p.at(token.COMMA) {
+			break
+		}
+		p.advance()
+	}
+	p.expect(token.RBRACKET)
+	return typeSubscript(pos, base, args)
+}
+
+func typeSubscript(pos token.Pos, base ast.Expr, args []ast.Expr) ast.Expr {
+	var index ast.Expr
+	if len(args) == 1 {
+		index = args[0]
+	} else {
+		index = &ast.TupleLit{Base: ast.Base{Position: pos}, Elems: args}
+	}
+	return &ast.Subscript{Base: ast.Base{Position: pos}, X: base, Index: index}
+}
+
+func (p *Parser) parseCallableType(base ast.Expr) ast.Expr {
 	pos := base.Pos()
 	p.expect(token.LBRACKET)
 	p.expect(token.LBRACKET)

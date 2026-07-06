@@ -59,6 +59,7 @@ type Compiler struct {
 	globals    map[string]*global
 	functions  map[string]*function
 	classes    map[string]*class
+	aliasDecls map[*ast.AnnAssign]bool
 	modules    map[string]*moduleInfo
 	mod        *moduleInfo
 	attrSym    map[*ast.Attribute]string
@@ -180,6 +181,7 @@ func (c *Compiler) init(b *program.Builder, check *checker, native *nativeRuntim
 	c.globals = check.globals
 	c.functions = check.functions
 	c.classes = check.classes
+	c.aliasDecls = check.aliasDecls
 	c.modules = check.modules
 	c.mod = check.mod
 	c.attrSym = check.attrSym
@@ -344,6 +346,9 @@ func (c *Compiler) truth(cond ast.Expr) (known bool, truth bool) {
 func (c *Compiler) stmt(s ast.Stmt) {
 	switch n := s.(type) {
 	case *ast.AnnAssign:
+		if c.aliasDecls[n] {
+			return
+		}
 		if n.Value != nil {
 			c.expr(n.Value)
 			c.set(n.Target.Name)

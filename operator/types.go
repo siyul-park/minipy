@@ -11,6 +11,8 @@ import (
 // (docs/spec/04-static-semantics.md). Mixed int/float and bool arithmetic are
 // rejected; `str + str` and list `+`/`*` are the only non-numeric cases.
 func BinaryType(c module.Checker, left types.Type, op token.Type, right types.Type, pos token.Pos) types.Type {
+	left = types.Erase(left)
+	right = types.Erase(right)
 	if left == types.Invalid || right == types.Invalid {
 		return types.Invalid
 	}
@@ -71,7 +73,7 @@ func mismatch(c module.Checker, op token.Type, left, right types.Type, pos token
 
 // UnaryType applies the unary operator typing rules for the operand expression.
 func UnaryType(c module.Checker, op token.Type, arg ast.Expr) types.Type {
-	t := c.Check(arg)
+	t := types.Erase(c.Check(arg))
 	switch op {
 	case token.MINUS, token.PLUS:
 		if t.IsNumeric() {
@@ -102,6 +104,8 @@ func UnaryType(c module.Checker, op token.Type, arg ast.Expr) types.Type {
 // Comparable checks a single comparison and reports an error for incompatible
 // operands. Identity (is/is not) and membership (in/not in) have their own rules.
 func Comparable(c module.Checker, op token.Type, left, right types.Type, pos token.Pos) {
+	left = types.Erase(left)
+	right = types.Erase(right)
 	if left == types.Invalid || right == types.Invalid {
 		return
 	}

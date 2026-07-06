@@ -162,6 +162,7 @@ type checker struct {
 	functions  map[string]*function
 	classes    map[string]*class
 	aliases    map[string]types.Type
+	aliasDecls map[*ast.AnnAssign]bool
 	lambdas    map[*ast.LambdaExpr]*function
 	order      []string
 	classOrder []string
@@ -203,6 +204,7 @@ func newChecker(loaders ...*loader) *checker {
 		functions:  map[string]*function{},
 		classes:    map[string]*class{},
 		aliases:    map[string]types.Type{},
+		aliasDecls: map[*ast.AnnAssign]bool{},
 		lambdas:    map[*ast.LambdaExpr]*function{},
 		narrowed:   map[string]types.Type{},
 		temps:      map[string]types.Type{},
@@ -1334,6 +1336,10 @@ func (c *checker) condition(e ast.Expr) {
 
 func (c *checker) annAssign(n *ast.AnnAssign) {
 	t := c.resolveType(n.Ann)
+	if types.Equal(t, types.TypeAlias) {
+		c.typeAliasAssign(n)
+		return
+	}
 	var g *global
 	var l *local
 	if c.current != nil {
@@ -1351,6 +1357,18 @@ func (c *checker) annAssign(n *ast.AnnAssign) {
 		} else {
 			g.init = true
 		}
+	}
+}
+
+func (c *checker) typeAliasAssign(n *ast.AnnAssign) {
+	c.aliasDecls[n] = true
+	if n.Value == nil {
+		c.errs.Add(n.Pos(), token.MissingAnnotation, "type alias %q needs a value", n.Target.Name)
+		return
+	}
+	t := c.resolveType(n.Value)
+	if t != types.Invalid {
+		c.aliases[c.key(n.Target.Name)] = t
 	}
 }
 
@@ -1958,6 +1976,10 @@ func (c *checker) classField(info *class, n *ast.AnnAssign) {
 		c.errs.Add(n.Target.Pos(), token.TypeMismatch, "cannot redeclare field %q", name)
 	}
 	t := c.resolveType(n.Ann)
+	if recursiveByValue(t, info.typ) {
+		c.errs.Add(n.Ann.Pos(), token.UnsupportedType, "field %q embeds %s by value; use an optional or reference-like type", name, info.name)
+		t = types.Invalid
+	}
 	field := classField{name: name, typ: t, index: len(info.fields), value: n.Value, pos: n.Target.Pos()}
 	info.fieldIndex[name] = field.index
 	info.fields = append(info.fields, field)
@@ -2098,10 +2120,6 @@ func (c *checker) paramType(p *ast.Param) types.Type {
 
 func (c *checker) resolveType(e ast.Expr) types.Type {
 	if lit, ok := e.(*ast.StrLit); ok {
-		if c.mod == nil || !c.mod.future["annotations"] {
-			c.errs.Add(e.Pos(), token.UnsupportedType, "string annotations require from __future__ import annotations")
-			return types.Invalid
-		}
 		ann, err := parser.ParseType(lit.Value)
 		if err != nil {
 			c.errs.Add(e.Pos(), token.UnsupportedType, "invalid string annotation %q: %s", lit.Value, err)
@@ -2112,6 +2130,9 @@ func (c *checker) resolveType(e ast.Expr) types.Type {
 	if name, ok := e.(*ast.Name); ok {
 		if alias, ok := c.aliases[c.resolveName(name.Name).key]; ok {
 			return alias
+		}
+		if t, ok := c.typingScalar(name); ok {
+			return t
 		}
 		if resolved, known := types.Resolve(name.Name); known {
 			return resolved
@@ -2134,12 +2155,16 @@ func (c *checker) resolveType(e ast.Expr) types.Type {
 		return types.NewUnion(members...)
 	}
 	if sub, ok := e.(*ast.Subscript); ok {
-		base, ok := sub.X.(*ast.Name)
+		base, ok := c.annotationHead(sub.X)
 		if !ok {
 			c.errs.Add(e.Pos(), token.UnsupportedType, "unsupported type annotation")
 			return types.Invalid
 		}
-		switch base.Name {
+		switch base {
+		case "Annotated":
+			return c.annotatedType(sub)
+		case "Literal":
+			return c.literalType(sub)
 		case "list":
 			return types.NewList(c.resolveType(sub.Index))
 		case "set":
@@ -2211,11 +2236,14 @@ func (c *checker) resolveType(e ast.Expr) types.Type {
 			}
 			return types.NewCallable(params, c.resolveType(args.Elems[1]))
 		default:
-			c.errs.Add(e.Pos(), token.UnsupportedType, "unknown generic type %q", base.Name)
+			c.errs.Add(e.Pos(), token.UnsupportedType, "unknown generic type %q", base)
 			return types.Invalid
 		}
 	}
 	if attr, ok := e.(*ast.Attribute); ok {
+		if t, ok := c.typingScalar(attr); ok {
+			return t
+		}
 		if mod, ok := c.moduleExpr(attr.X); ok {
 			res := c.resolveModuleAttr(mod, attr.Name)
 			if res.kind == "class" {
@@ -2226,7 +2254,153 @@ func (c *checker) resolveType(e ast.Expr) types.Type {
 		c.errs.Add(e.Pos(), token.UnsupportedType, "unsupported type annotation")
 		return types.Invalid
 	}
+	c.errs.Add(e.Pos(), token.UnsupportedType, "unsupported type annotation")
 	return types.Invalid
+}
+
+func (c *checker) typingScalar(e ast.Expr) (types.Type, bool) {
+	name, ok := c.annotationHead(e)
+	if !ok {
+		return nil, false
+	}
+	switch name {
+	case "Any":
+		return types.Any, true
+	case "TypeAlias":
+		return types.TypeAlias, true
+	default:
+		return nil, false
+	}
+}
+
+func (c *checker) annotationHead(e ast.Expr) (string, bool) {
+	switch x := e.(type) {
+	case *ast.Name:
+		res := c.resolveName(x.Name)
+		if res.kind == "native" && strings.HasPrefix(res.key, "typing.") {
+			return strings.TrimPrefix(res.key, "typing."), true
+		}
+		switch x.Name {
+		case "Annotated", "Literal", "TypeAlias":
+			return "", false
+		}
+		return x.Name, true
+	case *ast.Attribute:
+		if mod, ok := c.moduleExpr(x.X); ok {
+			res := c.resolveModuleAttr(mod, x.Name)
+			if res.kind == "native" && strings.HasPrefix(res.key, "typing.") {
+				c.attrNative[x] = res.native
+				return x.Name, true
+			}
+			if res.kind == "class" {
+				c.attrSym[x] = res.key
+				return x.Name, true
+			}
+		}
+		return "", false
+	default:
+		return "", false
+	}
+}
+
+func (c *checker) annotatedType(sub *ast.Subscript) types.Type {
+	args := typeArgs(sub.Index)
+	if len(args) < 2 {
+		c.errs.Add(sub.Pos(), token.UnsupportedType, "Annotated annotation needs a base type and metadata")
+		return types.Invalid
+	}
+	base := c.resolveType(args[0])
+	for _, meta := range args[1:] {
+		if !literalMetadata(meta) {
+			c.errs.Add(meta.Pos(), token.UnsupportedType, "Annotated metadata must be a literal")
+			return types.Invalid
+		}
+	}
+	return base
+}
+
+func (c *checker) literalType(sub *ast.Subscript) types.Type {
+	args := typeArgs(sub.Index)
+	if len(args) == 0 {
+		c.errs.Add(sub.Pos(), token.UnsupportedType, "Literal annotation needs at least one value")
+		return types.Invalid
+	}
+	values := make([]types.LiteralValue, len(args))
+	for i, arg := range args {
+		value, ok := literalValue(arg)
+		if !ok {
+			c.errs.Add(arg.Pos(), token.UnsupportedType, "unsupported Literal argument")
+			return types.Invalid
+		}
+		values[i] = value
+	}
+	return types.NewLiteral(values...)
+}
+
+func typeArgs(e ast.Expr) []ast.Expr {
+	if tuple, ok := e.(*ast.TupleLit); ok {
+		return tuple.Elems
+	}
+	return []ast.Expr{e}
+}
+
+func literalMetadata(e ast.Expr) bool {
+	switch e.(type) {
+	case *ast.IntLit, *ast.FloatLit, *ast.BoolLit, *ast.StrLit, *ast.NoneLit:
+		return true
+	default:
+		return false
+	}
+}
+
+func literalValue(e ast.Expr) (types.LiteralValue, bool) {
+	switch x := e.(type) {
+	case *ast.IntLit:
+		return types.IntLiteral(x.Value), true
+	case *ast.BoolLit:
+		return types.BoolLiteral(x.Value), true
+	case *ast.StrLit:
+		return types.StrLiteral(x.Value), true
+	case *ast.NoneLit:
+		return types.NoneLiteral(), true
+	case *ast.UnaryExpr:
+		if lit, ok := x.X.(*ast.IntLit); ok {
+			switch x.Op {
+			case token.MINUS:
+				return types.IntLiteral(-lit.Value), true
+			case token.PLUS:
+				return types.IntLiteral(lit.Value), true
+			}
+		}
+	}
+	return types.LiteralValue{}, false
+}
+
+func recursiveByValue(t types.Type, cls *types.Class) bool {
+	if t == nil || cls == nil || t == types.Invalid {
+		return false
+	}
+	switch x := t.(type) {
+	case *types.Class:
+		return types.Equal(x, cls)
+	case *types.List:
+		return recursiveByValue(x.Elem, cls)
+	case *types.Dict:
+		return recursiveByValue(x.Key, cls) || recursiveByValue(x.Value, cls)
+	case *types.Set:
+		return recursiveByValue(x.Elem, cls)
+	case *types.Tuple:
+		for _, elem := range x.Elems {
+			if recursiveByValue(elem, cls) {
+				return true
+			}
+		}
+		return false
+	case *types.Union:
+		return false
+	default:
+		return false
+	}
 }
 
 func (c *checker) moduleExpr(e ast.Expr) (string, bool) {
@@ -2615,9 +2789,37 @@ func (c *checker) expr(e ast.Expr) types.Type {
 }
 
 func (c *checker) exprWithHint(e ast.Expr, hint types.Type) types.Type {
+	if value, ok := literalValue(e); ok {
+		if lit := literalHint(hint, value); lit != nil {
+			t := types.NewLiteral(value)
+			c.types[e] = t
+			return t
+		}
+	}
+	if lit, ok := hint.(*types.Literal); ok {
+		if lit.Base != nil {
+			hint = lit.Base
+		}
+	}
 	t := c.typeOf(e, hint)
 	c.types[e] = t
 	return t
+}
+
+func literalHint(hint types.Type, value types.LiteralValue) *types.Literal {
+	switch t := hint.(type) {
+	case *types.Literal:
+		if t.Contains(value) {
+			return t
+		}
+	case *types.Union:
+		for _, member := range t.Members {
+			if lit := literalHint(member, value); lit != nil {
+				return lit
+			}
+		}
+	}
+	return nil
 }
 
 func (c *checker) typeOf(e ast.Expr, hint types.Type) types.Type {
@@ -2810,6 +3012,7 @@ func (c *checker) dictEntryType(key, value ast.Expr) (types.Type, types.Type) {
 }
 
 func hashableKey(t types.Type) bool {
+	t = types.Erase(t)
 	return types.Equal(t, types.Int) || types.Equal(t, types.Float) || types.Equal(t, types.Bool) || types.Equal(t, types.Str)
 }
 

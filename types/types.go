@@ -8,6 +8,7 @@ package types
 
 import (
 	"sort"
+	"strconv"
 	"strings"
 
 	vmtypes "github.com/siyul-park/minivm/types"
@@ -64,6 +65,21 @@ type Callable struct {
 	Return Type
 }
 
+// Literal is a source-level refinement over scalar literal values. It lowers as
+// its base type and exists only so the checker can validate exact constants.
+type Literal struct {
+	Base   Type
+	Values []LiteralValue
+}
+
+// LiteralValue is one supported `typing.Literal[...]` value.
+type LiteralValue struct {
+	kind string
+	Int  int64
+	Bool bool
+	Str  string
+}
+
 // Module is a compile-time-only imported module object. It is not a first-class
 // runtime value; the checker permits it only as the receiver of attribute access.
 type Module struct {
@@ -95,7 +111,8 @@ var (
 	None    Type = primitive{name: "None", vm: vmtypes.TypeRef}
 	// Any is the open top of the lattice (⊤) — the gradual fallback used only
 	// when no bounded union fits. It is backed by minivm's dynamic ref type.
-	Any Type = primitive{name: "Any", vm: vmtypes.TypeRef}
+	Any       Type = primitive{name: "Any", vm: vmtypes.TypeRef}
+	TypeAlias Type = primitive{name: "typing.TypeAlias"}
 )
 
 // NewList returns the list type with the given element type.
@@ -133,6 +150,52 @@ func NewIterator(elem Type) Type {
 // NewCallable returns the callable type with the given parameter and return types.
 func NewCallable(params []Type, result Type) Type {
 	return &Callable{Params: append([]Type(nil), params...), Return: result}
+}
+
+// IntLiteral returns a supported integer literal value.
+func IntLiteral(v int64) LiteralValue {
+	return LiteralValue{kind: "int", Int: v}
+}
+
+// BoolLiteral returns a supported boolean literal value.
+func BoolLiteral(v bool) LiteralValue {
+	return LiteralValue{kind: "bool", Bool: v}
+}
+
+// StrLiteral returns a supported string literal value.
+func StrLiteral(v string) LiteralValue {
+	return LiteralValue{kind: "str", Str: v}
+}
+
+// NoneLiteral returns the supported None literal value.
+func NoneLiteral() LiteralValue {
+	return LiteralValue{kind: "None"}
+}
+
+// NewLiteral returns a normalized literal-refinement type.
+func NewLiteral(values ...LiteralValue) Type {
+	if len(values) == 0 {
+		return Invalid
+	}
+	uniq := make([]LiteralValue, 0, len(values))
+	for _, value := range values {
+		dup := false
+		for _, existing := range uniq {
+			if existing.Equal(value) {
+				dup = true
+				break
+			}
+		}
+		if !dup {
+			uniq = append(uniq, value)
+		}
+	}
+	sort.Slice(uniq, func(i, j int) bool { return uniq[i].String() < uniq[j].String() })
+	bases := make([]Type, len(uniq))
+	for i, value := range uniq {
+		bases[i] = value.Base()
+	}
+	return &Literal{Base: NewUnion(bases...), Values: uniq}
 }
 
 // NewModule returns the compile-time module type for a canonical module name.
@@ -208,6 +271,25 @@ func IsUnion(t Type) (*Union, bool) {
 // IsAny reports whether t is the open top type.
 func IsAny(t Type) bool { return Equal(t, Any) }
 
+// Erase returns the runtime-representable type for static-only refinements.
+func Erase(t Type) Type {
+	switch x := t.(type) {
+	case *Literal:
+		if x == nil {
+			return Invalid
+		}
+		return Erase(x.Base)
+	case *Union:
+		members := make([]Type, len(x.Members))
+		for i, member := range x.Members {
+			members[i] = Erase(member)
+		}
+		return NewUnion(members...)
+	default:
+		return t
+	}
+}
+
 // IsOptional reports whether t is a union that includes None (i.e. Optional).
 func IsOptional(t Type) bool {
 	u, ok := t.(*Union)
@@ -278,6 +360,24 @@ func AssignableTo(src, dst Type) bool {
 	if Equal(src, dst) {
 		return true
 	}
+	if dl, ok := dst.(*Literal); ok {
+		sl, ok := src.(*Literal)
+		if !ok {
+			return false
+		}
+		for _, value := range sl.Values {
+			if !dl.Contains(value) {
+				return false
+			}
+		}
+		return true
+	}
+	if sl, ok := src.(*Literal); ok {
+		if du, ok := dst.(*Union); ok {
+			return unionAdmits(du, src)
+		}
+		return AssignableTo(sl.Base, dst)
+	}
 	if IsAny(dst) {
 		return true
 	}
@@ -298,7 +398,7 @@ func AssignableTo(src, dst Type) bool {
 // unionAdmits reports whether union u has a member equal to t.
 func unionAdmits(u *Union, t Type) bool {
 	for _, m := range u.Members {
-		if Equal(m, t) {
+		if Equal(m, t) || AssignableTo(t, m) {
 			return true
 		}
 	}
@@ -319,6 +419,8 @@ func Printable(t Type) bool {
 	switch v := t.(type) {
 	case *List, *Dict, *Set, *Tuple:
 		return true
+	case *Literal:
+		return Printable(v.Base)
 	case *Union:
 		for _, m := range v.Members {
 			if !Printable(m) {
@@ -350,6 +452,43 @@ func Resolve(name string) (Type, bool) {
 	default:
 		return Invalid, false
 	}
+}
+
+func (v LiteralValue) Base() Type {
+	switch v.kind {
+	case "int":
+		return Int
+	case "bool":
+		return Bool
+	case "str":
+		return Str
+	case "None":
+		return None
+	default:
+		return Invalid
+	}
+}
+
+func (v LiteralValue) String() string {
+	switch v.kind {
+	case "int":
+		return strconv.FormatInt(v.Int, 10)
+	case "bool":
+		if v.Bool {
+			return "True"
+		}
+		return "False"
+	case "str":
+		return strconv.Quote(v.Str)
+	case "None":
+		return "None"
+	default:
+		return "<invalid>"
+	}
+}
+
+func (v LiteralValue) Equal(other LiteralValue) bool {
+	return v.kind == other.kind && v.Int == other.Int && v.Bool == other.Bool && v.Str == other.Str
 }
 
 func (t primitive) String() string { return t.name }
@@ -542,6 +681,49 @@ func (t *Callable) Equal(o Type) bool {
 	return true
 }
 
+func (t *Literal) String() string {
+	if t == nil || len(t.Values) == 0 {
+		return "Literal[<invalid>]"
+	}
+	parts := make([]string, len(t.Values))
+	for i, value := range t.Values {
+		parts[i] = value.String()
+	}
+	return "Literal[" + strings.Join(parts, ", ") + "]"
+}
+func (*Literal) IsNumeric() bool { return false }
+func (t *Literal) VM() vmtypes.Type {
+	if t == nil || t.Base == nil {
+		return nil
+	}
+	return t.Base.VM()
+}
+func (t *Literal) Equal(o Type) bool {
+	other, ok := o.(*Literal)
+	if !ok || len(t.Values) != len(other.Values) {
+		return false
+	}
+	for i := range t.Values {
+		if !t.Values[i].Equal(other.Values[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+// Contains reports whether the literal type admits value.
+func (t *Literal) Contains(value LiteralValue) bool {
+	if t == nil {
+		return false
+	}
+	for _, existing := range t.Values {
+		if existing.Equal(value) {
+			return true
+		}
+	}
+	return false
+}
+
 func (t *Module) String() string {
 	if t == nil || t.Name == "" {
 		return "<module>"
@@ -619,6 +801,7 @@ func (*Tuple) sealed()    {}
 func (*Class) sealed()    {}
 func (*Iterator) sealed() {}
 func (*Callable) sealed() {}
+func (*Literal) sealed()  {}
 func (*Module) sealed()   {}
 func (*Union) sealed()    {}
 func (*TypeVar) sealed()  {}

@@ -188,11 +188,15 @@ func TestImportErrors(t *testing.T) {
 		require.Contains(t, err.Error(), "unknown __future__ feature")
 	})
 
-	t.Run("string annotation without future rejected", func(t *testing.T) {
-		_, err := Compile(strings.NewReader("x: \"int\" = 1\n"), WithModules(fstest.MapFS{}))
+	t.Run("string annotation without future resolves", func(t *testing.T) {
+		require.Equal(t, "1\n", runFS(t, "x: \"int\" = 1\nprint(str(x))\n", fstest.MapFS{}))
+	})
+
+	t.Run("invalid string annotation rejected", func(t *testing.T) {
+		_, err := Compile(strings.NewReader("x: \"list[\" = []\n"), WithModules(fstest.MapFS{}))
 		require.Error(t, err)
 		code(t, err, token.UnsupportedType)
-		require.Contains(t, err.Error(), "string annotations require")
+		require.Contains(t, err.Error(), "invalid string annotation")
 	})
 
 	t.Run("star import conflict rejected", func(t *testing.T) {

@@ -47,6 +47,7 @@ before lowering to minivm types.
 | `Iterator[T]` | source iterator type | ref |
 | `Callable[[...], R]` | callable value type | minivm function/ref path |
 | `A | B` | closed union | dynamic ref with narrowing |
+| `Literal[...]` | scalar literal refinement | erased to scalar base type |
 | module type | compile-time imported module receiver | compile-time only |
 
 `Any` is not a general escape hatch for all code. It is used when inference
@@ -65,17 +66,33 @@ p: set[int]
 t: tuple[int, str]
 f: Callable[[int, str], bool]
 o: int | None
+ref: "Node | None"
+lit: Literal[1, "ready"]
+ann: Annotated[int, "meta"]
 ```
 
 `None` is accepted as an annotation atom. `A | B` is normalized into a closed
 union; duplicate members collapse, nested unions flatten, and a single member
 collapses to that member.
 
-`type Name = expr` creates a compile-time alias once `expr` resolves to a type.
-Aliases are scoped through the same module key system as other compile-time
-symbols.
+String annotations are parsed as type expressions, not full modules, and then
+resolved through the same annotation resolver. They support forward references
+to declarations already collected for the module, including nested generic
+positions such as `list["Node"]`.
 
-`Optional[T]` is not a separate spelling in the implementation. Use `T | None`.
+`typing.Annotated[T, meta...]` resolves to `T`. Metadata must be literal syntax
+and is ignored after validation.
+
+`typing.Literal[...]` supports `int`, `bool`, `str`, and `None` values. Literal
+types refine assignment and call checking when the source value is statically
+known, then erase to their scalar base type for operations and code generation.
+
+`type Name = expr` and `Name: TypeAlias = expr` create compile-time aliases once
+`expr` resolves to a type. Aliases are scoped through the same module key system
+as other compile-time symbols.
+
+`Optional[T]` and `Union[...]` from `typing` normalize to the same forms as
+`T | None` and `A | B`.
 
 ## Inference
 
@@ -100,6 +117,9 @@ generation with an unresolved type variable is a compiler bug.
 `AssignableTo(src, dst)` is intentionally simple:
 
 - exact structural equality is assignable
+- a matching statically known literal value is assignable to its `Literal[...]`
+  refinement
+- a `Literal[...]` value is assignable to its erased base type
 - any concrete value assignable to a union member may flow into that union
 - a union may flow into a wider union that admits all of its members
 - any value may flow into `Any`
@@ -181,8 +201,8 @@ The true and false branches receive narrowed overlay types. If a guard result is
 statically known inside a specialization, the checker and code generator can skip
 impossible branches.
 
-`Optional[T]` is represented as `T | None`; there is no separate optional type in
-the implementation.
+`Optional[T]` from `typing` is represented as `T | None`; there is no separate
+optional runtime type.
 
 ## Printable Types
 

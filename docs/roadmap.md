@@ -118,8 +118,7 @@ These are implemented with deliberate limits, not undocumented bugs.
 
 - More standard-library-like native modules.
 - More string/list/dict/set methods where they can be statically typed.
-- Optional spellings from `typing` such as `Optional[T]` if import/type-alias
-  ergonomics become important.
+- Broader `typing` compatibility where it remains static-only and erasable.
 - Better f-string format-spec fidelity.
 - More CPython-compatible diagnostics where doing so does not complicate the
   compiler pipeline.

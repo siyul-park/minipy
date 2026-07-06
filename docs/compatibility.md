@@ -80,7 +80,7 @@ full CPython compatibility.
 | `type` alias statement | ✅ | Compile-time alias. |
 | `import` | ✅ | Module top-level only. |
 | `from ... import ...` | ✅ | Module top-level only; aliases supported. |
-| `from __future__ import ...` | ◐ | Module-prefix only; supports `annotations`. |
+| `from __future__ import ...` | ◐ | Module-prefix only; accepts `annotations`; string annotations also resolve without it. |
 | `from ... import *` | ◐ | Static expansion only; uses static `__all__` or public names. |
 | `try`/`except`/`else`/`finally` | ✅ | Structured VM error path. |
 | `except*` | ⏳ | Parsed; ExceptionGroup semantics not implemented. |
@@ -157,8 +157,11 @@ full CPython compatibility.
 | `Iterator[T]` | ✅ | Iteration/generator result type. |
 | `Callable[[...], R]` | ✅ | Used for lambdas/callable values. |
 | `A | B` unions | ✅ | Closed unions, normalized. |
-| `Optional[T]` spelling | ❌ | Use `T | None`; no separate `Optional` generic. |
-| Type aliases | ✅ | `type Name = expr`. |
+| String annotations | ✅ | Parsed as type expressions; supports forward references such as `"Node"`. |
+| `typing.Optional[T]` and `typing.Union[...]` | ✅ | Normalize to closed union forms. |
+| `typing.Annotated[T, ...]` | ✅ | Metadata literal-validated, then erased to `T`. |
+| `typing.Literal[...]` | ◐ | Static-only refinement for `int`, `bool`, `str`, and `None` literal values. |
+| Type aliases | ✅ | `type Name = expr` and `Name: TypeAlias = expr`. |
 | Flow narrowing | ✅ | `isinstance(name, T)` and `name is/is not None`. |
 | Monomorphic specialization | ✅ | For union/Any params with concrete direct call tuples, capped per function. |
 | Arbitrary precision int | ❌ | Uses signed 64-bit. |
@@ -176,6 +179,7 @@ full CPython compatibility.
 | `isinstance` | ✅ | Type/class checks and narrowing support. |
 | Builtin exceptions | ✅ | Seeded class hierarchy. |
 | `operator` module | ✅ | Native functions for syntax operator semantics. |
+| `typing` module | ◐ | Annotation-only native symbols; no runtime typing objects. |
 | First-class native functions | ❌ | Native symbols are callable names only. |
 | First-class modules/classes | ❌ | Compile-time receiver names only. |
 | Standard library compatibility | ❌ | Only registered native/source modules are available. |

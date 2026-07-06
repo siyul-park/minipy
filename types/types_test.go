@@ -21,6 +21,8 @@ func TestType_String(t *testing.T) {
 	require.Equal(t, "Point", NewClass("Point", []Field{{Name: "x", Type: Int}}).String())
 	require.Equal(t, "Iterator[int]", NewIterator(Int).String())
 	require.Equal(t, "Callable[[int, str], bool]", NewCallable([]Type{Int, Str}, Bool).String())
+	require.Equal(t, "Literal[1]", NewLiteral(IntLiteral(1)).String())
+	require.Equal(t, "Literal[\"a\", \"b\"]", NewLiteral(StrLiteral("b"), StrLiteral("a")).String())
 	require.Equal(t, "<class>", (*Class)(nil).String())
 	require.Equal(t, "list[<invalid>]", (*List)(nil).String())
 	require.Equal(t, "dict[<invalid>, <invalid>]", (*Dict)(nil).String())
@@ -46,6 +48,7 @@ func TestType_IsNumeric(t *testing.T) {
 	require.False(t, NewIterator(Int).IsNumeric())
 	require.False(t, NewCallable(nil, None).IsNumeric())
 	require.False(t, NewUnion(Int, Str).IsNumeric())
+	require.False(t, NewLiteral(IntLiteral(1)).IsNumeric())
 }
 
 func TestType_VM(t *testing.T) {
@@ -61,6 +64,7 @@ func TestType_VM(t *testing.T) {
 	require.Equal(t, vmtypes.TypeRef, NewIterator(Int).VM())
 	require.IsType(t, &vmtypes.FunctionType{}, NewCallable([]Type{Int}, Str).VM())
 	require.IsType(t, &vmtypes.StructType{}, NewClass("Point", []Field{{Name: "x", Type: Int}}).VM())
+	require.Equal(t, vmtypes.TypeI64, NewLiteral(IntLiteral(1)).VM())
 	require.Nil(t, Invalid.VM())
 	require.Nil(t, (*List)(nil).VM())
 	require.Nil(t, (&List{}).VM())
@@ -91,13 +95,18 @@ func TestAssignable(t *testing.T) {
 	require.False(t, AssignableTo(NewCallable([]Type{Int}, Str), NewCallable([]Type{Str}, Str)))
 	require.False(t, AssignableTo(NewIterator(Int), NewIterator(Str)))
 	require.False(t, AssignableTo(NewClass("Point", nil), NewClass("Other", nil)))
+	require.True(t, AssignableTo(NewLiteral(IntLiteral(1)), Int))
+	require.True(t, AssignableTo(NewLiteral(IntLiteral(1)), NewLiteral(IntLiteral(1), IntLiteral(2))))
+	require.True(t, AssignableTo(NewLiteral(IntLiteral(1)), NewUnion(NewLiteral(IntLiteral(1)), Str)))
+	require.False(t, AssignableTo(Int, NewLiteral(IntLiteral(1))))
+	require.False(t, AssignableTo(NewLiteral(IntLiteral(2)), NewLiteral(IntLiteral(1))))
 	require.False(t, AssignableTo(nil, Int))
 	require.False(t, AssignableTo(Int, nil))
 	require.False(t, AssignableTo(Invalid, Invalid))
 }
 
 func TestPrintable(t *testing.T) {
-	for _, ty := range []Type{Int, Float, Bool, Str, None, Any, NewList(Int), NewDict(Str, Int), NewSet(Int), NewTuple(Int, Str), NewUnion(Int, Str)} {
+	for _, ty := range []Type{Int, Float, Bool, Str, None, Any, NewList(Int), NewDict(Str, Int), NewSet(Int), NewTuple(Int, Str), NewUnion(Int, Str), NewLiteral(StrLiteral("x"))} {
 		require.Truef(t, Printable(ty), "%s should be printable", ty)
 	}
 	require.False(t, Printable(nil))

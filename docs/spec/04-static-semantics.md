@@ -49,8 +49,8 @@ current module/package context.
 imports may appear only at the start of a module, after an optional module
 docstring and before any other statement. Supported future flags:
 
-- `annotations`: allows string annotations and resolves their contents using the
-  normal annotation resolver.
+- `annotations`: accepted for Python compatibility. String annotations resolve
+  through the normal annotation resolver regardless of this flag.
 
 Unknown future flags and future imports after ordinary statements are syntax
 errors.
@@ -99,16 +99,21 @@ attributes, and generic forms:
 int float bool str None Any
 list[T] dict[K, V] set[T] tuple[...] Iterator[T] Callable[[...], R]
 A | B
+typing.Optional[T] typing.Union[...] typing.Annotated[T, ...]
+typing.Literal[...] typing.TypeAlias
 ```
 
-Unknown annotation names, unsupported generic names, malformed `Callable`, and
-unsupported attribute annotations are diagnostics.
+Unknown annotation names, unresolved string forward references, unsupported
+generic names, malformed `Callable`, invalid `Annotated` metadata, unsupported
+`Literal` arguments, and unsupported attribute annotations are diagnostics.
 
-String annotations require `from __future__ import annotations`; without that
-flag, they are rejected during type resolution.
+String annotations are parsed as type expressions and resolved after top-level
+classes and functions are declared, so forward references such as `"Node"` and
+`list["Node"]` work without runtime annotation evaluation.
 
 `type Name = expr` records a compile-time type alias once `expr` resolves to a
-valid type.
+valid type. `Name: TypeAlias = expr` from `typing` is the legacy-compatible form
+and records the same kind of alias without creating a runtime binding.
 
 ## Inference Rules
 
