@@ -2,135 +2,111 @@
 
 Default coding style for minipy contributors and agents.
 
-Use the same convention shape as minivm's `docs/coding-patterns.md`. This document is the minipy-local owner for compiler-specific ownership, pipeline, native-module, and documentation rules.
+Use this before writing or changing code. Match nearby code first; use this document when local style is unclear or a new pattern is needed.
+
+The common sections intentionally mirror minivm's `docs/coding-patterns.md`. Minipy-specific compiler rules live in §9.
 
 ## When to Read
 
-Use this document before writing or changing minipy code, especially when local style is unclear or a new pattern is needed.
+Read only what the change touches.
 
-Match nearby code first. Use these rules to resolve ambiguity, not to override a clear local pattern.
+| Change | Read |
+|---|---|
+| function shape, helper extraction, naming | 0. Principles, 1. Functions |
+| types, interfaces, fields, constructors | 2. Types |
+| public APIs, options, builders, parsers | 3. APIs |
+| errors, diagnostics, panic, recover | 4. Errors, 9. Minipy Compiler Rules |
+| architecture-specific files | 5. Build Tags |
+| tests | 6. Tests |
+| commits and PRs | 7. Git and PRs |
+| documentation changes | 8. Docs |
+| lexer/parser/checker/lowerer/native modules | 9. Minipy Compiler Rules |
 
 ## Source of Truth
 
 | Concern | Source |
 |---|---|
 | formatting | `gofmt` |
-| package-specific style | nearby code in the same package |
-| shared coding patterns | minivm `docs/coding-patterns.md` |
+| package style | nearby code in the same package |
+| shared coding-pattern shape | minivm `docs/coding-patterns.md` |
 | public API shape | existing public APIs and tests |
 | language behavior | `docs/spec/` |
 | Python compatibility status | `docs/compatibility.md` |
 | remaining work | `docs/roadmap.md` |
+| documentation shape | `docs/README.md` |
 | package ownership | this document and package comments |
 
-## Fast Path
+## 0. Principles
 
-Read only the sections relevant to the change.
+### 0.1 Simpler is Better
 
-| Change | Read |
-|---|---|
-| function shape, helper extraction, naming | principles, functions |
-| types, interfaces, fields, constructors | types |
-| public APIs, options, builders, parsers | APIs |
-| diagnostics, panic, recovery | errors |
-| package boundaries or ownership | package ownership |
-| lexer/parser/checker/lowerer behavior | compiler pipeline |
-| builtins or operator behavior | native modules |
-| tests | tests |
-| documentation changes | docs |
-| commits and PRs | git and PRs |
+If two designs provide the same behavior, choose the simpler one: fewer files, types, functions, methods, arguments, names, indirections, and more local code.
 
-## Principles
+Add abstraction only when it improves readability, removes real duplication, isolates real complexity, or names a meaningful domain step.
 
-### Simpler is Better
+### 0.2 Keep Public Surfaces Small
 
-If two designs provide the same behavior, choose the simpler one.
+Push complexity down. Prefer simple APIs over exposed mechanisms, explicit behavior over hidden magic, local complexity over distributed state, and predictable structure over clever abstraction.
 
-Prefer fewer files, fewer types, fewer functions, fewer methods, fewer arguments, fewer names, less indirection, and more local code.
+A difficult behavior should have one clear implementation, not many partially difficult call sites.
 
-Do not add abstraction only because code can be split. Add abstraction when it clearly improves readability, removes real duplication, isolates real complexity, or names a meaningful domain step.
+### 0.3 Read Top-Down
 
-### Keep Public Surfaces Small
-
-Push complexity down. Public APIs should stay simple even when implementation is difficult.
-
-Prefer simple APIs over exposed mechanisms, explicit behavior over hidden behavior, local complexity over distributed state, and predictable structure over clever abstraction.
-
-### Read Top-Down
-
-Important behavior comes first. Details follow later.
-
-Readers should understand the flow by reading downward:
+Put important behavior first and details later.
 
 ```text
 Compile
   parse
-  load
   check
   emit
   verify
 ```
 
-Avoid forcing readers to jump around to reconstruct the main path.
+Readers should not jump around to reconstruct the main path.
 
-### Be Obvious
+### 0.4 Be Obvious
 
-Prefer mechanically obvious code over clever code.
+Prefer mechanically obvious code over clever code. Slightly longer code is better when it avoids hidden state, improves debugging, preserves checker/lowerer symmetry, makes control flow explicit, or keeps behavior easy to verify.
 
-A slightly longer implementation is better when it avoids hidden state, improves debugging, preserves checker/lowerer symmetry, makes control flow explicit, or keeps behavior easy to verify.
+### 0.5 Preserve Symmetry
 
-### Preserve Symmetry
+Keep checker and lowerer paths structurally similar when possible. Symmetry matters more than small local optimizations because it makes behavior easier to compare, test, and maintain.
 
-Checker and lowerer paths should stay structurally similar when possible.
+### 0.6 Keep Related Code Close
 
-Symmetry matters more than small local optimizations because it keeps behavior easier to compare, test, and maintain. This is especially important for type narrowing, static truth pruning, function specialization, closures, exceptions, patterns, and native calls.
+Keep state, validation, mutation, and cleanup for one behavior near each other. Split only when ownership or readability clearly improves.
 
-### Keep Related Code Close
+### 0.7 Review Every Symbol
 
-Keep state, validation, mutation, and cleanup for one behavior near each other.
+Every file, type, interface, struct, field, function, method, parameter, result, constant, and variable needs a reason to exist.
 
-Avoid splitting logic across files or helpers unless the split has clear ownership or readability benefit.
+For every touched symbol, ask whether it can be removed, inlined, merged with an existing owner, narrowed in scope, made private, renamed by role, or replaced by direct local code. Review nearby old symbols exposed by the change too.
 
-## Symbol and Algorithm Review
+A refactor is incomplete if it adds structure while leaving now-obvious dead fields, arguments, results, helpers, or wrapper files behind. If the only reason is future flexibility, symmetry without behavior, shorter code, or one-call-site convenience, remove it.
 
-Review every changed file as a symbol set before and after the change. Check files, structs, fields, functions, methods, arguments, return values, variables, constants, interfaces, and errors.
+### 0.8 Prefer Simpler Algorithms
 
-For each symbol, ask:
+Before adding structure, look for a simpler or more efficient algorithm.
 
-1. Can it be removed?
-2. Can it be private?
-3. Can it be merged into an existing symbol?
-4. Can its name be shorter without losing clarity?
-5. Can its caller pass less data?
-6. Can the callee return less data?
-7. Can the behavior live closer to the state it reads or mutates?
+Prefer one direct pass over coordinated passes, local state over global maps, exact ownership over cleanup protocols, and data flow matching the compiler phase. Do not optimize by hiding behavior; keep correctness, checker/lowerer parity, and documented language restrictions obvious.
 
-Prefer deleting a symbol over renaming it, renaming over wrapping it, and local code over a new abstraction. Keep a public symbol only when a real caller or documented API boundary needs it.
+Performance claims need benchmark evidence.
 
-Review algorithms the same way. Before keeping a complex path, look for a simpler or more efficient one:
+### 0.9 Iterate Until Stable
 
-- one pass instead of multiple passes
-- map/set lookup instead of repeated linear scans
-- early validation instead of late cleanup
-- shared existing phase data instead of recomputing it
-- direct control flow instead of callback or interface indirection
-- clearer O(n) code over clever code with hidden constants
+Simplify in passes. Removing one symbol, helper, field, pass, or branch often exposes the next simplification.
 
-Do not optimize by obscuring behavior. Performance changes need benchmark or profile evidence; without evidence, choose the clearest correct algorithm.
+Each pass checks: removable symbols, narrower ownership or visibility, simpler control flow, simpler algorithms, then tests/docs matching the final shape. Stop only when another pass finds no safe improvement.
 
-Repeat the review loop until another pass finds no smaller public surface, no safe deletion, no clearer name, no simpler data flow, and no easier algorithm. Stop when the remaining complexity is required by behavior, compatibility, or a documented boundary.
+Record intentionally non-viable simplifications in the final summary so future work does not re-derive them silently.
 
-### Keep the Language Subset Explicit
+## 1. Functions
 
-Every construct should be documented as lowered, parse-only, restricted, or out of scope.
+### 1.1 Use One Abstraction Level
 
-Prefer static checks over runtime surprises. Unsupported constructs should fail in the checker before lowering.
+Each function should operate at one conceptual level. Do not mix orchestration with parsing details, policy with arithmetic, or high-level flow with byte/index mutation.
 
-## Functions
-
-Each function should operate at one conceptual level.
-
-Prefer this shape:
+Good functions read like behavior:
 
 ```go
 func (c *Compiler) Compile() (*program.Program, error) {
@@ -138,37 +114,111 @@ func (c *Compiler) Compile() (*program.Program, error) {
     if err != nil {
         return nil, err
     }
-    check, err := c.check(mod)
+
+    checked, err := c.check(mod)
     if err != nil {
         return nil, err
     }
-    return c.emit(check)
+
+    return c.emit(checked)
 }
 ```
 
-Avoid mixing high-level orchestration with low-level details in the same function unless the local code is clearer that way.
+If comments explain transitions between unrelated steps, the function likely mixes levels.
 
-Extract a helper when it removes real duplication, gives a meaningful name to a domain step, or isolates complexity. Do not extract a helper only to shorten a function.
+### 1.2 Name by Role
 
-Keep helper names short and direct. Prefer names that describe the operation, not the implementation trick.
+Names describe caller-visible behavior, not implementation mechanics. Use the shortest standard name that is still clear; prefer one word when package, file, receiver, or context already provides meaning.
 
-Name by caller-visible role, not implementation mechanics. Use the shortest standard name that stays clear in package, receiver, and local context. Prefer one word when context carries the rest: `state`, `frame`, `module`, `target`, `source`, `compiler`, `builder`, `cache`, `trace`, and `exit` are better than names that repeat the file or subsystem.
+| Avoid | Prefer |
+|---|---|
+| `rewriteBranchAbsolute` | `normalize` |
+| `appendInstrAndUpdateLen` | `commit` |
+| `checkEmptyAndFormatProg` | `show` |
+| `checkerContext` | `scope` |
+| `loweringFrame` | `frame` |
+| `sourceTypeValue` | `value` |
+| `parseOperation` | `step` |
 
-Avoid private names that repeat the package, one-letter names outside tight local scopes, non-standard abbreviations, and helpers named after a low-level step when a role name is enough. Common domain abbreviations such as `ID`, `IP`, `ABI`, `VM`, and `CPU` are fine.
+Receiver context counts: `c.check()` and `c.emit()` are clear on `*Compiler`.
 
-Within a file and section, declare callers before callees so the file reads from policy to mechanics. A package-level helper should appear after the functions or methods that need it unless it is a constructor or shared public utility.
+Avoid names that repeat package/file/subsystem context, non-standard abbreviations, one-letter names outside tight scopes, and implementation-step names when a role name is enough.
 
-Let one function own a decision. Do not duplicate a helper's eligibility checks at every call site when the helper can return failure or fallback itself.
+Allowed abbreviations: common domain terms such as `ID`, `IP`, `ABI`, `VM`, and `CPU`.
 
-## Types
+Good role words: `value`, `step`, `state`, `frame`, `module`, `target`, `source`, `scope`, `compiler`, `builder`, `cache`, `trace`, `root`, `exit`.
 
-Add a type when it owns data with behavior, names a real domain concept, or prevents repeated error-prone structure.
+Short and clear is the goal; cryptic is not.
 
-Do not add a type only to group two values temporarily, hide a simple tuple, or create an abstraction before it is needed.
+### 1.3 Declare Callers Before Callees
 
-Interfaces should be small and consumer-owned. Prefer concrete types until there is a real boundary.
+Within a file and section, place high-level functions before helpers they call. Functional options may appear immediately before the constructor they configure so read order matches call sites like `New(root, WithFS(fsys))`.
 
-Constructors should establish invariants. If a value has no invariants, a struct literal may be clearer.
+### 1.4 Extract Only When Useful
+
+Inline simple single-use logic.
+
+Extract only when a helper removes real duplication, isolates real complexity, names meaningful behavior, or keeps the caller at one abstraction level. Do not extract tiny helpers that hide a short switch, predicate, or loop used once.
+
+Let one helper own a branch-or-fallback decision. If it can decide whether it applies and return failure/fallback, callers should not duplicate its preconditions.
+
+### 1.5 Methods Show Ownership
+
+A function used by one type belongs on that type, even when the receiver is not used directly. Callbacks should also be methods when ownership belongs to a type.
+
+```go
+func (c *checker) checkName(n *ast.Name) types.Type { return c.scope.lookup(n.ID) }
+```
+
+Package functions are for constructors, functions used by multiple types, public general utilities, or helpers used only by other package-level functions.
+
+Do not extract a tiny single-use method just to satisfy ownership; inline it instead.
+
+### 1.6 Constructors Are Functions
+
+Constructors are standalone functions, never methods.
+
+```go
+func newChecker(...) *checker
+func NewCompiler(...) *Compiler
+```
+
+Public concrete types use `NewType`; private concrete types use `newType`.
+
+### 1.7 Keep Methods with Their Type
+
+A file should contain methods for one main type. Split a large type across files by concern if needed, but do not place methods for type A in type B's file just for locality.
+
+For minipy code, checker behavior stays with checker files, lowering behavior stays with lowerer files, and public compiler entry points stay with `*Compiler`.
+
+## 2. Types
+
+Add a type only when it owns data with behavior, names a real domain concept, or prevents repeated error-prone structure. Do not add one to group temporary values, hide a simple tuple, or create future abstraction.
+
+### 2.1 Define Interfaces Where Consumed
+
+Interfaces belong in the package that consumes behavior, not the package that implements it. They describe what the caller needs.
+
+### 2.2 Prefer Private Type, Public Instance
+
+When there is one meaningful implementation, use an unexported concrete type with an exported value.
+
+```go
+type intType struct{}
+var TypeInt = intType{}
+```
+
+### 2.3 Keep Interfaces Small
+
+Do not create an interface until a consumer needs it. Do not add methods for later.
+
+Assert compliance near the related type, in the private value section:
+
+```go
+var _ module.Native = (*nativeModule)(nil)
+```
+
+### 2.4 File Layout
 
 Use this order in every `.go` file:
 
@@ -184,9 +234,11 @@ Use this order in every `.go` file:
 10. private methods
 11. private functions
 
-Within each group, keep top-down flow: callers before callees.
+Within each group, keep callers before callees. When a package function becomes a method, move it into method territory; constructors stay in the constructor section.
 
-Order struct fields by how readers understand the value:
+### 2.5 Order Struct Fields by Meaning
+
+Order fields by how readers understand the type:
 
 1. lifecycle and policy objects
 2. infrastructure
@@ -196,54 +248,298 @@ Order struct fields by how readers understand the value:
 6. read-only config
 7. sync primitives
 
-Separate those layers with blank lines when it improves scanning. Keep `sync.Mutex` and related sync primitives last. Struct literals should follow the field declaration order.
+Separate layers with a blank line. Put rich behavioral objects near the top, mutable counters above read-only config, plain numeric config near the bottom, and `sync.Mutex` last. Struct literals follow field declaration order.
 
-Methods show ownership. A function used by one type belongs on that type, even if the receiver is not used directly. Keep methods with their owning type; split large types by concern only when the ownership remains obvious.
+Field names should be short and clear; prefer one word when possible.
 
-For minipy-specific types:
+## 3. APIs
 
-- AST nodes should stay data-only.
-- Source types belong in `types`; checker-only bookkeeping belongs in `compiler`.
-- Runtime helper shapes belong in `hostabi` only when host functions or minivm runtime boundaries need them.
-- Native symbol behavior belongs in `builtins` or `operator`, not duplicated in the checker or lowerer.
+Public APIs should make the common path obvious, keep advanced behavior explicit, and avoid exposing internal representation without a stable caller need.
 
-## APIs
+### 3.1 Constructors
 
-Public APIs should make the common path obvious and keep advanced behavior explicit.
+Constructor names use `New<Type>` for public types and `new<Type>` for private types. Constructors establish invariants; if a value has no invariants, a struct literal may be clearer.
 
-Prefer options for rare configuration and direct arguments for required behavior. Functional options may be declared immediately before the constructor or function they configure.
+### 3.2 Parsers
 
-Apply defaults first, then options. Public concrete constructors use `NewType`; private concrete constructors use `newType`. Constructors are standalone functions, never methods.
+Parser names:
 
-Keep builders focused. A builder should construct one thing, validate inputs near construction, and avoid becoming a general mutable configuration store.
+| Function | Meaning |
+|---|---|
+| `Parse` | package primary type |
+| `Parse<Type>` | secondary type |
+| `ParseAll` | multiple values, usually from `io.Reader` |
 
-Do not expose internal representation unless callers have a stable reason to depend on it.
+```go
+func Parse(s string) (*ast.Module, error)
+func ParseExpr(s string) (ast.Expr, error)
+func ParseAll(r io.Reader) ([]*ast.Module, error)
+```
 
-For minipy:
+### 3.3 Options
 
-- Keep `compiler.Compile` and `compiler.New(...).Compile()` as the obvious public entry points.
-- Keep parser and lexer constructors simple and lazy where possible.
-- Keep native module registration explicit through `module.Registry`.
-- Do not make modules, classes, or native functions first-class runtime values without updating the public API, checker, lowerer, docs, and tests together.
+Prefer functional options over config structs. Use direct arguments for required behavior and options for rare configuration. Apply defaults first, then options.
 
-## Errors
+```go
+func New(root string, opts ...func(*option)) *Compiler {
+    opt := option{level: optimize.O2}
+    for _, fn := range opts {
+        fn(&opt)
+    }
+    ...
+}
+```
 
-Return errors for expected failure. Panic only for internal invariants that indicate a compiler bug.
+### 3.4 Builders
+
+Builders are mutable; built values are treated as immutable. Discard builders after `Build()`.
+
+A builder constructs one thing, validates near construction, and must not become a general mutable config store.
+
+### 3.5 Avoid Premature API Surface
+
+Do not add public methods, options, interfaces, or exported fields unless a real caller needs them. Smaller APIs are easier to maintain, test, and keep compatible.
+
+## 4. Errors
+
+Return errors for expected failure. Panic only for internal invariants.
+
+### 4.1 Errors Are API
+
+Sentinel errors are stable semantic categories, not implementation details.
 
 Keep error values stable when callers can reasonably branch on them.
 
+### 4.2 Wrap Errors with `%w`
+
+Use `%w` whenever returning an error with context.
+
+```go
+return nil, fmt.Errorf("%w: %s", ErrModuleNotFound, name)
+return fmt.Errorf("%w: line=%d", ErrInvalidSyntax, pos.Line)
+```
+
+### 4.3 Panic Only for Invariants
+
+Panic is allowed only for violated internal invariants, usually in hot paths. Normal control flow returns errors.
+
+Recover at the execution boundary, not throughout the codebase. Recovery must be local, documented, and tied to a specific boundary.
+
 Use structured error types only when callers need more than a message.
 
-Do not recover broadly. Recovery should be local, documented, and tied to a specific boundary.
+For malformed user source, report diagnostics through `token.Error` / `token.ErrorList`; do not panic.
 
-For user programs:
+## 5. Build Tags
 
-- Report lexical, syntactic, loading, and semantic failures through `token.Error` and accumulate them in `token.ErrorList`.
-- Prefer precise diagnostic codes such as `SyntaxError`, `UnsupportedFeature`, `UnsupportedType`, `TypeMismatch`, `UndefinedName`, `UseBeforeDefinition`, `ArityMismatch`, and `PatternError`.
-- Do not panic for malformed source input.
-- Add or update `token/error.go`, tests, and docs when adding a diagnostic class.
+Keep architecture-specific code isolated behind build tags, with matching stubs and mirrored test tags.
 
-## Package Ownership
+```go
+//go:build arm64
+```
+
+```go
+//go:build !arm64
+```
+
+Portable behavior belongs in the default implementation. Architecture files provide only the narrow part that must differ.
+
+When adding architecture-specific behavior, update the relevant compatibility and implementation docs.
+
+## 6. Tests
+
+Tests cover behavior, not private shape, unless the shape is the protected contract. If a change touches checker and lowerer paths, test both or explain why one is not applicable.
+
+### 6.1 Tests Are Executable Documentation
+
+Tests should show setup, execution, and expectation in one visible flow. Avoid fixture builders, test-only run wrappers, assertion helpers, and hidden setup helpers.
+
+Duplicated setup is acceptable when it keeps the tested API visible.
+
+```go
+func TestCompile_RejectsUnsupported(t *testing.T) {
+    _, err := Compile("async def f(): pass")
+    require.Error(t, err)
+    require.Contains(t, err.Error(), "unsupported")
+}
+```
+
+### 6.2 Test Public Behavior
+
+Top-level tests target public symbols.
+
+| Symbol | Test |
+|---|---|
+| `Foo` | `TestFoo` |
+| `NewFoo` | `TestNewFoo` |
+| `(Foo).Bar` | `TestFoo_Bar` |
+
+Do not name top-level tests after private helpers. Test private behavior through the public API that owns the observable behavior.
+
+### 6.3 Match Test Files to Production Files
+
+Use matching names: `lexer.go` -> `lexer_test.go`, `parser.go` -> `parser_test.go`, `check.go` -> `check_test.go`.
+
+Tests for a public symbol belong in the test file matching the file that defines the owning type or constructor.
+
+### 6.4 Keep Nesting Shallow
+
+Aim for at most one `t.Run` level. Do not add wrapper subtests just to group cases.
+
+Use table tests when setup and assertions share one shape. Use explicit subtests when cases need different setup or clearer labels. Do not mix styles at the same nesting level.
+
+### 6.5 Use `require`
+
+Always use `require`, not `assert`.
+
+```go
+require.NoError(t, err)
+require.ErrorIs(t, err, ErrFoo)
+require.Equal(t, want, got)
+```
+
+Avoid direct `t.Fatal`, `t.Fatalf`, `t.Error`, and `t.Errorf` in new tests.
+
+### 6.6 Clean Up Immediately
+
+Defer cleanup right after successful allocation.
+
+```go
+c := New(root)
+defer c.Close()
+```
+
+### 6.7 Keep Fixtures Small
+
+A test should make important source, diagnostics, or runtime behavior visible near the assertion. Prefer table tests for repeated behavior and focused tests for subtle control flow.
+
+### 6.8 No Test Helpers by Default
+
+Do not add test helpers for fixtures, programs, contexts, configured objects, assertions, or white-box introspection by default.
+
+Before adding a helper, ask: can this be inlined, can this be a table, or does this belong in production code?
+
+Only add a helper when it is clearly better than visible, local test flow.
+
+### 6.9 Shared Compiler Tests
+
+For compiler behavior, prefer package-local tests for lexer/token/parser/checker contracts and integration-style compile/run tests for behavior that crosses phases.
+
+Behavior that does not fit a table row should be an explicit subtest after the table loop.
+
+## 7. Git and PRs
+
+Keep commits focused. A commit should have one reason to exist.
+
+### 7.1 Branch and Commit Types
+
+| Change | Branch | Commit |
+|---|---|---|
+| bug | `hotfix/<desc>` | `fix` |
+| feature | `feature/<desc>` | `feat` |
+| performance | `feature/<desc>` | `perf` |
+| refactor | - | `refactor` |
+| test | - | `test` |
+| docs | - | `docs` |
+
+Use lowercase, concise, hyphen-separated names.
+
+### 7.2 Commit Format
+
+Use `<type>(scope): <summary>`.
+
+```text
+feat(compiler): add trace lowering support
+fix(parser): reject invalid match pattern
+feat!: change source type format
+```
+
+Rules: imperative mood, at most 72 characters, one logical concern per commit. Breaking changes include `BREAKING CHANGE: ...`.
+
+### 7.3 Performance Changes
+
+Performance claims require benchmark evidence:
+
+```text
+before: ...
+after:  ...
+conclusion: ...
+```
+
+### 7.4 Self-Review Checklist
+
+Before opening a PR, check:
+
+- issue is fully resolved; no unrelated changes
+- every touched symbol has a reason to exist
+- removable symbols were removed, inlined, merged, narrowed, or made private
+- the algorithm is the simplest correct option found
+- repeated review passes find no safe simplification
+- names are short, standard, and consistent
+- public surface is minimal
+- invariants are preserved
+- tests cover behavior
+- docs are updated when conventions change
+
+### 7.5 Pull Requests
+
+Follow the existing PR template. Explain what changed, why it changed, how it was tested, and benchmark impact if relevant. PR titles follow commit-summary style.
+
+## 8. Docs
+
+Documentation is part of the codebase. Each topic should have one owner; other docs summarize and link instead of repeating full explanations.
+
+Use the standard shape from `docs/README.md`:
+
+1. title and short purpose
+2. `When to Read`
+3. `Source of Truth` when relevant
+4. main content
+5. `Maintenance Notes`
+6. `Related Docs`
+
+The spec files are the owner for language behavior:
+
+- `docs/spec/01-lexical.md` for tokens, literals, indentation, and f-strings.
+- `docs/spec/02-types.md` for type forms, assignability, inference, narrowing, and specialization.
+- `docs/spec/03-grammar.md` for syntax.
+- `docs/spec/04-static-semantics.md` for checker behavior and diagnostics.
+- `docs/spec/05-codegen.md` for lowering/runtime representation.
+- `docs/spec/06-builtins.md` for builtin/operator/native-module behavior.
+
+Status documents should link to the owner instead of repeating full rules:
+
+- `docs/compatibility.md` summarizes user-facing Python compatibility status.
+- `docs/roadmap.md` summarizes completed work and remaining gaps.
+- `README.md` summarizes project purpose, package map, and run instructions.
+
+Keep wording direct and standard. Prefer `minipy`, `minivm`, `lexer`, `parser`, `checker`, `lowerer`, `native module`, `source type`, `opcode`, `value`, and `diagnostic` consistently.
+
+Agent instruction files are routing and enforcement surfaces. Keep `AGENTS.md` as the common Claude Code / Codex contract, keep `.claude/CLAUDE.md` as a short Claude overlay that imports `AGENTS.md`, and keep detailed coding rules in their owner docs.
+
+A convention-changing code change is incomplete without the matching documentation update.
+
+| Change | Update |
+|---|---|
+| style, naming, structure | `docs/coding-patterns.md` |
+| language syntax | `docs/spec/03-grammar.md` |
+| type/checker behavior | `docs/spec/02-types.md` or `docs/spec/04-static-semantics.md` |
+| lowering/runtime representation | `docs/spec/05-codegen.md` |
+| builtins/operator/native modules | `docs/spec/06-builtins.md` |
+| compatibility status | `docs/compatibility.md` |
+| completed/deferred work | `docs/roadmap.md` |
+| workflow / convention rules | `AGENTS.md` and `.claude/CLAUDE.md` |
+
+## 9. Minipy Compiler Rules
+
+### 9.1 Keep the Language Subset Explicit
+
+Every construct should be documented as lowered, parse-only, restricted, rejected, planned, or out of scope.
+
+Prefer static checks over runtime surprises. Unsupported constructs should fail in the checker before lowering.
+
+Avoid stale milestone phrasing in spec files. If a feature is shipped, describe the implementation and restrictions directly. If it is not shipped, state whether it is parse-only, rejected, planned, or out of scope.
+
+### 9.2 Package Ownership
 
 | Package | Responsibility |
 |---|---|
@@ -270,18 +566,18 @@ Keep dependency direction simple:
 - `builtins` and `operator` depend on `module`, `types`, and syntax interfaces; they should not depend on each other.
 - `compiler` is the integration layer and may depend on syntax, types, modules, native modules, host ABI helpers, and minivm.
 
-## Compiler Pipeline
+### 9.3 Compiler Pipeline
 
 Keep phase ownership clear.
 
-### Lexer
+#### Lexer
 
 - Keep token spelling and token names in `token/token.go` synchronized with `docs/spec/01-lexical.md`.
 - Emit recoverable diagnostics and continue scanning when possible.
 - Keep soft keywords as `NAME`; the parser decides whether a soft keyword starts a special form.
 - Do not split f-strings into multiple token kinds unless the parser and docs are updated together.
 
-### Parser
+#### Parser
 
 - Accept parse-only syntax only when it improves diagnostics.
 - Document every parse-only form.
@@ -289,7 +585,7 @@ Keep phase ownership clear.
 - Parse syntax shape only. Type checking, scope rules, module resolution, constructor legality, and runtime support checks belong in the checker.
 - Preserve source positions from the first token of each node.
 
-### Checker
+#### Checker
 
 - Prefer concrete types and closed unions over `Any`.
 - Do not introduce implicit numeric promotion without documenting the rule and updating operator tests.
@@ -297,7 +593,7 @@ Keep phase ownership clear.
 - Keep flow narrowing and static-truth pruning mirrored between checker and lowerer when specializations make branches unreachable.
 - When adding a type form, update `types`, annotation parsing, `resolveType`, assignability/printability as needed, lowering, and docs.
 
-### Lowerer
+#### Lowerer
 
 - Lower only checked forms. The lowerer may assume the checker has rejected unsupported syntax and invalid types.
 - Preserve minivm type pools and handler tables around optimizer passes as the current pipeline does.
@@ -305,7 +601,7 @@ Keep phase ownership clear.
 - For closure/capture changes, keep checker capture metadata and lowerer boxing behavior in sync.
 - For specialization changes, keep per-specialization type tables isolated from the fallback function body.
 
-## Native Modules
+### 9.4 Native Modules
 
 A native symbol should provide a coherent triple:
 
@@ -317,94 +613,23 @@ Keep native operation semantics in `builtins` or `operator`; do not duplicate na
 
 Native symbols are callable names, not first-class values. If that changes, update `module`, checker name resolution, lowering, docs, and compatibility status.
 
-## Tests
+## Agent Rule of Thumb
 
-Tests should cover behavior, not internal shape, unless the internal shape is the contract being protected.
+When unsure, choose the smallest correct change.
 
-Prefer table tests for repeated behavior and focused tests for subtle control flow.
+Prefer local code over a helper, one clear function over fragments, one short role name over mechanism names, one cohesive type over interfaces, explicit flow over clever indirection, one direct algorithm over coordinated state, and nearby style over a new pattern.
 
-When a change touches multiple compiler phases, test the behavior through the highest meaningful public boundary and add lower-level tests only for phase-local contracts.
-
-Keep fixtures small. A test should make the important source, diagnostic, or runtime behavior visible near the assertion.
-
-Use `require` for assertions. Avoid direct `t.Fatal`, `t.Fatalf`, `t.Error`, and `t.Errorf` in new tests; use `require.NoError`, `require.ErrorIs`, `require.Equal`, `require.True`, or `require.Failf` instead.
-
-Top-level tests target public symbols. Use names such as `TestFoo`, `TestNewFoo`, and `TestFoo_Bar`. Do not name top-level tests after private helpers unless that private shape is itself the contract being protected.
-
-Match test files to production files when adding new test files:
-
-```text
-buffer.go      -> buffer_test.go
-assembler.go   -> assembler_test.go
-```
-
-Keep nesting shallow. Aim for at most one `t.Run` level. Use table-driven tests when setup and assertions share one shape; use explicit subtests when cases need different setup or clearer labels. Do not mix table-driven and explicit subtest styles at the same nesting level.
-
-Defer cleanup immediately after successful allocation. Avoid test helpers for fixtures, configured objects, or assertions by default. Duplicated setup is acceptable when it keeps the tested API visible.
-
-Use package-local tests for lexer/token/parser/checker behavior, native module tests for builtin/operator rules, and integration tests for CLI/runtime paths where appropriate.
-
-## Git and PRs
-
-Keep commits focused. A commit should have one reason to exist.
-
-Use commit messages that name the area and behavior, for example:
-
-```text
-compiler: reject dynamic kwargs unpacking
-```
-
-PR descriptions should include what changed, why it changed, how it was validated, and any intentionally deferred follow-up.
-
-## Docs
-
-Documentation should have one owner for each topic. Other documents should summarize and link to that owner instead of repeating the full explanation.
-
-Use this standard document shape when it fits the document:
-
-1. title and short purpose
-2. `When to Read`
-3. `Source of Truth` when relevant
-4. main content
-5. `Maintenance Notes`
-6. `Related Docs`
-
-The spec files are the owner for language behavior:
-
-- `docs/spec/01-lexical.md` for tokens, literals, indentation, and f-strings.
-- `docs/spec/02-types.md` for type forms, assignability, inference, narrowing, and specialization.
-- `docs/spec/03-grammar.md` for syntax.
-- `docs/spec/04-static-semantics.md` for checker behavior and diagnostics.
-- `docs/spec/05-codegen.md` for lowering/runtime representation.
-- `docs/spec/06-builtins.md` for builtin/operator/native-module behavior.
-
-Status documents should link to the owner instead of repeating full rules:
-
-- `docs/compatibility.md` summarizes user-facing Python compatibility status.
-- `docs/roadmap.md` summarizes completed work and remaining gaps.
-- `README.md` summarizes project purpose, package map, and run instructions.
-
-Avoid stale milestone phrasing in spec files. If a feature is already shipped, describe the implementation and restrictions directly. If it is not shipped, state whether it is parse-only, rejected, planned, or out of scope.
-
-Keep wording direct and standard. Prefer `minipy`, `minivm`, `lexer`, `parser`, `checker`, `lowerer`, `native module`, `source type`, `opcode`, `value`, and `diagnostic` consistently.
-
-Agent instruction files are routing and enforcement surfaces. Keep `AGENTS.md` as the common Claude Code / Codex contract, keep `.claude/CLAUDE.md` as a short Claude overlay that imports `AGENTS.md`, and keep detailed coding rules in their owner docs.
+The best design keeps behavior obvious, names few things, and leaves the next reader with less to understand.
 
 ## Maintenance Notes
 
-When changing coding patterns:
-
-- prefer rules that can be checked by reading nearby code
-- avoid adding process that does not prevent real mistakes
-- keep this document shorter than the code it governs
-- keep minipy-specific rules aligned with minivm `docs/coding-patterns.md`
-- update related docs if the documentation shape changes
-- keep terminology aligned with the rest of `docs/`
+When changing coding patterns, keep rules readable from nearby code, avoid process that prevents no real mistakes, preserve useful historical rules unless they conflict with current code, keep terminology aligned with `docs/`, and update `docs/README.md` if the documentation shape changes.
 
 ## Related Docs
 
 - minivm `docs/coding-patterns.md` - shared contributor coding patterns
 - `README.md` - project overview and package map
+- `docs/README.md` - documentation ownership and format
 - `docs/spec/00-overview.md` - compiler architecture and execution model
 - `docs/spec/` - language and compiler behavior owners
 - `docs/compatibility.md` - Python compatibility status
