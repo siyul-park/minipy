@@ -60,6 +60,23 @@ func Parse(r io.Reader) (*ast.Module, error) {
 	return New(r).Parse()
 }
 
+// ParseType parses a standalone annotation expression. It is used by postponed
+// annotations after the checker has accepted the relevant future flag.
+func ParseType(src string) (ast.Expr, error) {
+	p := New(strings.NewReader(src))
+	expr := p.parseType()
+	for p.at(token.NEWLINE) {
+		p.advance()
+	}
+	if !p.at(token.EOF) {
+		p.errs.Add(p.cur().Pos, token.SyntaxError, "expected end of type annotation, got %s", p.cur().Type)
+	}
+	if le, ok := p.lex.Err().(token.ErrorList); ok {
+		p.errs = append(le, p.errs...)
+	}
+	return expr, p.errs.Err()
+}
+
 // Parse parses the token stream into a Module, lexing on demand. Lexical
 // diagnostics gathered while pulling tokens are merged ahead of syntactic ones.
 func (p *Parser) Parse() (*ast.Module, error) {
@@ -1181,6 +1198,9 @@ func (p *Parser) parseType() ast.Expr {
 // subscripted/generic type such as list[T], dict[K, V], or Callable[[P], R].
 func (p *Parser) parseTypeAtom() ast.Expr {
 	t := p.cur()
+	if t.Type == token.STRING {
+		return p.parseString()
+	}
 	if t.Type == token.NAME || t.Type == token.NONE {
 		p.advance()
 		name := t.Literal

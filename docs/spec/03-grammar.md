@@ -107,8 +107,10 @@ import_alias    ::= dotted_name ['as' NAME]
 dotted_name     ::= NAME {'.' NAME}
 ```
 
-Imports are supported only at module top level. `from ... import *` parses but is
-rejected by the checker.
+Imports are supported only at module top level. `from __future__ import ...`
+parses as a normal import-from statement and is validated by the checker. String
+literals are accepted in annotation positions so postponed annotations can be
+checked after future flags are known.
 
 ## Compound Statements
 

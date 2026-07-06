@@ -114,6 +114,32 @@ func TestCompileImports(t *testing.T) {
 		src := "import m\nprint(m.describe(1))\nprint(m.describe(\"x\"))\n"
 		require.Equal(t, "i1\nsx\n", runFS(t, src, fsys))
 	})
+
+	t.Run("future annotations allow string annotations after docstring", func(t *testing.T) {
+		src := "\"module docs\"\nfrom __future__ import annotations\nx: \"int\" = 3\nprint(str(x))\n"
+		require.Equal(t, "3\n", runFS(t, src, fstest.MapFS{}))
+	})
+
+	t.Run("star import expands source public names", func(t *testing.T) {
+		fsys := fstest.MapFS{
+			"a.py": {Data: []byte("x: int = 2\n_hidden: int = 9\ndef f() -> int:\n    return x + 3\n")},
+		}
+		src := "from a import *\nprint(str(x))\nprint(str(f()))\n"
+		require.Equal(t, "2\n5\n", runFS(t, src, fsys))
+	})
+
+	t.Run("star import uses static all", func(t *testing.T) {
+		fsys := fstest.MapFS{
+			"a.py": {Data: []byte("__all__ = (\"_hidden\", \"f\")\n_hidden: int = 7\ndef f() -> int:\n    return _hidden\n")},
+		}
+		src := "from a import *\nprint(str(_hidden))\nprint(str(f()))\n"
+		require.Equal(t, "7\n7\n", runFS(t, src, fsys))
+	})
+
+	t.Run("star import expands native module names", func(t *testing.T) {
+		src := "from operator import *\nprint(str(add(2, 3)))\n"
+		require.Equal(t, "5\n", runFS(t, src, fstest.MapFS{}))
+	})
 }
 
 func TestImportErrors(t *testing.T) {
@@ -134,9 +160,60 @@ func TestImportErrors(t *testing.T) {
 		require.Contains(t, err.Error(), "circular import: a -> b -> a")
 	})
 
-	t.Run("star import rejected", func(t *testing.T) {
+	t.Run("future import after statement rejected", func(t *testing.T) {
+		_, err := Compile(strings.NewReader("x: int = 1\nfrom __future__ import annotations\n"), WithModules(fstest.MapFS{}))
+		require.Error(t, err)
+		code(t, err, token.SyntaxError)
+		require.Contains(t, err.Error(), "from __future__ imports must occur at beginning of file")
+	})
+
+	t.Run("future import after import rejected", func(t *testing.T) {
+		_, err := Compile(strings.NewReader("import builtins\nfrom __future__ import annotations\n"), WithModules(fstest.MapFS{}))
+		require.Error(t, err)
+		code(t, err, token.SyntaxError)
+		require.Contains(t, err.Error(), "from __future__ imports must occur at beginning of file")
+	})
+
+	t.Run("future import after function rejected", func(t *testing.T) {
+		_, err := Compile(strings.NewReader("def f() -> None:\n    pass\nfrom __future__ import annotations\n"), WithModules(fstest.MapFS{}))
+		require.Error(t, err)
+		code(t, err, token.SyntaxError)
+		require.Contains(t, err.Error(), "from __future__ imports must occur at beginning of file")
+	})
+
+	t.Run("unknown future flag rejected", func(t *testing.T) {
+		_, err := Compile(strings.NewReader("from __future__ import braces\n"), WithModules(fstest.MapFS{}))
+		require.Error(t, err)
+		code(t, err, token.SyntaxError)
+		require.Contains(t, err.Error(), "unknown __future__ feature")
+	})
+
+	t.Run("string annotation without future rejected", func(t *testing.T) {
+		_, err := Compile(strings.NewReader("x: \"int\" = 1\n"), WithModules(fstest.MapFS{}))
+		require.Error(t, err)
+		code(t, err, token.UnsupportedType)
+		require.Contains(t, err.Error(), "string annotations require")
+	})
+
+	t.Run("star import conflict rejected", func(t *testing.T) {
 		fsys := fstest.MapFS{"a.py": {Data: []byte("x: int = 1\n")}}
+		_, err := Compile(strings.NewReader("x: int = 0\nfrom a import *\n"), WithModules(fsys))
+		require.Error(t, err)
+		code(t, err, token.ImportError)
+		require.Contains(t, err.Error(), "conflicts with local name")
+	})
+
+	t.Run("star import with dynamic all rejected", func(t *testing.T) {
+		fsys := fstest.MapFS{"a.py": {Data: []byte("names: list[str] = [\"x\"]\n__all__ = names\nx: int = 1\n")}}
 		_, err := Compile(strings.NewReader("from a import *\n"), WithModules(fsys))
+		require.Error(t, err)
+		code(t, err, token.UnsupportedFeature)
+		require.Contains(t, err.Error(), "requires a static __all__")
+	})
+
+	t.Run("star import inside function rejected", func(t *testing.T) {
+		fsys := fstest.MapFS{"a.py": {Data: []byte("x: int = 1\n")}}
+		_, err := Compile(strings.NewReader("def f() -> None:\n    from a import *\n"), WithModules(fsys))
 		require.Error(t, err)
 		code(t, err, token.UnsupportedFeature)
 	})

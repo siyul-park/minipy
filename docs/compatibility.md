@@ -80,7 +80,8 @@ full CPython compatibility.
 | `type` alias statement | ✅ | Compile-time alias. |
 | `import` | ✅ | Module top-level only. |
 | `from ... import ...` | ✅ | Module top-level only; aliases supported. |
-| `from ... import *` | ⏳ | Parsed, rejected. |
+| `from __future__ import ...` | ◐ | Module-prefix only; supports `annotations`. |
+| `from ... import *` | ◐ | Static expansion only; uses static `__all__` or public names. |
 | `try`/`except`/`else`/`finally` | ✅ | Structured VM error path. |
 | `except*` | ⏳ | Parsed; ExceptionGroup semantics not implemented. |
 | `raise` | ✅ | Includes bare re-raise in `except`. |

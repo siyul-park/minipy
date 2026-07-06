@@ -1,12 +1,14 @@
 package compiler
 
 import (
+	"sort"
 	"strings"
 
 	"github.com/siyul-park/minipy/ast"
 	"github.com/siyul-park/minipy/builtins"
 	"github.com/siyul-park/minipy/module"
 	"github.com/siyul-park/minipy/operator"
+	"github.com/siyul-park/minipy/parser"
 	"github.com/siyul-park/minipy/token"
 	"github.com/siyul-park/minipy/types"
 )
@@ -240,10 +242,118 @@ func (c *checker) checkModule(m *moduleInfo) {
 	m.checked = true
 	prev := c.mod
 	c.mod = m
+	c.checkFutureImports(m)
 	c.declareClasses(m.ast.Body)
 	c.declareFuncs(m.ast.Body)
 	c.checkBlock(m.ast.Body)
+	c.computeExports(m)
 	c.mod = prev
+}
+
+func (c *checker) checkFutureImports(m *moduleInfo) {
+	if m.future == nil {
+		m.future = map[string]bool{}
+	}
+	inPrefix := true
+	docstringAllowed := true
+	for _, s := range m.ast.Body {
+		if docstringAllowed {
+			if expr, ok := s.(*ast.ExprStmt); ok {
+				if _, ok := expr.X.(*ast.StrLit); ok {
+					docstringAllowed = false
+					continue
+				}
+			}
+		}
+		docstringAllowed = false
+		future, ok := s.(*ast.ImportFrom)
+		if ok && future.Level == 0 && future.Module == "__future__" {
+			if !inPrefix {
+				c.errs.Add(future.Pos(), token.SyntaxError, "from __future__ imports must occur at beginning of file")
+				continue
+			}
+			for _, name := range future.Names {
+				if name.As != "" {
+					c.errs.Add(name.Pos(), token.SyntaxError, "future feature %q cannot be imported as an alias", name.Name)
+					continue
+				}
+				switch name.Name {
+				case "annotations":
+					m.future[name.Name] = true
+				default:
+					c.errs.Add(name.Pos(), token.SyntaxError, "unknown __future__ feature %q", name.Name)
+				}
+			}
+			continue
+		}
+		inPrefix = false
+	}
+}
+
+func (c *checker) computeExports(m *moduleInfo) {
+	if m.native {
+		return
+	}
+	if m.allSeen {
+		if m.allStatic {
+			m.exports = uniqueStrings(m.all)
+		}
+		return
+	}
+	names := map[string]bool{}
+	for name := range m.bindings {
+		if !strings.HasPrefix(name, "_") {
+			names[name] = true
+		}
+	}
+	for key := range c.globals {
+		if name, ok := localNameForModule(m.name, key); ok && !strings.HasPrefix(name, "_") {
+			names[name] = true
+		}
+	}
+	for key := range c.functions {
+		if name, ok := localNameForModule(m.name, key); ok && !strings.HasPrefix(name, "_") {
+			names[name] = true
+		}
+	}
+	for key := range c.classes {
+		if name, ok := localNameForModule(m.name, key); ok && !strings.HasPrefix(name, "_") {
+			names[name] = true
+		}
+	}
+	m.exports = make([]string, 0, len(names))
+	for name := range names {
+		m.exports = append(m.exports, name)
+	}
+	sort.Strings(m.exports)
+}
+
+func localNameForModule(moduleName, key string) (string, bool) {
+	if moduleName == "__main__" {
+		if strings.Contains(key, ".") {
+			return "", false
+		}
+		return key, true
+	}
+	prefix := moduleName + "."
+	if !strings.HasPrefix(key, prefix) {
+		return "", false
+	}
+	name := strings.TrimPrefix(key, prefix)
+	return name, !strings.Contains(name, ".")
+}
+
+func uniqueStrings(in []string) []string {
+	seen := map[string]bool{}
+	out := make([]string, 0, len(in))
+	for _, s := range in {
+		if seen[s] {
+			continue
+		}
+		seen[s] = true
+		out = append(out, s)
+	}
+	return out
 }
 
 func (c *checker) key(name string) string {
@@ -635,8 +745,11 @@ func (c *checker) importFromStmt(n *ast.ImportFrom) {
 		c.errs.Add(n.Pos(), token.UnsupportedFeature, "from import is only supported at module top level")
 		return
 	}
+	if n.Level == 0 && n.Module == "__future__" {
+		return
+	}
 	if len(n.Names) == 1 && n.Names[0].Name == "*" {
-		c.errs.Add(n.Names[0].Pos(), token.UnsupportedFeature, "from-import * is not supported")
+		c.importStar(n)
 		return
 	}
 	base := c.loader.resolveFrom(c.mod, n)
@@ -673,6 +786,54 @@ func (c *checker) importFromStmt(n *ast.ImportFrom) {
 			c.errs.Add(a.Pos(), token.ImportError, "cannot import name %q from %q", a.Name, base)
 		}
 	}
+}
+
+func (c *checker) importStar(n *ast.ImportFrom) {
+	base := c.loader.resolveFrom(c.mod, n)
+	if base == "" {
+		return
+	}
+	m := c.loader.loadModule(base, n.Pos())
+	c.checkModule(m)
+	if m == nil {
+		return
+	}
+	if m.allSeen && !m.allStatic {
+		c.errs.Add(n.Pos(), token.UnsupportedFeature, "from-import * requires a static __all__ in %q", base)
+		return
+	}
+	for _, name := range m.exports {
+		if c.localBindingExists(name) {
+			c.errs.Add(n.Names[0].Pos(), token.ImportError, "from-import * from %q conflicts with local name %q", base, name)
+			continue
+		}
+		res := c.resolveModuleAttr(base, name)
+		switch res.kind {
+		case "function", "class", "global", "native":
+			c.mod.bindings[name] = binding{module: base, symbol: name}
+		case "module":
+			c.mod.bindings[name] = binding{module: res.module}
+		default:
+			c.errs.Add(n.Names[0].Pos(), token.ImportError, "cannot import name %q from %q", name, base)
+		}
+	}
+}
+
+func (c *checker) localBindingExists(name string) bool {
+	if _, ok := c.mod.bindings[name]; ok {
+		return true
+	}
+	key := c.key(name)
+	if _, ok := c.globals[key]; ok {
+		return true
+	}
+	if _, ok := c.functions[key]; ok {
+		return true
+	}
+	if _, ok := c.classes[key]; ok {
+		return true
+	}
+	return false
 }
 
 func (c *checker) tryStmt(n *ast.Try) {
@@ -1936,6 +2097,18 @@ func (c *checker) paramType(p *ast.Param) types.Type {
 }
 
 func (c *checker) resolveType(e ast.Expr) types.Type {
+	if lit, ok := e.(*ast.StrLit); ok {
+		if c.mod == nil || !c.mod.future["annotations"] {
+			c.errs.Add(e.Pos(), token.UnsupportedType, "string annotations require from __future__ import annotations")
+			return types.Invalid
+		}
+		ann, err := parser.ParseType(lit.Value)
+		if err != nil {
+			c.errs.Add(e.Pos(), token.UnsupportedType, "invalid string annotation %q: %s", lit.Value, err)
+			return types.Invalid
+		}
+		return c.resolveType(ann)
+	}
 	if name, ok := e.(*ast.Name); ok {
 		if alias, ok := c.aliases[c.resolveName(name.Name).key]; ok {
 			return alias

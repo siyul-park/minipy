@@ -418,15 +418,18 @@ func (c *Compiler) importStmt(n *ast.Import) {
 }
 
 func (c *Compiler) importFromStmt(n *ast.ImportFrom) {
+	if n.Level == 0 && n.Module == "__future__" {
+		return
+	}
 	base := c.resolveFrom(n)
 	if base == "" {
 		return
 	}
 	c.emitImportChain(base)
+	if len(n.Names) == 1 && n.Names[0].Name == "*" {
+		return
+	}
 	for _, a := range n.Names {
-		if a.Name == "*" {
-			continue
-		}
 		if sub := c.modules[base+"."+a.Name]; sub != nil {
 			c.emitImportChain(sub.name)
 		}

@@ -43,7 +43,25 @@ for `__main__`, whose names remain unqualified. Imports create compile-time
 bindings to modules, symbols, or native symbols.
 
 Imports are supported only at module top level. Relative imports resolve from the
-current module/package context. `from ... import *` is parsed but rejected.
+current module/package context.
+
+`from __future__ import ...` is recognized before normal declarations. Future
+imports may appear only at the start of a module, after an optional module
+docstring and before any other statement. Supported future flags:
+
+- `annotations`: allows string annotations and resolves their contents using the
+  normal annotation resolver.
+
+Unknown future flags and future imports after ordinary statements are syntax
+errors.
+
+`from module import *` is supported only at module top level when the target
+module's export set is statically known. Source modules export a static
+`__all__` when it is a top-level list or tuple of string literals; otherwise
+they export public top-level names that do not start with `_`. Native modules
+export their registered symbol names. Star import expansion creates compile-time
+bindings only, detects conflicts with existing local names, and performs no
+runtime namespace reflection.
 
 ### Globals and Locals
 
@@ -85,6 +103,9 @@ A | B
 
 Unknown annotation names, unsupported generic names, malformed `Callable`, and
 unsupported attribute annotations are diagnostics.
+
+String annotations require `from __future__ import annotations`; without that
+flag, they are rejected during type resolution.
 
 `type Name = expr` records a compile-time type alias once `expr` resolves to a
 valid type.

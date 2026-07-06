@@ -27,6 +27,11 @@ type moduleInfo struct {
 	ast       *ast.Module
 	isPackage bool
 	bindings  map[string]binding
+	future    map[string]bool
+	exports   []string
+	all       []string
+	allSeen   bool
+	allStatic bool
 	parent    string
 	native    bool
 	fsys      fs.FS
@@ -186,6 +191,7 @@ func (ld *loader) loadBuiltin(name string) *moduleInfo {
 		ast:      &ast.Module{},
 		native:   true,
 		bindings: bindings,
+		exports:  names,
 	}
 	ld.modules[name] = m
 	return m
@@ -275,6 +281,7 @@ func (ld *loader) scan(m *moduleInfo) {
 	if m == nil || m.ast == nil {
 		return
 	}
+	m.all, m.allSeen, m.allStatic = staticAll(m.ast.Body)
 	for _, s := range m.ast.Body {
 		switch n := s.(type) {
 		case *ast.Import:
@@ -282,6 +289,9 @@ func (ld *loader) scan(m *moduleInfo) {
 				ld.loadModule(a.Name, a.Pos())
 			}
 		case *ast.ImportFrom:
+			if n.Level == 0 && n.Module == "__future__" {
+				continue
+			}
 			base := ld.resolveFrom(m, n)
 			if base == "" {
 				continue
@@ -323,6 +333,43 @@ func (ld *loader) resolveFrom(m *moduleInfo, n *ast.ImportFrom) string {
 		return base + "." + n.Module
 	}
 	return base
+}
+
+func staticAll(body []ast.Stmt) ([]string, bool, bool) {
+	for _, s := range body {
+		assign, ok := s.(*ast.Assign)
+		if !ok {
+			continue
+		}
+		name, ok := assign.Target.(*ast.Name)
+		if !ok || name.Name != "__all__" {
+			continue
+		}
+		names, ok := stringSequence(assign.Value)
+		return names, true, ok
+	}
+	return nil, false, false
+}
+
+func stringSequence(e ast.Expr) ([]string, bool) {
+	var elems []ast.Expr
+	switch n := e.(type) {
+	case *ast.ListLit:
+		elems = n.Elems
+	case *ast.TupleLit:
+		elems = n.Elems
+	default:
+		return nil, false
+	}
+	names := make([]string, len(elems))
+	for i, elem := range elems {
+		lit, ok := elem.(*ast.StrLit)
+		if !ok {
+			return nil, false
+		}
+		names[i] = lit.Value
+	}
+	return names, true
 }
 
 func (ld *loader) cycle(name string) string {
