@@ -41,6 +41,8 @@ type config struct {
 	reg   *module.Registry
 }
 
+var errListIndexValue = errors.New("list.index value not found")
+
 // Compiler turns minipy source into a runnable minivm program. It mirrors the
 // package-level Compile convenience function while keeping options reusable for
 // one source stream.
@@ -218,6 +220,13 @@ func (c *Compiler) brIf(l instr.Label) {
 
 func (c *Compiler) tryRegion(start, end, catch instr.Label, depth int) {
 	c.code.try(start, end, catch, depth)
+}
+
+func (c *Compiler) tryDepth() int {
+	if c.current == nil {
+		return 0
+	}
+	return len(c.current.params) + len(c.current.order)
 }
 
 func (c *Compiler) constGet(v vmtypes.Value) {
@@ -561,7 +570,7 @@ func (c *Compiler) emitTry(n *ast.Try) {
 		c.emit(instr.GLOBAL_GET, uint64(errSlot))
 		c.emit(instr.THROW)
 		c.bind(after)
-		c.tryRegion(start, end, catch, 0)
+		c.tryRegion(start, end, catch, c.tryDepth())
 		return
 	}
 	instSlot := c.tmp()
@@ -594,7 +603,7 @@ func (c *Compiler) emitTry(n *ast.Try) {
 	c.emit(instr.GLOBAL_GET, uint64(errSlot))
 	c.emit(instr.THROW)
 	c.bind(after)
-	c.tryRegion(start, end, catch, 0)
+	c.tryRegion(start, end, catch, c.tryDepth())
 }
 
 func (c *Compiler) emitTryFinally(body func(), finalizer func()) {
@@ -620,7 +629,7 @@ func (c *Compiler) emitTryFinally(body func(), finalizer func()) {
 	c.emit(instr.THROW)
 
 	c.bind(after)
-	c.tryRegion(start, end, catch, 0)
+	c.tryRegion(start, end, catch, c.tryDepth())
 }
 
 func (c *Compiler) finalizer(body []ast.Stmt) func() {
@@ -785,7 +794,7 @@ func (c *Compiler) emitRaise(n *ast.Raise) {
 }
 
 func (c *Compiler) emitExceptionInstance(cls *class, args []ast.Expr) {
-	c.emit(instr.STRUCT_NEW_DEFAULT, c.typeIndex(cls.typ))
+	c.emit(instr.STRUCT_NEW_DEFAULT, c.typeIndex(c.classes["BaseException"].typ))
 	c.emit(instr.DUP)
 	c.emit(instr.I32_CONST, 0)
 	c.emit(instr.I64_CONST, uint64(cls.classID))
@@ -2513,6 +2522,17 @@ func (c *Compiler) methodCall(x *ast.CallExpr, attr *ast.Attribute) {
 			c.emit(instr.I64_CONST, ^uint64(0))
 		}
 		c.emitArrayDelete()
+	case "index":
+		c.callHost(c.listIndex(recvType))
+	case "insert":
+		c.emitListInsert()
+		c.emit(instr.REF_NULL)
+	case "extend":
+		c.emitListExtend()
+		c.emit(instr.REF_NULL)
+	case "reverse":
+		c.emitListReverse()
+		c.emit(instr.REF_NULL)
 	case "upper":
 		c.callHost(c.strUpper())
 	case "lower":
@@ -2589,6 +2609,195 @@ func (c *Compiler) emitArrayDelete() {
 	c.emit(instr.GLOBAL_GET, uint64(idxSlot))
 	c.emit(instr.I64_TO_I32)
 	c.emit(instr.ARRAY_DELETE)
+}
+
+func (c *Compiler) emitListInsert() {
+	valueSlot := c.tmp()
+	idxSlot := c.tmp()
+	listSlot := c.tmp()
+	lenSlot := c.tmp()
+	iSlot := c.tmp()
+
+	c.emit(instr.GLOBAL_SET, uint64(valueSlot))
+	c.emit(instr.GLOBAL_SET, uint64(idxSlot))
+	c.emit(instr.GLOBAL_SET, uint64(listSlot))
+
+	c.emit(instr.GLOBAL_GET, uint64(listSlot))
+	c.emit(instr.ARRAY_LEN)
+	c.emit(instr.I32_TO_I64_S)
+	c.emit(instr.GLOBAL_SET, uint64(lenSlot))
+
+	neg := c.label()
+	clampLow := c.label()
+	clampHigh := c.label()
+	grow := c.label()
+	c.emit(instr.GLOBAL_GET, uint64(idxSlot))
+	c.emit(instr.I64_CONST, 0)
+	c.emit(instr.I64_LT_S)
+	c.brIf(neg)
+	c.br(clampLow)
+	c.bind(neg)
+	c.emit(instr.GLOBAL_GET, uint64(idxSlot))
+	c.emit(instr.GLOBAL_GET, uint64(lenSlot))
+	c.emit(instr.I64_ADD)
+	c.emit(instr.GLOBAL_SET, uint64(idxSlot))
+
+	c.bind(clampLow)
+	c.emit(instr.GLOBAL_GET, uint64(idxSlot))
+	c.emit(instr.I64_CONST, 0)
+	c.emit(instr.I64_LT_S)
+	c.emit(instr.I32_EQZ)
+	c.brIf(clampHigh)
+	c.emit(instr.I64_CONST, 0)
+	c.emit(instr.GLOBAL_SET, uint64(idxSlot))
+
+	c.bind(clampHigh)
+	c.emit(instr.GLOBAL_GET, uint64(idxSlot))
+	c.emit(instr.GLOBAL_GET, uint64(lenSlot))
+	c.emit(instr.I64_GT_S)
+	c.emit(instr.I32_EQZ)
+	c.brIf(grow)
+	c.emit(instr.GLOBAL_GET, uint64(lenSlot))
+	c.emit(instr.GLOBAL_SET, uint64(idxSlot))
+
+	c.bind(grow)
+	c.emit(instr.GLOBAL_GET, uint64(listSlot))
+	c.emit(instr.GLOBAL_GET, uint64(valueSlot))
+	c.emit(instr.I32_CONST, 1)
+	c.emit(instr.ARRAY_APPEND)
+	c.emit(instr.DROP)
+
+	c.emit(instr.GLOBAL_GET, uint64(lenSlot))
+	c.emit(instr.GLOBAL_SET, uint64(iSlot))
+	top := c.label()
+	done := c.label()
+	c.bind(top)
+	c.emit(instr.GLOBAL_GET, uint64(iSlot))
+	c.emit(instr.GLOBAL_GET, uint64(idxSlot))
+	c.emit(instr.I64_GT_S)
+	c.emit(instr.I32_EQZ)
+	c.brIf(done)
+
+	c.emit(instr.GLOBAL_GET, uint64(listSlot))
+	c.emit(instr.GLOBAL_GET, uint64(iSlot))
+	c.emit(instr.I64_TO_I32)
+	c.emit(instr.GLOBAL_GET, uint64(listSlot))
+	c.emit(instr.GLOBAL_GET, uint64(iSlot))
+	c.emit(instr.I64_CONST, 1)
+	c.emit(instr.I64_SUB)
+	c.emit(instr.I64_TO_I32)
+	c.emit(instr.ARRAY_GET)
+	c.emit(instr.ARRAY_SET)
+
+	c.emit(instr.GLOBAL_GET, uint64(iSlot))
+	c.emit(instr.I64_CONST, 1)
+	c.emit(instr.I64_SUB)
+	c.emit(instr.GLOBAL_SET, uint64(iSlot))
+	c.br(top)
+	c.bind(done)
+
+	c.emit(instr.GLOBAL_GET, uint64(listSlot))
+	c.emit(instr.GLOBAL_GET, uint64(idxSlot))
+	c.emit(instr.I64_TO_I32)
+	c.emit(instr.GLOBAL_GET, uint64(valueSlot))
+	c.emit(instr.ARRAY_SET)
+}
+
+func (c *Compiler) emitListExtend() {
+	srcSlot := c.tmp()
+	listSlot := c.tmp()
+	lenSlot := c.tmp()
+	iSlot := c.tmp()
+
+	c.emit(instr.GLOBAL_SET, uint64(srcSlot))
+	c.emit(instr.GLOBAL_SET, uint64(listSlot))
+	c.emit(instr.GLOBAL_GET, uint64(srcSlot))
+	c.emit(instr.ARRAY_LEN)
+	c.emit(instr.I32_TO_I64_S)
+	c.emit(instr.GLOBAL_SET, uint64(lenSlot))
+	c.emit(instr.I64_CONST, 0)
+	c.emit(instr.GLOBAL_SET, uint64(iSlot))
+
+	top := c.label()
+	done := c.label()
+	c.bind(top)
+	c.emit(instr.GLOBAL_GET, uint64(iSlot))
+	c.emit(instr.GLOBAL_GET, uint64(lenSlot))
+	c.emit(instr.I64_LT_S)
+	c.emit(instr.I32_EQZ)
+	c.brIf(done)
+	c.emit(instr.GLOBAL_GET, uint64(listSlot))
+	c.emit(instr.GLOBAL_GET, uint64(srcSlot))
+	c.emit(instr.GLOBAL_GET, uint64(iSlot))
+	c.emit(instr.I64_TO_I32)
+	c.emit(instr.ARRAY_GET)
+	c.emit(instr.I32_CONST, 1)
+	c.emit(instr.ARRAY_APPEND)
+	c.emit(instr.DROP)
+	c.emit(instr.GLOBAL_GET, uint64(iSlot))
+	c.emit(instr.I64_CONST, 1)
+	c.emit(instr.I64_ADD)
+	c.emit(instr.GLOBAL_SET, uint64(iSlot))
+	c.br(top)
+	c.bind(done)
+}
+
+func (c *Compiler) emitListReverse() {
+	listSlot := c.tmp()
+	iSlot := c.tmp()
+	jSlot := c.tmp()
+	tmpSlot := c.tmp()
+
+	c.emit(instr.GLOBAL_SET, uint64(listSlot))
+	c.emit(instr.I64_CONST, 0)
+	c.emit(instr.GLOBAL_SET, uint64(iSlot))
+	c.emit(instr.GLOBAL_GET, uint64(listSlot))
+	c.emit(instr.ARRAY_LEN)
+	c.emit(instr.I32_TO_I64_S)
+	c.emit(instr.I64_CONST, 1)
+	c.emit(instr.I64_SUB)
+	c.emit(instr.GLOBAL_SET, uint64(jSlot))
+
+	top := c.label()
+	done := c.label()
+	c.bind(top)
+	c.emit(instr.GLOBAL_GET, uint64(iSlot))
+	c.emit(instr.GLOBAL_GET, uint64(jSlot))
+	c.emit(instr.I64_LT_S)
+	c.emit(instr.I32_EQZ)
+	c.brIf(done)
+
+	c.emit(instr.GLOBAL_GET, uint64(listSlot))
+	c.emit(instr.GLOBAL_GET, uint64(iSlot))
+	c.emit(instr.I64_TO_I32)
+	c.emit(instr.ARRAY_GET)
+	c.emit(instr.GLOBAL_SET, uint64(tmpSlot))
+
+	c.emit(instr.GLOBAL_GET, uint64(listSlot))
+	c.emit(instr.GLOBAL_GET, uint64(iSlot))
+	c.emit(instr.I64_TO_I32)
+	c.emit(instr.GLOBAL_GET, uint64(listSlot))
+	c.emit(instr.GLOBAL_GET, uint64(jSlot))
+	c.emit(instr.I64_TO_I32)
+	c.emit(instr.ARRAY_GET)
+	c.emit(instr.ARRAY_SET)
+
+	c.emit(instr.GLOBAL_GET, uint64(listSlot))
+	c.emit(instr.GLOBAL_GET, uint64(jSlot))
+	c.emit(instr.I64_TO_I32)
+	c.emit(instr.GLOBAL_GET, uint64(tmpSlot))
+	c.emit(instr.ARRAY_SET)
+
+	c.emit(instr.GLOBAL_GET, uint64(iSlot))
+	c.emit(instr.I64_CONST, 1)
+	c.emit(instr.I64_ADD)
+	c.emit(instr.GLOBAL_SET, uint64(iSlot))
+	c.emit(instr.GLOBAL_GET, uint64(jSlot))
+	c.emit(instr.I64_CONST, 1)
+	c.emit(instr.I64_SUB)
+	c.emit(instr.GLOBAL_SET, uint64(jSlot))
+	c.br(top)
+	c.bind(done)
 }
 
 func (c *Compiler) dictGet(receiver, result types.Type) *interp.HostFunction {
@@ -2705,6 +2914,22 @@ func (c *Compiler) listSlice(receiver types.Type) *interp.HostFunction {
 				out = append(out, elems[idx])
 			}
 			return hostabi.AllocArray(i, typ, out)
+		},
+	)
+}
+
+func (c *Compiler) listIndex(receiver types.Type) *interp.HostFunction {
+	elem := receiver.(*types.List).Elem
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: []vmtypes.Type{receiver.VM(), elem.VM()}, Returns: []vmtypes.Type{vmtypes.TypeI64}},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			_, elems := hostabi.ArrayElems(i, params[0])
+			for idx, elem := range elems {
+				if hostabi.BoxedEqual(i, elem, params[1]) {
+					return []vmtypes.Boxed{vmtypes.BoxI64(int64(idx))}, nil
+				}
+			}
+			return nil, errListIndexValue
 		},
 	)
 }
@@ -2921,6 +3146,8 @@ func (c *Compiler) exc() *interp.HostFunction {
 							class = classID("IndexError")
 						case errors.Is(exc.Unwrap(), interp.ErrTypeMismatch):
 							class = classID("TypeError")
+						case errors.Is(exc.Unwrap(), errListIndexValue):
+							class = classID("ValueError")
 						}
 					}
 				}

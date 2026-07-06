@@ -133,6 +133,7 @@ full CPython compatibility.
 | Slicing | ✅ | Lists and strings. |
 | Slice assignment | ⏳ | Parsed, rejected. |
 | List literals | ✅ | Homogeneous; empty needs hint. |
+| List methods | ◐ | `append`, `pop`, `index`, `insert`, `extend`, and `reverse`; statically typed homogeneous lists only. |
 | Dict literals | ✅ | Homogeneous; empty needs hint; scalar hashable keys. |
 | Set literals | ✅ | Homogeneous; empty needs hint; scalar hashable elements. |
 | Tuple literals | ✅ | Fixed arity, heterogeneous. |

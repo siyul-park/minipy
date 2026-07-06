@@ -174,6 +174,13 @@ List, dict, set, and tuple displays lower to minivm array/map/struct creation
 paths. String indexing/slicing and list iteration use host ABI helpers when the VM
 primitive set does not provide the exact operation.
 
+List methods lower without dynamic attribute lookup. `append`, `pop`, `insert`,
+`extend`, and `reverse` mutate the receiver with minivm array opcodes and
+compiler-emitted loops. `insert` grows with `ARRAY_APPEND` before shifting
+elements right. `extend` records the source length before appending, preserving
+`xs.extend(xs)` snapshot behavior. `index` uses a narrow host helper for equality
+search and maps a miss to `ValueError`.
+
 ### Comprehensions and Generators
 
 List/dict/set comprehensions lower as eager construction loops. Generator

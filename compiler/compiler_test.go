@@ -484,6 +484,40 @@ print(t[1])
 		require.Contains(t, out, "7\nx\n")
 	})
 
+	t.Run("list search and mutation methods", func(t *testing.T) {
+		src := `xs: list[int] = [10, 20, 10]
+print(str(xs.index(10)))
+print(str(xs.index(20)))
+xs.insert(1, 15)
+xs.insert(-99, 5)
+xs.insert(99, 30)
+print(str(len(xs)))
+print(str(xs[0]))
+print(str(xs[2]))
+print(str(xs[5]))
+ys: list[int] = [40, 50]
+xs.extend(ys)
+print(str(xs[7]))
+ys.extend(ys)
+print(str(len(ys)))
+print(str(ys[2]))
+xs.reverse()
+print(str(xs[0]))
+print(str(xs[7]))
+`
+		require.Equal(t, "0\n1\n6\n5\n15\n30\n50\n4\n40\n50\n5\n", run(t, src))
+	})
+
+	t.Run("list index missing raises ValueError", func(t *testing.T) {
+		src := `xs: list[int] = [1, 2]
+try:
+    print(str(xs.index(3)))
+except ValueError:
+    print("missing")
+`
+		require.Equal(t, "missing\n", run(t, src))
+	})
+
 	t.Run("container membership indexing and mutable fields", func(t *testing.T) {
 		src := `@dataclass
 class Box:
@@ -1447,12 +1481,16 @@ func TestCompileErrors(t *testing.T) {
 		"def f(x: int) -> int:\n    return x\nprint(f(\"x\"))\n": token.TypeMismatch,
 		"def f(x: int) -> int:\n    pass\n":                      token.TypeMismatch,
 		// containers
-		"xs: list[int] = []\nprint(xs[\"0\"])\n":                 token.TypeMismatch,
-		"xs: list[int] = [1]\nxs[0] += 1\n":                      token.UnsupportedFeature,
-		"xs = []\n":                                              token.UnsupportedType,
-		"xs: list[int] = [1, \"x\"]\n":                           token.TypeMismatch,
-		"t: tuple[int, int] = (1, 2)\ni: int = 0\nprint(t[i])\n": token.UnsupportedFeature,
-		"d: dict[list[int], int] = {}\n":                         token.UnsupportedType,
+		"xs: list[int] = []\nprint(xs[\"0\"])\n":                        token.TypeMismatch,
+		"xs: list[int] = [1]\nxs[0] += 1\n":                             token.UnsupportedFeature,
+		"xs = []\n":                                                     token.UnsupportedType,
+		"xs: list[int] = [1, \"x\"]\n":                                  token.TypeMismatch,
+		"xs: list[int] = [1]\nprint(str(xs.index(\"x\")))\n":            token.TypeMismatch,
+		"xs: list[int] = [1]\nxs.insert(0, \"x\")\n":                    token.TypeMismatch,
+		"xs: list[int] = [1]\nys: list[str] = [\"x\"]\nxs.extend(ys)\n": token.TypeMismatch,
+		"xs: list[int] = [1]\nxs.reverse(1)\n":                          token.ArityMismatch,
+		"t: tuple[int, int] = (1, 2)\ni: int = 0\nprint(t[i])\n":        token.UnsupportedFeature,
+		"d: dict[list[int], int] = {}\n":                                token.UnsupportedType,
 		// Closures and comprehensions
 		"f = lambda x: x\n":                                   token.MissingAnnotation,
 		"def f() -> None:\n    nonlocal x\n":                  token.NoBindingForNonlocal,

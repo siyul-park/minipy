@@ -8,6 +8,8 @@ github.com/pmezard/go-difflib v1.0.0/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZN
 github.com/russross/blackfriday/v2 v2.1.0/go.mod h1:+Rmxgy9KzJVeS9/2gXHxylqXiyQDYRxCVz55jmeOWTM=
 github.com/siyul-park/minivm v0.0.0-20260704042816-881643a9fd7f h1:yxeUh6qY+t95fUg79XK71cizd2EPXQwYFIHYnvI7npU=
 github.com/siyul-park/minivm v0.0.0-20260704042816-881643a9fd7f/go.mod h1:40B694d8gujEPfYjCFpCCcTh0OsEWt3nUBeenxAC/c0=
+github.com/siyul-park/minivm v0.0.0-20260706102409-2295478ff68c h1:rVlJEWpNzBVh+9xHmrqnjBfbihrZBdEYhc3P/ofK4hM=
+github.com/siyul-park/minivm v0.0.0-20260706102409-2295478ff68c/go.mod h1:40B694d8gujEPfYjCFpCCcTh0OsEWt3nUBeenxAC/c0=
 github.com/spf13/cobra v1.10.2 h1:DMTTonx5m65Ic0GOoRY2c16WCbHxOOw6xxezuLaBpcU=
 github.com/spf13/cobra v1.10.2/go.mod h1:7C1pvHqHw5A4vrJfjNwvOdzYu0Gml16OCs2GRiTUUS4=
 github.com/spf13/pflag v1.0.9 h1:9exaQaMOCwffKiiiYk6/BndUBv+iRViNW+4lEMi0PvY=

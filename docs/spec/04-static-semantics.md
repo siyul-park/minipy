@@ -193,6 +193,12 @@ Native functions cannot be first-class values. Class and module objects are also
 compile-time-only as values; they may appear as call or attribute receivers in the
 supported positions.
 
+List methods are resolved statically on `list[T]` receivers. Supported methods
+are `append`, `pop`, `index`, `insert`, `extend`, and `reverse`; unknown list
+methods are rejected. Method arity is checked at compile time, element arguments
+must be assignable to `T`, `insert` indexes must be `int`, and `extend` accepts
+only `list[T]`.
+
 ### Lambdas
 
 A lambda needs an expected `Callable[[...], R]` type. Its parameter count must

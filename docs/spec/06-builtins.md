@@ -96,6 +96,26 @@ coroutine protocol and traps through the VM when the iterator is exhausted.
 
 `enumerate` and `zip` currently work on lists and eagerly produce lists of tuples.
 
+## List Methods
+
+Supported homogeneous `list[T]` methods:
+
+| Method | Arity | Accepted argument types | Result |
+|---|---:|---|---|
+| `append(value)` | 1 | `T` | `None` |
+| `pop()` | 0 | none | `T` |
+| `pop(index)` | 1 | `int` | `T` |
+| `index(value)` | 1 | `T` | `int` |
+| `insert(index, value)` | 2 | `int`, `T` | `None` |
+| `extend(values)` | 1 | `list[T]` | `None` |
+| `reverse()` | 0 | none | `None` |
+
+`index` returns the first equal element position and raises `ValueError` when no
+element matches. `insert` normalizes negative indexes relative to the current
+length, clamps indexes below zero to `0`, and clamps indexes above the current
+length to `len(list)`. `extend` snapshots the source length before mutation, so
+`xs.extend(xs)` appends the original contents once. `reverse` mutates in place.
+
 ## Exceptions
 
 `builtins` also provides the builtin exception hierarchy used by the checker and
