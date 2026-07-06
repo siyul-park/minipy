@@ -43,7 +43,7 @@ owned by `docs/spec/`; compatibility status is summarized in
 - Containers: `list[T]`, `dict[K, V]`, `set[T]`, fixed tuples.
 - Classes, single inheritance, methods, `@dataclass` construction, builtin
   exception classes.
-- `Iterator[T]`, `Callable[[...], R`, closed unions, `T | None` optional style.
+- `Iterator[T]`, `Callable[[...], R]`, closed unions, `T | None` optional style.
 - Whole-program inference for unannotated locals/globals/params/returns where
   supported.
 - Flow narrowing for `isinstance(name, T)` and `name is/is not None`.
