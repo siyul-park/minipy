@@ -805,6 +805,10 @@ func (c *checker) deleteStmt(n *ast.Delete) {
 			c.deleteName(t)
 		case *ast.Subscript:
 			receiver := c.expr(t.X)
+			if slice, ok := t.Index.(*ast.Slice); ok {
+				c.listSliceMutation(t, slice, receiver, nil)
+				continue
+			}
 			index := c.expr(t.Index)
 			switch receiver.(type) {
 			case *types.List, *types.Dict:
@@ -1250,12 +1254,11 @@ func (c *checker) assign(n *ast.Assign) {
 func (c *checker) assignTarget(target ast.Expr, value ast.Expr, pos token.Pos) {
 	switch t := target.(type) {
 	case *ast.Subscript:
-		if _, ok := t.Index.(*ast.Slice); ok {
-			c.errs.Add(t.Index.Pos(), token.UnsupportedFeature, "slice assignment is not supported yet")
-			c.expr(value)
+		receiver := c.expr(t.X)
+		if slice, ok := t.Index.(*ast.Slice); ok {
+			c.listSliceMutation(t, slice, receiver, value)
 			return
 		}
-		receiver := c.expr(t.X)
 		index := c.expr(t.Index)
 		valueType := c.expr(value)
 		elem := c.indexResultType(t, receiver, index)
@@ -1275,6 +1278,40 @@ func (c *checker) assignTarget(target ast.Expr, value ast.Expr, pos token.Pos) {
 		c.errs.Add(pos, token.SyntaxError, "cannot assign to this expression")
 		c.expr(value)
 	}
+}
+
+func (c *checker) listSliceMutation(target *ast.Subscript, slice *ast.Slice, receiver types.Type, value ast.Expr) {
+	c.checkSliceBounds(slice)
+	if !supportedMutationSliceStep(slice.Step) {
+		c.errs.Add(slice.Step.Pos(), token.UnsupportedFeature, "extended slice assignment is not supported")
+	}
+	list, ok := receiver.(*types.List)
+	if !ok {
+		if receiver != types.Invalid {
+			c.errs.Add(target.Pos(), token.UnsupportedFeature, "cannot mutate a slice of %s", receiver)
+		}
+		if value != nil {
+			c.expr(value)
+		}
+		return
+	}
+	if value == nil {
+		return
+	}
+	valueType := c.exprWithHint(value, receiver)
+	if valueType != types.Invalid && !types.Equal(valueType, receiver) {
+		c.errs.Add(value.Pos(), token.TypeMismatch, "slice assignment expects list[%s], got %s", list.Elem, valueType)
+	}
+}
+
+func supportedMutationSliceStep(step ast.Expr) bool {
+	if step == nil {
+		return true
+	}
+	if lit, ok := step.(*ast.IntLit); ok {
+		return lit.Value == 1
+	}
+	return false
 }
 
 func (c *checker) unpackAssign(target *ast.TupleLit, value types.Type, pos token.Pos) {

@@ -199,6 +199,12 @@ methods are rejected. Method arity is checked at compile time, element arguments
 must be assignable to `T`, `insert` indexes must be `int`, and `extend` accepts
 only `list[T]`.
 
+List slice assignment and deletion are resolved statically on `list[T]`
+receivers. Bounds must be `int` when present. Assignment requires the right-hand
+side to be `list[T]`; tuple, string, bytes, and other receivers are rejected.
+Only contiguous mutation is supported: the step must be omitted or a literal
+`1`. Dynamic steps and extended slices are rejected with `UnsupportedFeature`.
+
 ### Lambdas
 
 A lambda needs an expected `Callable[[...], R]` type. Its parameter count must

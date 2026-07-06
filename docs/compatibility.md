@@ -131,7 +131,7 @@ full CPython compatibility.
 | Attribute access | ◐ | Classes/modules supported; arbitrary object attributes out of scope. |
 | Indexing | ✅ | Lists, dicts, strings, constant tuple indexes. |
 | Slicing | ✅ | Lists and strings. |
-| Slice assignment | ⏳ | Parsed, rejected. |
+| Slice assignment/deletion | ◐ | `list[T]` contiguous slices only; omitted step or literal `1`; replacement length must match. |
 | List literals | ✅ | Homogeneous; empty needs hint. |
 | List methods | ◐ | `append`, `pop`, `index`, `insert`, `extend`, and `reverse`; statically typed homogeneous lists only. |
 | Dict literals | ✅ | Homogeneous; empty needs hint; scalar hashable keys. |

@@ -181,6 +181,12 @@ elements right. `extend` records the source length before appending, preserving
 `xs.extend(xs)` snapshot behavior. `index` uses a narrow host helper for equality
 search and maps a miss to `ValueError`.
 
+Contiguous list slice assignment and deletion lower through narrow host helpers.
+The helpers normalize omitted and negative bounds like Python for step `1`,
+clamp bounds into `[0, len(list)]`, replace only when `len(rhs)` equals the
+normalized slice length, and store a resized array back into the receiver's heap
+slot. Length mismatch maps to `ValueError`.
+
 ### Comprehensions and Generators
 
 List/dict/set comprehensions lower as eager construction loops. Generator

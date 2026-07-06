@@ -87,14 +87,15 @@ tuple_assignment::= tuple_target '=' expression
 aug_assignment  ::= target augop expression
 
 target          ::= NAME | primary '[' subscript ']' | primary '.' NAME | tuple_target
-del_target      ::= NAME | primary '[' expression ']' | primary '.' NAME
+del_target      ::= NAME | primary '[' subscript ']' | primary '.' NAME
 tuple_target    ::= NAME {',' (NAME | '*' NAME)} [',']
 augop           ::= '+=' | '-=' | '*=' | '/=' | '//=' | '%=' | '&=' | '|=' | '^=' | '<<=' | '>>=' | '**='
 ```
 
 Tuple/starred unpacking targets are supported for assignment and `for` targets.
-Slice assignment is parsed but rejected by the checker. Augmented assignment is
-supported for names and attributes; other augmented targets are rejected.
+List slice assignment and deletion are supported for contiguous slices with an
+omitted step or a literal step of `1`. Augmented assignment is supported for
+names and attributes; other augmented targets are rejected.
 
 ## Imports
 

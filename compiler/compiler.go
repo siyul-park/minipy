@@ -41,7 +41,10 @@ type config struct {
 	reg   *module.Registry
 }
 
-var errListIndexValue = errors.New("list.index value not found")
+var (
+	errListIndexValue  = errors.New("list.index value not found")
+	errListSliceLength = errors.New("list slice assignment length mismatch")
+)
 
 // Compiler turns minipy source into a runnable minivm program. It mirrors the
 // package-level Compile convenience function while keeping options reusable for
@@ -475,6 +478,14 @@ func (c *Compiler) deleteStmt(n *ast.Delete) {
 			c.emitZeroValue(c.typ(t.Name))
 			c.set(t.Name)
 		case *ast.Subscript:
+			if slice, ok := t.Index.(*ast.Slice); ok {
+				c.expr(t.X)
+				c.sliceBound(slice.Lower)
+				c.sliceBound(slice.Upper)
+				c.sliceBound(slice.Step)
+				c.callHost(c.listSliceDelete(c.types[t.X]))
+				continue
+			}
 			switch c.types[t.X].(type) {
 			case *types.Dict:
 				c.expr(t.X)
@@ -1039,6 +1050,15 @@ func (c *Compiler) emitClassTest(pat *ast.ClassPattern, slot int, typ types.Type
 func (c *Compiler) assignTarget(target ast.Expr, value ast.Expr) {
 	switch t := target.(type) {
 	case *ast.Subscript:
+		if slice, ok := t.Index.(*ast.Slice); ok {
+			c.expr(t.X)
+			c.sliceBound(slice.Lower)
+			c.sliceBound(slice.Upper)
+			c.sliceBound(slice.Step)
+			c.expr(value)
+			c.callHost(c.listSliceAssign(c.types[t.X]))
+			return
+		}
 		c.expr(t.X)
 		c.expr(t.Index)
 		c.expr(value)
@@ -2918,6 +2938,79 @@ func (c *Compiler) listSlice(receiver types.Type) *interp.HostFunction {
 	)
 }
 
+func (c *Compiler) listSliceAssign(receiver types.Type) *interp.HostFunction {
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: []vmtypes.Type{receiver.VM(), vmtypes.TypeI64, vmtypes.TypeI64, vmtypes.TypeI64, receiver.VM()}},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			typ, elems := hostabi.ArrayElems(i, params[0])
+			_, values := hostabi.ArrayElems(i, params[4])
+			start, stop, err := normalizeSliceRange(len(elems), hostabi.LoadI64(i, params[1]), hostabi.LoadI64(i, params[2]), hostabi.LoadI64(i, params[3]))
+			if err != nil {
+				return nil, err
+			}
+			if len(values) != stop-start {
+				return nil, errListSliceLength
+			}
+			if err := retainBoxes(i, values); err != nil {
+				return nil, err
+			}
+			if err := releaseBoxes(i, elems[start:stop]); err != nil {
+				return nil, err
+			}
+			out := append([]vmtypes.Boxed(nil), elems...)
+			copy(out[start:stop], values)
+			if err := i.Store(params[0].Ref(), vmtypes.NewArray(typ, out...)); err != nil {
+				return nil, err
+			}
+			return nil, nil
+		},
+	)
+}
+
+func (c *Compiler) listSliceDelete(receiver types.Type) *interp.HostFunction {
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: []vmtypes.Type{receiver.VM(), vmtypes.TypeI64, vmtypes.TypeI64, vmtypes.TypeI64}},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			typ, elems := hostabi.ArrayElems(i, params[0])
+			start, stop, err := normalizeSliceRange(len(elems), hostabi.LoadI64(i, params[1]), hostabi.LoadI64(i, params[2]), hostabi.LoadI64(i, params[3]))
+			if err != nil {
+				return nil, err
+			}
+			if err := releaseBoxes(i, elems[start:stop]); err != nil {
+				return nil, err
+			}
+			out := append([]vmtypes.Boxed(nil), elems[:start]...)
+			out = append(out, elems[stop:]...)
+			if err := i.Store(params[0].Ref(), vmtypes.NewArray(typ, out...)); err != nil {
+				return nil, err
+			}
+			return nil, nil
+		},
+	)
+}
+
+func retainBoxes(i *interp.Interpreter, values []vmtypes.Boxed) error {
+	for _, value := range values {
+		if value.Kind() == vmtypes.KindRef && value.Ref() != 0 {
+			if _, err := i.Retain(value.Ref()); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func releaseBoxes(i *interp.Interpreter, values []vmtypes.Boxed) error {
+	for _, value := range values {
+		if value.Kind() == vmtypes.KindRef && value.Ref() != 0 {
+			if err := i.Release(value.Ref()); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 func (c *Compiler) listIndex(receiver types.Type) *interp.HostFunction {
 	elem := receiver.(*types.List).Elem
 	return interp.NewHostFunction(
@@ -3147,6 +3240,8 @@ func (c *Compiler) exc() *interp.HostFunction {
 						case errors.Is(exc.Unwrap(), interp.ErrTypeMismatch):
 							class = classID("TypeError")
 						case errors.Is(exc.Unwrap(), errListIndexValue):
+							class = classID("ValueError")
+						case errors.Is(exc.Unwrap(), errListSliceLength):
 							class = classID("ValueError")
 						}
 					}
@@ -3456,6 +3551,45 @@ func pyStrRepr(s string, ascii bool) string {
 }
 
 const omittedSliceBound = math.MinInt64
+
+func normalizeSliceRange(length int, rawStart, rawStop, rawStep int64) (int, int, error) {
+	step := rawStep
+	if step == omittedSliceBound {
+		step = 1
+	}
+	if step != 1 {
+		return 0, 0, fmt.Errorf("extended slice assignment is not supported")
+	}
+	startOmitted := rawStart == omittedSliceBound
+	stopOmitted := rawStop == omittedSliceBound
+	start, stop := int(rawStart), int(rawStop)
+	if startOmitted {
+		start = 0
+	} else if start < 0 {
+		start += length
+	}
+	if stopOmitted {
+		stop = length
+	} else if stop < 0 {
+		stop += length
+	}
+	if start < 0 {
+		start = 0
+	}
+	if start > length {
+		start = length
+	}
+	if stop < 0 {
+		stop = 0
+	}
+	if stop > length {
+		stop = length
+	}
+	if stop < start {
+		stop = start
+	}
+	return start, stop, nil
+}
 
 func sliceIndexes(length int, rawStart, rawStop, rawStep int64) ([]int, error) {
 	step := rawStep

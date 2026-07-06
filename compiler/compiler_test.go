@@ -518,6 +518,42 @@ except ValueError:
 		require.Equal(t, "missing\n", run(t, src))
 	})
 
+	t.Run("list slice assignment and deletion", func(t *testing.T) {
+		src := `xs: list[int] = [1, 2, 3, 4]
+xs[1:3] = [20, 30]
+print(str(xs[0]))
+print(str(xs[1]))
+print(str(xs[2]))
+print(str(xs[3]))
+xs[-3:-1] = [200, 300]
+print(str(xs[1]))
+print(str(xs[2]))
+ys: list[int] = [9, 8]
+ys[:] = ys
+print(str(ys[0]))
+print(str(ys[1]))
+del xs[:2]
+print(str(len(xs)))
+print(str(xs[0]))
+print(str(xs[1]))
+del xs[1:]
+print(str(len(xs)))
+del xs[-10:10]
+print(str(len(xs)))
+`
+		require.Equal(t, "1\n20\n30\n4\n200\n300\n9\n8\n2\n300\n4\n1\n0\n", run(t, src))
+	})
+
+	t.Run("list slice assignment length mismatch raises ValueError", func(t *testing.T) {
+		src := `xs: list[int] = [1, 2, 3]
+try:
+    xs[1:3] = [9]
+except ValueError:
+    print("mismatch")
+`
+		require.Equal(t, "mismatch\n", run(t, src))
+	})
+
 	t.Run("container membership indexing and mutable fields", func(t *testing.T) {
 		src := `@dataclass
 class Box:
@@ -1489,6 +1525,12 @@ func TestCompileErrors(t *testing.T) {
 		"xs: list[int] = [1]\nxs.insert(0, \"x\")\n":                    token.TypeMismatch,
 		"xs: list[int] = [1]\nys: list[str] = [\"x\"]\nxs.extend(ys)\n": token.TypeMismatch,
 		"xs: list[int] = [1]\nxs.reverse(1)\n":                          token.ArityMismatch,
+		"xs: list[int] = [1]\nxs[0:1] = [\"x\"]\n":                      token.TypeMismatch,
+		"xs: list[int] = [1]\nxs[0:\"x\"] = [1]\n":                      token.TypeMismatch,
+		"xs: list[int] = [1]\nxs[::2] = [1]\n":                          token.UnsupportedFeature,
+		"xs: list[int] = [1]\ndel xs[::2]\n":                            token.UnsupportedFeature,
+		"\"abc\"[1:2] = \"x\"\n":                                        token.UnsupportedFeature,
+		"(1, 2, 3)[1:2] = [9]\n":                                        token.UnsupportedFeature,
 		"t: tuple[int, int] = (1, 2)\ni: int = 0\nprint(t[i])\n":        token.UnsupportedFeature,
 		"d: dict[list[int], int] = {}\n":                                token.UnsupportedType,
 		// Closures and comprehensions
