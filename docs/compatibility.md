@@ -161,7 +161,7 @@ full CPython compatibility.
 | `typing.Optional[T]` and `typing.Union[...]` | ✅ | Normalize to closed union forms. |
 | `typing.Annotated[T, ...]` | ✅ | Metadata literal-validated, then erased to `T`. |
 | `typing.Literal[...]` | ◐ | Static-only refinement for `int`, `bool`, `str`, and `None` literal values. |
-| Type aliases | ✅ | `type Name = expr` and `Name: TypeAlias = expr`. |
+| Type aliases | ✅ | `type Name = expr` and `Name: TypeAlias = expr`; recursive cycles rejected (`CyclicAlias`). |
 | Flow narrowing | ✅ | `isinstance(name, T)` and `name is/is not None`. |
 | Monomorphic specialization | ✅ | For union/Any params with concrete direct call tuples, capped per function. |
 | Arbitrary precision int | ❌ | Uses signed 64-bit. |

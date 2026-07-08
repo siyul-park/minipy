@@ -132,7 +132,7 @@ type checker struct {
 	globals    map[string]*global
 	functions  map[string]*function
 	classes    map[string]*class
-	aliases    map[string]types.Type
+	aliases    map[string]*alias
 	aliasDecls map[*ast.AnnAssign]bool
 	lambdas    map[*ast.LambdaExpr]*function
 	order      []string
@@ -190,7 +190,7 @@ func newChecker(loaders ...*loader) *checker {
 		globals:    map[string]*global{},
 		functions:  map[string]*function{},
 		classes:    map[string]*class{},
-		aliases:    map[string]types.Type{},
+		aliases:    map[string]*alias{},
 		aliasDecls: map[*ast.AnnAssign]bool{},
 		lambdas:    map[*ast.LambdaExpr]*function{},
 		narrowed:   map[string]types.Type{},
@@ -256,12 +256,22 @@ func (c *checker) checkModule(m *moduleInfo) {
 	m.checked = true
 	prev := c.mod
 	c.mod = m
+	// Alias state is module-scoped; save and restore it so a recursively
+	// checked module (e.g. an imported native module) cannot resolve another
+	// module's aliases under the wrong context.
+	prevAliases := c.aliases
+	c.aliases = map[string]*alias{}
+	defer func() {
+		c.aliases = prevAliases
+		c.mod = prev
+	}()
 	c.checkFutureImports(m)
 	c.declareClasses(m.ast.Body)
 	c.declareFuncs(m.ast.Body)
+	c.collectAliases(m.ast.Body)
 	c.checkBlock(m.ast.Body)
+	c.resolveAliases()
 	c.computeExports(m)
-	c.mod = prev
 }
 
 func (c *checker) checkFutureImports(m *moduleInfo) {
@@ -673,10 +683,7 @@ func (c *checker) stmt(s ast.Stmt) {
 	case *ast.ImportFrom:
 		c.importFromStmt(n)
 	case *ast.TypeAlias:
-		t := c.resolveType(n.Value)
-		if t != types.Invalid {
-			c.aliases[c.key(n.Name.Name)] = t
-		}
+		c.aliases[c.key(n.Name.Name)] = &alias{expr: n.Value, pos: n.Name.Pos()}
 	case *ast.Global:
 		if c.current == nil {
 			c.errs.Add(n.Pos(), token.SyntaxError, "'global' outside function")
@@ -1390,10 +1397,57 @@ func (c *checker) typeAliasAssign(n *ast.AnnAssign) {
 		c.errs.Add(n.Pos(), token.MissingAnnotation, "type alias %q needs a value", n.Target.Name)
 		return
 	}
-	t := c.resolveType(n.Value)
-	if t != types.Invalid {
-		c.aliases[c.key(n.Target.Name)] = t
+	c.aliases[c.key(n.Target.Name)] = &alias{expr: n.Value, pos: n.Target.Pos()}
+}
+
+// alias is a module-level type-alias declaration: its RHS, source position, and
+// (once resolved) the concrete type it names.
+type alias struct {
+	expr      ast.Expr
+	pos       token.Pos
+	typ       types.Type
+	resolving bool
+}
+
+// collectAliases records every type-alias RHS before any type is resolved, so
+// aliases may reference one another regardless of declaration order. The
+// legacy `Name: TypeAlias = expr` form is handled later by typeAliasAssign,
+// which recognizes the alias via the resolved annotation type (so a shadowed
+// `TypeAlias` name is not mistaken for it).
+func (c *checker) collectAliases(body []ast.Stmt) {
+	for _, s := range body {
+		if n, ok := s.(*ast.TypeAlias); ok {
+			c.aliases[c.key(n.Name.Name)] = &alias{expr: n.Value, pos: n.Name.Pos()}
+		}
 	}
+}
+
+// resolveAliases resolves every collected alias. Running it as a dedicated pass
+// ensures unused aliases still report cycles or undefined targets.
+func (c *checker) resolveAliases() {
+	for key := range c.aliases {
+		c.resolveAlias(key)
+	}
+}
+
+// resolveAlias resolves a single alias, caching the result and guarding against
+// recursive cycles.
+func (c *checker) resolveAlias(key string) types.Type {
+	a := c.aliases[key]
+	if a == nil {
+		return types.Invalid
+	}
+	if a.resolving {
+		c.errs.Add(a.pos, token.CyclicAlias, "recursive type alias %q", key)
+		return types.Invalid
+	}
+	if a.typ != nil {
+		return a.typ
+	}
+	a.resolving = true
+	defer func() { a.resolving = false }()
+	a.typ = c.resolveType(a.expr)
+	return a.typ
 }
 
 func (c *checker) assign(n *ast.Assign) {
@@ -2152,8 +2206,9 @@ func (c *checker) resolveType(e ast.Expr) types.Type {
 		return c.resolveType(ann)
 	}
 	if name, ok := e.(*ast.Name); ok {
-		if alias, ok := c.aliases[c.resolveName(name.Name).key]; ok {
-			return alias
+		key := c.resolveName(name.Name).key
+		if _, ok := c.aliases[key]; ok {
+			return c.resolveAlias(key)
 		}
 		if t, ok := c.typingScalar(name); ok {
 			return t

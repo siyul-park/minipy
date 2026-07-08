@@ -28,6 +28,7 @@ const (
 	UnsupportedType      Code = "UnsupportedType"
 	IntOverflow          Code = "IntOverflow"
 	MissingAnnotation    Code = "MissingAnnotation"
+	CyclicAlias          Code = "CyclicAlias"
 	TypeMismatch         Code = "TypeMismatch"
 	UndefinedName        Code = "UndefinedName"
 	UseBeforeDefinition  Code = "UseBeforeDefinition"
@@ -50,7 +51,7 @@ func (c Code) Python() string {
 		return "SyntaxError"
 	case IntOverflow:
 		return "ValueError"
-	case MissingAnnotation, TypeMismatch, ArityMismatch, NotComparable, NotIterable, NotIndexable, PatternError, InvalidUnionMember:
+	case MissingAnnotation, CyclicAlias, TypeMismatch, ArityMismatch, NotComparable, NotIterable, NotIndexable, PatternError, InvalidUnionMember:
 		return "TypeError"
 	case UndefinedName, UseBeforeDefinition, NoBindingForNonlocal:
 		return "NameError"

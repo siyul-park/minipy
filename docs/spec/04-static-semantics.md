@@ -113,7 +113,9 @@ classes and functions are declared, so forward references such as `"Node"` and
 
 `type Name = expr` records a compile-time type alias once `expr` resolves to a
 valid type. `Name: TypeAlias = expr` from `typing` is the legacy-compatible form
-and records the same kind of alias without creating a runtime binding.
+and records the same kind of alias without creating a runtime binding. Aliases
+may reference one another regardless of declaration order, but a recursive cycle
+(`type A = B; type B = A`) is rejected with a precise `CyclicAlias` diagnostic.
 
 ## Inference Rules
 

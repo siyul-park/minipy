@@ -280,6 +280,29 @@ func TestTypingAnnotations(t *testing.T) {
 			require.Equalf(t, want, errs[0].Code, "src=%q", src)
 		}
 	})
+
+	t.Run("mutually recursive type aliases diagnose a cycle", func(t *testing.T) {
+		errs := checkOnly(t, "type A = B\ntype B = A\n")
+		require.NotEmpty(t, errs)
+		require.Equal(t, token.CyclicAlias, errs[0].Code)
+	})
+
+	t.Run("mutually recursive TypeAlias assignments diagnose a cycle", func(t *testing.T) {
+		errs := checkOnly(t, "from typing import TypeAlias\nA: TypeAlias = B\nB: TypeAlias = A\n")
+		require.NotEmpty(t, errs)
+		require.Equal(t, token.CyclicAlias, errs[0].Code)
+	})
+
+	t.Run("self-referential type alias diagnoses a cycle", func(t *testing.T) {
+		errs := checkOnly(t, "type A = A\n")
+		require.NotEmpty(t, errs)
+		require.Equal(t, token.CyclicAlias, errs[0].Code)
+	})
+
+	t.Run("forward type alias reference resolves", func(t *testing.T) {
+		errs := checkOnly(t, "type B = int\ntype A = list[B]\nxs: A = []\n")
+		require.Empty(t, errs)
+	})
 }
 
 func TestCompile(t *testing.T) {
