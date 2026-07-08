@@ -2028,14 +2028,7 @@ func (c *checker) exceptionClass(e ast.Expr) *class {
 }
 
 func (c *checker) isException(name string) bool {
-	info := c.classes[name]
-	for info != nil {
-		if info.name == "BaseException" {
-			return true
-		}
-		info = info.base
-	}
-	return false
+	return isException(c.classes[name])
 }
 
 func method(info *class, name string) *function {

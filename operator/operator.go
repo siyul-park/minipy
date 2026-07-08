@@ -164,7 +164,7 @@ func containsSymbol() module.Symbol {
 		func(e module.Emitter, args []ast.Expr) {
 			e.Expr(args[0])
 			e.Expr(args[1])
-			EmitContainsCall(e, e.Type(args[1]), e.Type(args[0]))
+			emitContains(e, token.IN, e.Type(args[1]), e.Type(args[0]))
 		}, nil)
 }
 

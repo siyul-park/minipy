@@ -94,7 +94,7 @@ type For struct {
 	Async  bool
 }
 
-// Param is a function parameter with an optional inferred type annotation.
+// ParamKind distinguishes positional-only, normal, and keyword-only parameters.
 type ParamKind int
 
 const (
@@ -103,6 +103,7 @@ const (
 	ParamKwOnly
 )
 
+// Param is a function parameter with an optional type annotation and default.
 type Param struct {
 	Base
 	Name    *Name

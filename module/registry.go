@@ -50,7 +50,7 @@ func (r *Registry) Module(name string) (Module, bool) {
 
 // Has reports whether a module with the given name is registered.
 func (r *Registry) Has(name string) bool {
-	_, ok := r.byName[name]
+	_, ok := r.Module(name)
 	return ok
 }
 

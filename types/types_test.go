@@ -145,18 +145,18 @@ func TestNewUnion(t *testing.T) {
 		require.Equal(t, vmtypes.TypeRef, Any.VM())
 	})
 	t.Run("detects union", func(t *testing.T) {
-		u, ok := IsUnion(NewUnion(Int, Str))
+		u, ok := isUnion(NewUnion(Int, Str))
 		require.True(t, ok)
 		require.Len(t, u.Members, 2)
-		_, ok = IsUnion(Int)
+		_, ok = isUnion(Int)
 		require.False(t, ok)
 	})
 }
 
 func TestOptional(t *testing.T) {
 	opt := NewUnion(Int, None)
-	require.True(t, IsOptional(opt))
-	require.False(t, IsOptional(NewUnion(Int, Str)))
+	require.True(t, isOptional(opt))
+	require.False(t, isOptional(NewUnion(Int, Str)))
 	require.Equal(t, Int, Without(opt, None)) // unwrap Optional[int] -> int
 }
 
@@ -187,9 +187,9 @@ func TestAssignable_Union(t *testing.T) {
 }
 
 func TestTypeVar(t *testing.T) {
-	a := NewTypeVar(1)
-	b := NewTypeVar(1)
-	c := NewTypeVar(2)
+	a := newTypeVar(1)
+	b := newTypeVar(1)
+	c := newTypeVar(2)
 	require.True(t, a.Equal(b)) // same id
 	require.False(t, a.Equal(c))
 	require.False(t, a.Equal(nil))

@@ -83,12 +83,6 @@ func EmitCompareStack(e module.Emitter, op token.Type, left, right types.Type) {
 	e.Emit(cmpOpcode(op, left))
 }
 
-// EmitContainsCall lowers operator.contains(haystack, needle) with the haystack
-// and needle already pushed in that order.
-func EmitContainsCall(e module.Emitter, needle, haystack types.Type) {
-	emitContains(e, token.IN, needle, haystack)
-}
-
 func emitContains(e module.Emitter, op token.Type, needle, haystack types.Type) {
 	switch haystack.(type) {
 	case *types.Dict:

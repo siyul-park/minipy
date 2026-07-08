@@ -100,7 +100,7 @@ func (l *Lexer) step() {
 			l.pos++
 		}
 	}
-	if l.eof() {
+	if l.cur() == eofRune {
 		l.finish()
 		return
 	}
@@ -146,7 +146,7 @@ func (l *Lexer) step() {
 		l.scanNumber()
 		l.lineHasTok = true
 	case c == '\'' || c == '"':
-		l.scanString(false, false, false)
+		l.scanString(l.here(), false, false, false)
 		l.lineHasTok = true
 	default:
 		l.scanOperator()
@@ -175,11 +175,8 @@ func (l *Lexer) scanIndent() (blank bool) {
 	width := 0
 	for {
 		switch l.cur() {
-		case ' ':
+		case ' ', '\f':
 			width++
-			l.pos++
-			l.col++
-		case '\f':
 			l.pos++
 			l.col++
 		case '\t':
@@ -233,7 +230,7 @@ func (l *Lexer) scanNameOrString() {
 		raw := word == "r" || word == "R"
 		fstr := word == "f" || word == "F"
 		bytes := word == "b" || word == "B" || word == "u" || word == "U"
-		l.scanStringAt(pos, raw, fstr, bytes)
+		l.scanString(pos, raw, fstr, bytes)
 		return
 	}
 	l.add(token.Lookup(word), word, pos)
@@ -305,14 +302,9 @@ func (l *Lexer) scanNumber() {
 	}
 }
 
-// scanString reads a string whose opening quote is at the cursor.
-func (l *Lexer) scanString(raw, fstr, bytes bool) {
-	l.scanStringAt(l.here(), raw, fstr, bytes)
-}
-
-// scanStringAt reads a string literal whose prefix (if any) started at pos and
+// scanString reads a string literal whose prefix (if any) started at pos and
 // whose opening quote is at the cursor. Escapes are decoded unless raw.
-func (l *Lexer) scanStringAt(pos token.Pos, raw, fstr, bytes bool) {
+func (l *Lexer) scanString(pos token.Pos, raw, fstr, bytes bool) {
 	if bytes {
 		l.errs.Add(pos, token.UnsupportedFeature, "bytes/unicode string prefixes are not supported yet")
 	}
@@ -686,8 +678,6 @@ func (l *Lexer) at(k int) rune {
 }
 
 func (l *Lexer) cur() rune { return l.at(0) }
-
-func (l *Lexer) eof() bool { return l.cur() == eofRune }
 
 func isNameStart(r rune) bool {
 	return r == '_' || unicode.IsLetter(r)

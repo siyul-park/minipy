@@ -265,26 +265,24 @@ func (ld *loader) scan(m *moduleInfo) {
 	}
 }
 
-func (ld *loader) resolveFrom(m *moduleInfo, n *ast.ImportFrom) string {
+// relativeBase resolves a relative import's parent anchor to the module name to
+// load, or "" when the import is illegal (relative import from __main__, beyond
+// the top-level package, or with no parent). Level-0 imports return Module
+// unchanged. The checker adds the diagnostic; the lowerer only needs the result.
+func relativeBase(mod *moduleInfo, n *ast.ImportFrom) string {
 	if n.Level == 0 {
 		return n.Module
 	}
-	if m == nil || m.name == "__main__" {
-		ld.errs.Add(n.Pos(), token.ImportError, "attempted relative import with no known parent package")
+	if mod == nil || mod.name == "__main__" {
 		return ""
 	}
-	anchor := m.name
-	if !m.isPackage {
-		anchor = m.parent
-	}
-	if anchor == "" {
-		ld.errs.Add(n.Pos(), token.ImportError, "attempted relative import beyond top-level package")
-		return ""
+	anchor := mod.name
+	if !mod.isPackage {
+		anchor = mod.parent
 	}
 	parts := strings.Split(anchor, ".")
 	up := n.Level - 1
 	if up > len(parts)-1 {
-		ld.errs.Add(n.Pos(), token.ImportError, "attempted relative import beyond top-level package")
 		return ""
 	}
 	base := strings.Join(parts[:len(parts)-up], ".")
@@ -293,6 +291,21 @@ func (ld *loader) resolveFrom(m *moduleInfo, n *ast.ImportFrom) string {
 			return n.Module
 		}
 		return base + "." + n.Module
+	}
+	return base
+}
+
+func (ld *loader) resolveFrom(m *moduleInfo, n *ast.ImportFrom) string {
+	if n.Level == 0 {
+		return n.Module
+	}
+	if m == nil || m.name == "__main__" {
+		ld.errs.Add(n.Pos(), token.ImportError, "attempted relative import with no known parent package")
+		return ""
+	}
+	base := relativeBase(m, n)
+	if base == "" {
+		ld.errs.Add(n.Pos(), token.ImportError, "attempted relative import beyond top-level package")
 	}
 	return base
 }

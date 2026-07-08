@@ -410,7 +410,7 @@ func (c *Compiler) stmt(s ast.Stmt) {
 	case *ast.Function:
 		c.functionStmt(n)
 	case *ast.Class:
-		c.classStmt(n)
+		c.classStmt()
 	case *ast.Import:
 		c.importStmt(n)
 	case *ast.ImportFrom:
@@ -454,7 +454,7 @@ func (c *Compiler) importFromStmt(n *ast.ImportFrom) {
 	if n.Level == 0 && n.Module == "__future__" {
 		return
 	}
-	base := c.resolveFrom(n)
+	base := relativeBase(c.mod, n)
 	if base == "" {
 		return
 	}
@@ -475,32 +475,6 @@ func (c *Compiler) emitImportChain(name string) {
 		m := c.modules[strings.Join(parts[:i+1], ".")]
 		c.emitModule(m)
 	}
-}
-
-func (c *Compiler) resolveFrom(n *ast.ImportFrom) string {
-	if n.Level == 0 {
-		return n.Module
-	}
-	if c.mod == nil || c.mod.name == "__main__" {
-		return ""
-	}
-	anchor := c.mod.name
-	if !c.mod.isPackage {
-		anchor = c.mod.parent
-	}
-	parts := strings.Split(anchor, ".")
-	up := n.Level - 1
-	if up > len(parts)-1 {
-		return ""
-	}
-	base := strings.Join(parts[:len(parts)-up], ".")
-	if n.Module != "" {
-		if base == "" {
-			return n.Module
-		}
-		return base + "." + n.Module
-	}
-	return base
 }
 
 // deleteStmt lowers `del`. A deleted name is overwritten with minivm's
@@ -732,7 +706,7 @@ func (c *Compiler) emitTrapInstance(errSlot int) {
 	c.br(fallback)
 	for i, tc := range trapClasses {
 		c.bind(matched[i])
-		c.emitTrapClassInstance(tc.class, tc.message)
+		c.emitExceptionStruct(c.classes[tc.class], func() { c.constGet(vmtypes.String(tc.message)) })
 		c.br(done)
 	}
 	c.bind(fallback)
@@ -741,22 +715,19 @@ func (c *Compiler) emitTrapInstance(errSlot int) {
 	c.bind(done)
 }
 
-// emitTrapClassInstance builds an exception instance for a natively
-// classified trap. It shares excInstance's convention of allocating with
-// BaseException's struct type regardless of the target subclass: every
-// exception class inherits the same {classID, message} field layout, and
-// runtime dispatch (emitExceptionClassID) only ever inspects the classID
-// value, not the struct's nominal type.
-func (c *Compiler) emitTrapClassInstance(class, message string) {
-	info := c.classes[class]
+// emitExceptionStruct allocates a BaseException-backed struct: field 0 is the
+// class id and field 1 is the message produced by pushMessage. Every exception
+// class inherits the same {classID, message} layout, and runtime dispatch
+// (emitExceptionClassID) only inspects the classID, not the struct's nominal type.
+func (c *Compiler) emitExceptionStruct(cls *class, pushMessage func()) {
 	c.emit(instr.STRUCT_NEW_DEFAULT, c.typeIndex(c.classes["BaseException"].typ))
 	c.emit(instr.DUP)
 	c.emit(instr.I32_CONST, 0)
-	c.emit(instr.I64_CONST, uint64(info.classID))
+	c.emit(instr.I64_CONST, uint64(cls.classID))
 	c.emit(instr.STRUCT_SET)
 	c.emit(instr.DUP)
 	c.emit(instr.I32_CONST, 1)
-	c.constGet(vmtypes.String(message))
+	pushMessage()
 	c.emit(instr.STRUCT_SET)
 }
 
@@ -827,19 +798,13 @@ func (c *Compiler) emitRaise(n *ast.Raise) {
 }
 
 func (c *Compiler) emitExceptionInstance(cls *class, args []ast.Expr) {
-	c.emit(instr.STRUCT_NEW_DEFAULT, c.typeIndex(c.classes["BaseException"].typ))
-	c.emit(instr.DUP)
-	c.emit(instr.I32_CONST, 0)
-	c.emit(instr.I64_CONST, uint64(cls.classID))
-	c.emit(instr.STRUCT_SET)
-	c.emit(instr.DUP)
-	c.emit(instr.I32_CONST, 1)
-	if len(args) > 0 {
-		c.expr(args[0])
-	} else {
-		c.constGet(vmtypes.String(""))
-	}
-	c.emit(instr.STRUCT_SET)
+	c.emitExceptionStruct(cls, func() {
+		if len(args) > 0 {
+			c.expr(args[0])
+		} else {
+			c.constGet(vmtypes.String(""))
+		}
+	})
 }
 
 func (c *Compiler) emitWith(n *ast.With) {
@@ -1131,7 +1096,7 @@ func (c *Compiler) augAssignAttribute(n *ast.AugAssign) {
 	c.emit(instr.STRUCT_SET)
 }
 
-func (c *Compiler) classStmt(*ast.Class) {
+func (c *Compiler) classStmt() {
 	// Classes are compile-time metadata; instances are structs.
 }
 
@@ -1813,7 +1778,7 @@ func (c *Compiler) expr(n ast.Expr) {
 	case *ast.Attribute:
 		c.attribute(x)
 	case *ast.FString:
-		c.fstring(x)
+		c.fstringConcat(x.Parts)
 	}
 }
 
@@ -2138,7 +2103,7 @@ func (c *Compiler) subscript(x *ast.Subscript) {
 		c.emit(instr.STRUCT_GET)
 	default:
 		if types.Equal(c.types[x.X], types.Str) {
-			c.callStringIndex(x)
+			c.callHost(c.strIndex()) // stack has string and index; returns one-codepoint string
 		}
 	}
 }
@@ -2170,11 +2135,6 @@ func (c *Compiler) sliceBound(x ast.Expr) {
 	c.expr(x)
 }
 
-func (c *Compiler) callStringIndex(x *ast.Subscript) {
-	// Stack already has string and index; helper returns a one-codepoint string.
-	c.callHost(c.strIndex())
-}
-
 func (c *Compiler) attribute(x *ast.Attribute) {
 	if key, ok := c.attrSym[x]; ok {
 		c.emit(instr.GLOBAL_GET, uint64(c.globals[key].index))
@@ -2191,10 +2151,6 @@ func (c *Compiler) attribute(x *ast.Attribute) {
 func (c *Compiler) fieldIndex(x *ast.Attribute) int {
 	cls := c.types[x.X].(*types.Class)
 	return c.classes[cls.Name].fieldIndex[x.Name]
-}
-
-func (c *Compiler) fstring(x *ast.FString) {
-	c.fstringConcat(x.Parts)
 }
 
 // fstringConcat lowers a sequence of f-string parts into a left-associated
@@ -2325,7 +2281,9 @@ func (c *Compiler) boolOp(x *ast.BoolOp) {
 // comparisons evaluate each source operand once, matching Python semantics.
 func (c *Compiler) compare(x *ast.Compare) {
 	if len(x.Ops) == 1 {
-		c.emitCmp(x.X, x.Ops[0], x.Comparators[0])
+		c.expr(x.X)
+		c.expr(x.Comparators[0])
+		c.emitCmpStack(x.Ops[0], c.types[x.X], c.types[x.Comparators[0]])
 		return
 	}
 	leftSlot := c.tmp()
@@ -2350,12 +2308,6 @@ func (c *Compiler) compare(x *ast.Compare) {
 		}
 	}
 	c.bind(end)
-}
-
-func (c *Compiler) emitCmp(left ast.Expr, op token.Type, right ast.Expr) {
-	c.expr(left)
-	c.expr(right)
-	c.emitCmpStack(op, c.types[left], c.types[right])
 }
 
 func (c *Compiler) emitCmpStack(op token.Type, left types.Type, right types.Type) {

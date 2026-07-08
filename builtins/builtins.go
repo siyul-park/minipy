@@ -28,7 +28,7 @@ type spec struct {
 // New builds the builtins native module.
 func New() module.Module {
 	return module.NewNative(Name,
-		callSymbol("print", spec{1, 1, printable(types.None)}, emitPrint, valuePrint),
+		callSymbol("print", spec{1, 1, printable(types.None)}, emitPrint, func(r module.Runtime) vmtypes.Value { return printHost(r.Out()) }),
 		callSymbol("str", spec{1, 1, printable(types.Str)}, emitStr, valueHost(strHost)),
 		callSymbol("int", spec{1, 1, convert(types.Int)}, emitInt, valueHost(intParseHost)),
 		callSymbol("float", spec{1, 1, convert(types.Float)}, emitFloat, valueHost(floatParseHost)),
@@ -74,8 +74,6 @@ func checkBuiltin(c module.Checker, name string, sp spec, args []ast.Expr, pos t
 	}
 	return result
 }
-
-func valuePrint(r module.Runtime) vmtypes.Value { return printHost(r.Out()) }
 
 func valueHost(fn func() *interp.HostFunction) module.ValueFunc {
 	return func(module.Runtime) vmtypes.Value { return fn() }

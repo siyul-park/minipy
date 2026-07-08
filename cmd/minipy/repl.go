@@ -143,10 +143,8 @@ func isPrintCall(x ast.Expr) bool {
 // a Python exception name; common runtime traps are mapped to their Python
 // equivalents.
 func pyError(err error) string {
-	switch {
-	case errors.Is(err, interp.ErrDivideByZero):
+	if errors.Is(err, interp.ErrDivideByZero) {
 		return "ZeroDivisionError: division by zero"
-	default:
-		return err.Error()
 	}
+	return err.Error()
 }

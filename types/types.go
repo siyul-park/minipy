@@ -23,12 +23,6 @@ type Type interface {
 	sealed()
 }
 
-type primitive struct {
-	name string
-	vm   vmtypes.Type
-	num  bool
-}
-
 type List struct {
 	Elem Type
 }
@@ -100,6 +94,13 @@ type Union struct {
 type TypeVar struct {
 	ID    int
 	Bound Type
+}
+
+// primitive is the shared representation for scalar source types.
+type primitive struct {
+	name string
+	vm   vmtypes.Type
+	num  bool
 }
 
 var (
@@ -232,7 +233,7 @@ func NewUnion(members ...Type) Type {
 		if m == Invalid {
 			return Invalid
 		}
-		if Equal(m, Any) {
+		if IsAny(m) {
 			return Any
 		}
 		dup := false
@@ -257,13 +258,13 @@ func NewUnion(members ...Type) Type {
 	return &Union{Members: uniq}
 }
 
-// NewTypeVar returns a fresh inference type variable with the given id.
-func NewTypeVar(id int) *TypeVar {
+// newTypeVar returns a fresh inference type variable with the given id.
+func newTypeVar(id int) *TypeVar {
 	return &TypeVar{ID: id}
 }
 
-// IsUnion reports whether t is a union and returns it.
-func IsUnion(t Type) (*Union, bool) {
+// isUnion reports whether t is a union and returns it.
+func isUnion(t Type) (*Union, bool) {
 	u, ok := t.(*Union)
 	return u, ok
 }
@@ -290,9 +291,9 @@ func Erase(t Type) Type {
 	}
 }
 
-// IsOptional reports whether t is a union that includes None (i.e. Optional).
-func IsOptional(t Type) bool {
-	u, ok := t.(*Union)
+// isOptional reports whether t is a union that includes None (i.e. Optional).
+func isOptional(t Type) bool {
+	u, ok := isUnion(t)
 	if !ok {
 		return false
 	}
@@ -325,7 +326,7 @@ func Join(a, b Type) Type {
 // else branch of an isinstance/None guard. Removing the sole remaining member
 // yields Invalid (an unreachable branch).
 func Without(u, t Type) Type {
-	un, ok := u.(*Union)
+	un, ok := isUnion(u)
 	if !ok {
 		if Equal(u, t) {
 			return Invalid

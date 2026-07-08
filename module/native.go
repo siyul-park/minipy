@@ -27,12 +27,13 @@ type ValueFunc func(r Runtime) vmtypes.Value
 // funcSymbol is a Symbol assembled from closures. Native-module packages may use
 // it directly or provide their own Symbol implementations.
 type funcSymbol struct {
-	module string
-	name   string
-	check  CheckFunc
-	emit   EmitFunc
-	value  ValueFunc
+	name  string
+	check CheckFunc
+	emit  EmitFunc
+	value ValueFunc
 }
+
+var _ Symbol = (*funcSymbol)(nil)
 
 // nativeModule is a Module backed by an in-memory symbol table.
 type nativeModule struct {
@@ -41,6 +42,8 @@ type nativeModule struct {
 	names   []string
 }
 
+var _ Module = (*nativeModule)(nil)
+
 // NewSymbol builds a Symbol from its type-check, emit, and value behaviors. A nil
 // value defaults to an Intrinsic marker keyed by the qualified symbol name.
 func NewSymbol(module, name string, check CheckFunc, emit EmitFunc, value ValueFunc) Symbol {
@@ -48,7 +51,7 @@ func NewSymbol(module, name string, check CheckFunc, emit EmitFunc, value ValueF
 		full := module + "." + name
 		value = func(Runtime) vmtypes.Value { return Intrinsic{Name: full} }
 	}
-	return &funcSymbol{module: module, name: name, check: check, emit: emit, value: value}
+	return &funcSymbol{name: name, check: check, emit: emit, value: value}
 }
 
 // NewNative builds a native Module from its symbols, preserving their order for
@@ -60,10 +63,11 @@ func NewNative(name string, symbols ...Symbol) Module {
 		names:   make([]string, 0, len(symbols)),
 	}
 	for _, s := range symbols {
-		if _, ok := m.symbols[s.Name()]; !ok {
-			m.names = append(m.names, s.Name())
+		nm := s.Name()
+		if _, ok := m.symbols[nm]; !ok {
+			m.names = append(m.names, nm)
 		}
-		m.symbols[s.Name()] = s
+		m.symbols[nm] = s
 	}
 	return m
 }

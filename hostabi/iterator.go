@@ -6,11 +6,13 @@ import vmtypes "github.com/siyul-park/minivm/types"
 // values. It implements the minivm coroutine/iterator protocol used by list and
 // string iteration and by the builtin iter().
 type Iterator struct {
-	name    string
-	values  []vmtypes.Boxed
-	idx     int
+	values []vmtypes.Boxed
+
 	current vmtypes.Boxed
 	done    bool
+
+	idx  int
+	name string
 }
 
 // NewIterator builds an Iterator over a copy of the given values, positioned on

@@ -45,8 +45,6 @@ var compoundStmt = map[token.Type]string{
 	token.FINALLY: "'finally' exceptions",
 }
 
-var simpleKeywordStmt = map[token.Type]string{}
-
 // binPrec maps each binary operator to its precedence; higher binds tighter.
 // It covers bitwise_or (1) down to term (6); comparison sits just above and
 // unary/power just below (parseFactor) per docs/spec/03-grammar.md.
@@ -658,12 +656,6 @@ func (p *Parser) parseSimpleStmt() ast.Stmt {
 		return p.parseImportFrom()
 	}
 
-	if msg, ok := simpleKeywordStmt[p.cur().Type]; ok {
-		p.errs.Add(p.cur().Pos, token.UnsupportedFeature, "%s is not supported yet", msg)
-		p.skipToStmtEnd()
-		return nil
-	}
-
 	if p.at(token.NAME) && p.peek(1).Type == token.COLON {
 		return p.parseAnnAssign()
 	}
@@ -1220,11 +1212,11 @@ func (p *Parser) parseTypeAtom() ast.Expr {
 		return p.parseString()
 	}
 	if t.Type == token.NAME || t.Type == token.NONE {
-		p.advance()
 		name := t.Literal
 		if t.Type == token.NONE {
 			name = "None"
 		}
+		p.advance()
 		var node ast.Expr = &ast.Name{Base: ast.Base{Position: t.Pos}, Name: name}
 		for p.at(token.DOT) && p.peek(1).Type == token.NAME {
 			p.advance()
@@ -1250,13 +1242,7 @@ func (p *Parser) parseTypeAtom() ast.Expr {
 				p.advance()
 			}
 			p.expect(token.RBRACKET)
-			var index ast.Expr
-			if len(args) == 1 {
-				index = args[0]
-			} else {
-				index = &ast.TupleLit{Base: ast.Base{Position: t.Pos}, Elems: args}
-			}
-			return &ast.Subscript{Base: ast.Base{Position: t.Pos}, X: node, Index: index}
+			return typeSubscript(t.Pos, node, args)
 		}
 		return node
 	}
@@ -1661,7 +1647,7 @@ func (p *Parser) parseString() ast.Expr {
 	t := p.cur()
 	if t.Type == token.FSTRING {
 		p.advance()
-		return p.parseFStringToken(t)
+		return &ast.FString{Base: ast.Base{Position: t.Pos}, Parts: p.parseFStringParts(t.Literal, t.Pos)}
 	}
 	var value strings.Builder
 	value.WriteString(t.Literal)
@@ -1813,10 +1799,6 @@ func (p *Parser) parseComprehensionClauses() []*ast.Comprehension {
 		clauses = append(clauses, &ast.Comprehension{Base: ast.Base{Position: pos}, Target: target, Iter: iter, Ifs: ifs, Async: async})
 	}
 	return clauses
-}
-
-func (p *Parser) parseFStringToken(t token.Token) ast.Expr {
-	return &ast.FString{Base: ast.Base{Position: t.Pos}, Parts: p.parseFStringParts(t.Literal, t.Pos)}
 }
 
 func (p *Parser) parseFStringParts(s string, pos token.Pos) []ast.FStringPart {
