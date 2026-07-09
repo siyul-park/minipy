@@ -1,6 +1,7 @@
 package builtins
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"strconv"
@@ -11,6 +12,13 @@ import (
 
 	"github.com/siyul-park/minivm/interp"
 	vmtypes "github.com/siyul-park/minivm/types"
+)
+
+// ErrOrdValue and ErrChrValue mark the runtime ValueError cases of ord/chr.
+// The compiler maps them to the builtin ValueError class so they are catchable.
+var (
+	ErrOrdValue = errors.New("ord() expected a single Unicode character")
+	ErrChrValue = errors.New("chr() argument out of range")
 )
 
 type rangeIterator struct {
@@ -179,6 +187,32 @@ func listIter(arg types.Type) *interp.HostFunction {
 				return nil, err
 			}
 			return []vmtypes.Boxed{vmtypes.BoxRef(addr)}, nil
+		},
+	)
+}
+
+func ordHost() *interp.HostFunction {
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeString}, Returns: []vmtypes.Type{vmtypes.TypeI64}},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			runes := []rune(hostabi.LoadStr(i, params[0]))
+			if len(runes) != 1 {
+				return nil, fmt.Errorf("%w: %q has %d codepoints", ErrOrdValue, string(runes), len(runes))
+			}
+			return []vmtypes.Boxed{vmtypes.BoxI64(int64(runes[0]))}, nil
+		},
+	)
+}
+
+func chrHost() *interp.HostFunction {
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeI64}, Returns: []vmtypes.Type{vmtypes.TypeString}},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			n := hostabi.LoadI64(i, params[0])
+			if n < 0 || n > 0x10FFFF || (n >= 0xD800 && n <= 0xDFFF) {
+				return nil, fmt.Errorf("%w: %d not a Unicode scalar value", ErrChrValue, n)
+			}
+			return hostabi.AllocString(i, string(rune(n)))
 		},
 	)
 }

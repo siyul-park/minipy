@@ -12,7 +12,7 @@ func TestNew(t *testing.T) {
 	m := New()
 	require.Equal(t, "builtins", m.Name())
 	want := []string{"print", "str", "int", "float", "bool", "abs", "len",
-		"enumerate", "zip", "range", "iter", "next", "isinstance"}
+		"enumerate", "zip", "range", "iter", "next", "ord", "chr", "isinstance"}
 	for _, name := range want {
 		_, ok := m.Symbol(name)
 		require.Truef(t, ok, "missing symbol %q", name)
@@ -87,5 +87,23 @@ func TestResultFuncs(t *testing.T) {
 		got, ok := nextResult([]types.Type{it})
 		require.True(t, ok)
 		require.Truef(t, types.Equal(got, types.Int), "nextResult = %s", got)
+	})
+
+	t.Run("ord", func(t *testing.T) {
+		got, ok := ordResult([]types.Type{types.Str})
+		require.True(t, ok)
+		require.Truef(t, types.Equal(got, types.Int), "ordResult = %s", got)
+
+		_, ok = ordResult([]types.Type{types.Int})
+		require.False(t, ok)
+	})
+
+	t.Run("chr", func(t *testing.T) {
+		got, ok := chrResult([]types.Type{types.Int})
+		require.True(t, ok)
+		require.Truef(t, types.Equal(got, types.Str), "chrResult = %s", got)
+
+		_, ok = chrResult([]types.Type{types.Str})
+		require.False(t, ok)
 	})
 }

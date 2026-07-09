@@ -40,6 +40,8 @@ func New() module.Module {
 		callSymbol("range", spec{1, 3, rangeResult}, emitRange, valueHost(rangeIterHost)),
 		callSymbol("iter", spec{1, 1, iterResult}, emitIter, nil),
 		callSymbol("next", spec{1, 1, nextResult}, emitNext, nil),
+		callSymbol("ord", spec{1, 1, ordResult}, emitOrd, valueHost(ordHost)),
+		callSymbol("chr", spec{1, 1, chrResult}, emitChr, valueHost(chrHost)),
 		module.NewSymbol(Name, "isinstance", isInstanceCheck, emitIsInstance, nil),
 	)
 }

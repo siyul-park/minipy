@@ -99,6 +99,20 @@ func nextResult(args []types.Type) (types.Type, bool) {
 	return types.Invalid, false
 }
 
+func ordResult(args []types.Type) (types.Type, bool) {
+	if len(args) == 1 && types.Equal(args[0], types.Str) {
+		return types.Int, true
+	}
+	return types.Invalid, false
+}
+
+func chrResult(args []types.Type) (types.Type, bool) {
+	if len(args) == 1 && types.Equal(args[0], types.Int) {
+		return types.Str, true
+	}
+	return types.Invalid, false
+}
+
 func convertible(t types.Type) bool {
 	return types.Equal(t, types.Int) || types.Equal(t, types.Float) ||
 		types.Equal(t, types.Bool) || types.Equal(t, types.Str)

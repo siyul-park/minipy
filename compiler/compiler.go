@@ -16,6 +16,7 @@ import (
 	"strings"
 
 	"github.com/siyul-park/minipy/ast"
+	"github.com/siyul-park/minipy/builtins"
 	"github.com/siyul-park/minipy/hostabi"
 	"github.com/siyul-park/minipy/module"
 	"github.com/siyul-park/minipy/operator"
@@ -3274,6 +3275,10 @@ func (c *Compiler) exc() *interp.HostFunction {
 						case errors.Is(exc.Unwrap(), errListIndexValue):
 							class = classID("ValueError")
 						case errors.Is(exc.Unwrap(), errListSliceLength):
+							class = classID("ValueError")
+						case errors.Is(exc.Unwrap(), builtins.ErrOrdValue):
+							class = classID("ValueError")
+						case errors.Is(exc.Unwrap(), builtins.ErrChrValue):
 							class = classID("ValueError")
 						}
 					}

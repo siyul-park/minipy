@@ -174,6 +174,7 @@ full CPython compatibility.
 | Feature | Status | Notes |
 |---|---:|---|
 | `print`, `str`, `int`, `float`, `bool`, `abs`, `len` | ✅ | Native builtins. |
+| `ord`, `chr` | ✅ | Unicode codepoint conversion; static `str->int` / `int->str`; `ValueError` for invalid inputs. `chr` rejects surrogate codepoints (`0xD800..0xDFFF`), diverging from CPython. |
 | `range`, `iter`, `next` | ✅ | Iterator paths. |
 | `enumerate`, `zip` | ✅ | List-based eager helpers. |
 | `isinstance` | ✅ | Type/class checks and narrowing support. |

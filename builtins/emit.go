@@ -176,6 +176,16 @@ func emitIter(e module.Emitter, args []ast.Expr) {
 	}
 }
 
+func emitOrd(e module.Emitter, args []ast.Expr) {
+	e.Expr(args[0])
+	e.CallHost(e.Host(Name, "ord"))
+}
+
+func emitChr(e module.Emitter, args []ast.Expr) {
+	e.Expr(args[0])
+	e.CallHost(e.Host(Name, "chr"))
+}
+
 func emitNext(e module.Emitter, args []ast.Expr) {
 	valSlot := e.Tmp()
 	done := e.Label()

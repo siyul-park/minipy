@@ -1824,6 +1824,11 @@ func TestCompileErrors(t *testing.T) {
 		"g = (x for x in xs)\n":                            token.UndefinedName,
 		"print(str(1 @ 2))\n":                              token.UnsupportedFeature,
 		"try:\n    pass\nexcept* ValueError:\n    pass\n":  token.UnsupportedFeature,
+		// ord/chr
+		"ord(1)\n":            token.TypeMismatch,
+		"chr(\"A\")\n":        token.TypeMismatch,
+		"ord(\"A\", \"B\")\n": token.ArityMismatch,
+		"chr()\n":             token.ArityMismatch,
 	}
 	for src, want := range cases {
 		_, err := Compile(strings.NewReader(src), WithOutput(&bytes.Buffer{}))
@@ -1904,4 +1909,41 @@ func TestCompileVariadic(t *testing.T) {
 			require.Equal(t, want[name], run(t, src))
 		})
 	}
+}
+
+// TestCompileOrdChr covers the ord/chr conversion builtins: bare lookup, the
+// builtins native module, and runtime ValueError for invalid inputs.
+func TestCompileOrdChr(t *testing.T) {
+	t.Run("bare builtins round-trip", func(t *testing.T) {
+		require.Equal(t, "65\nA\n44032\n가\n", run(t,
+			"print(str(ord(\"A\")))\n"+
+				"print(chr(65))\n"+
+				"print(str(ord(\"가\")))\n"+
+				"print(chr(44032))\n"))
+	})
+
+	t.Run("imports through builtins module", func(t *testing.T) {
+		require.Equal(t, "65\nA\n", run(t,
+			"import builtins\n"+
+				"print(str(builtins.ord(\"A\")))\n"+
+				"from builtins import chr as make_char\n"+
+				"print(make_char(65))\n"))
+	})
+
+	t.Run("runtime ValueError is catchable", func(t *testing.T) {
+		require.Equal(t, "ord empty\nord multi\nchr neg\nchr big\n", run(t,
+			"try:\n    ord(\"\")\nexcept ValueError:\n    print(\"ord empty\")\n"+
+				"try:\n    ord(\"AB\")\nexcept ValueError:\n    print(\"ord multi\")\n"+
+				"try:\n    chr(-1)\nexcept ValueError:\n    print(\"chr neg\")\n"+
+				"try:\n    chr(0x110000)\nexcept ValueError:\n    print(\"chr big\")\n"))
+	})
+
+	t.Run("surrogate codepoints rejected", func(t *testing.T) {
+		require.Equal(t, "raised\n", run(t,
+			"try:\n"+
+				"    x: str = chr(0xD800)\n"+
+				"    print(\"ok\")\n"+
+				"except ValueError:\n"+
+				"    print(\"raised\")\n"))
+	})
 }

@@ -68,6 +68,8 @@ Implemented builtin functions:
 | `iter(x)` | 1 | iterable values | `Iterator[T]` |
 | `next(it)` | 1 | `Iterator[T]` | `T` |
 | `isinstance(x, T)` | 2 | value plus supported type/class expression | `bool` |
+| `ord(s)` | 1 | `str` (exactly one codepoint) | `int` |
+| `chr(n)` | 1 | `int` (`0 <= n <= 0x10FFFF`) | `str` |
 
 `range(..., 0)` is diagnosed statically when the zero step is a constant integer
 literal, including a unary sign.
@@ -89,6 +91,29 @@ possible.
 `bool` and `operator.truth` accept scalar convertible values and these container
 kinds: list, dict, set, tuple, and iterator. Tuple truthiness is based on arity.
 Reference-like iterator/callable/class values use nullness.
+
+## Unicode Codepoint Builtins
+
+`ord(s)` returns the Unicode codepoint of a single-character string and `chr(n)`
+returns the one-codepoint string for a codepoint. Both are registered in the
+`builtins` native module, so they work as bare builtins, through
+`import builtins` / `from builtins import …`, and as the unqualified-name
+fallback. Type errors are compile-time diagnostics from each builtin's static
+result rule (`str -> int` for `ord`, `int -> str` for `chr`).
+
+Both lower through narrow host helpers (`ordHost`, `chrHost`) rather than inline
+VM opcodes, because minivm exposes no codepoint get/create string opcodes. At
+runtime, `ord` checks that the string has exactly one codepoint (via rune
+iteration) and `chr` checks `0 <= n <= 0x10FFFF`; out-of-range or wrong-arity
+inputs raise `ValueError` through the shared exception machinery.
+
+`bool` is not accepted for `ord`/`chr` (a `bool` argument is a compile-time
+`TypeMismatch`, like `abs`/`len`); CPython would raise a runtime `TypeError`.
+
+Surrogate codepoints (`0xD800..0xDFFF`) are rejected by `chr` with `ValueError`,
+so `chr` only accepts Unicode scalar values in `0..0x10FFFF` excluding the
+surrogate range. This diverges from CPython, which accepts the full
+`0..0x10FFFF` range including surrogates.
 
 ## Iteration Builtins
 
