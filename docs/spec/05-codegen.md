@@ -40,10 +40,19 @@ level and then verified with `program.Verify`.
 3. create a module loader and load the entry module
 4. check all reachable source modules and native symbols
 5. lower modules and functions into a `program.Builder`
-6. build a minivm program
-7. optimize with `optimize.NewOptimizer(level)`
-8. restore type and handler tables preserved across optimization
-9. verify the final program
+6. declare the module global table (`Builder.Globals`)
+7. build a minivm program
+8. optimize with `optimize.NewOptimizer(level)`
+9. restore type, handler, and global tables preserved across optimization
+10. verify the final program
+
+The interpreter sizes its global table from `Program.Globals`, and `GLOBAL_*`
+past the declared count traps and fails verification, so every global slot the
+module uses must be declared. Every slot is declared as a reference: scratch
+slots allocated during lowering carry no static type and are reused for values
+of different kinds, and a reference slot round-trips any boxed value under the
+interpreter's retain rules, so one uniform declaration stays correct where a
+per-slot precise kind could not.
 
 Compile options:
 

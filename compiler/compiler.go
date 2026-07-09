@@ -229,6 +229,7 @@ func (c *Compiler) Compile() (*program.Program, error) {
 	b := program.NewBuilder()
 	c.init(b, chk, native)
 	c.module(entry)
+	b.Globals(c.globalTable()...)
 
 	prog, err := b.Build()
 	if err != nil {
@@ -237,12 +238,14 @@ func (c *Compiler) Compile() (*program.Program, error) {
 
 	typesPool := append([]vmtypes.Type(nil), prog.Types...)
 	handlers := append([]instr.Handler(nil), prog.Handlers...)
+	globals := append([]vmtypes.Type(nil), prog.Globals...)
 	optimized, err := optimize.NewOptimizer(c.config.level).Optimize(prog)
 	if err != nil {
 		return nil, fmt.Errorf("optimize program: %w", err)
 	}
 	optimized.Types = typesPool
 	optimized.Handlers = handlers
+	optimized.Globals = globals
 	if err := program.Verify(optimized); err != nil {
 		return nil, fmt.Errorf("verify program: %w", err)
 	}
@@ -327,6 +330,20 @@ func (c *Compiler) tmp() int {
 	idx := c.next
 	c.next++
 	return idx
+}
+
+// globalTable declares a fixed slot type for every global the module uses so
+// the interpreter can size its global table and GLOBAL_* passes verification.
+// Every slot is a reference: scratch slots from tmp carry no static type and are
+// reused for values of different kinds, and a reference slot round-trips any
+// boxed value under the interpreter's retain rules, so one uniform declaration
+// stays correct where a per-slot precise kind could not.
+func (c *Compiler) globalTable() []vmtypes.Type {
+	table := make([]vmtypes.Type, c.next)
+	for i := range table {
+		table[i] = vmtypes.TypeRef
+	}
+	return table
 }
 
 // module lowers every top-level statement. The entry function terminates by
