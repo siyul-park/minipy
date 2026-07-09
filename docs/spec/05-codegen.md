@@ -108,7 +108,9 @@ positions and storing each target. Starred rest targets build a list of the
 remaining homogeneous elements.
 
 Subscript assignment supports list and dict item writes. Slice assignment is not
-lowered. Attribute assignment lowers to struct field writes.
+lowered. Attribute assignment lowers to struct field writes. When the receiver is
+a class instance with `__setitem__`, `obj[i] = v` lowers to a direct
+`obj.__setitem__(i, v)` method call and drops the returned `None`.
 
 `del` lowers to:
 
@@ -219,6 +221,19 @@ Builtins and `operator` functions are native module symbols. Each symbol provide
 its own checker rule and emitter callback. Some builtin calls inline to minivm
 opcodes (`len`, numeric conversions, truthiness); others call host functions
 (`print`, string parsing, range/list iteration helpers, enumerate/zip helpers).
+
+### Class special methods
+
+When a receiver is a statically known class instance exposing the recognized
+special method, subscript and `len` operations lower to direct static method
+calls (the same `funcValue`/`CALL` sequence as `obj.method(...)`), not dynamic
+dispatch or a runtime dunder table:
+
+- `obj[i]` emits `obj.__getitem__(i)`.
+- `obj[i] = v` emits `obj.__setitem__(i, v)` and drops the returned `None`.
+- `len(obj)` emits `obj.__len__()`, then a guard that raises `ValueError` when
+  the returned length is negative. Built-in container `len` keeps its inline
+  opcode lowering.
 
 ## Verification and Optimizer Notes
 

@@ -110,6 +110,7 @@ full CPython compatibility.
 | `@dataclass` | ✅ | Field constructor/default checks. |
 | Other class decorators | ⏳ | Rejected. |
 | Methods and `self` | ✅ | `self` required; `__init__` returns `None`. |
+| Special methods (`__len__`, `__getitem__`, `__setitem__`) | ◐ | Static dispatch only; `len(obj)`, `obj[i]`, `obj[i] = v`. No other dunders, slicing, or `__iter__`. |
 
 ## Expressions
 

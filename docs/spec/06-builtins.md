@@ -59,7 +59,7 @@ Implemented builtin functions:
 | `float(x)` | 1 | `int`, `float`, `bool`, `str` | `float` |
 | `bool(x)` | 1 | convertible values and supported containers | `bool` |
 | `abs(x)` | 1 | `int`, `float` | same as input |
-| `len(x)` | 1 | `str`, list, dict, set, tuple | `int` |
+| `len(x)` | 1 | `str`, list, dict, set, tuple, or class instance with `__len__` | `int` |
 | `enumerate(xs)` | 1 | `list[T]` | `list[tuple[int, T]]` |
 | `zip(a, b)` | 2 | `list[A]`, `list[B]` | `list[tuple[A, B]]` |
 | `range(stop)` | 1 | `int` | `Iterator[int]` |
@@ -70,6 +70,10 @@ Implemented builtin functions:
 | `isinstance(x, T)` | 2 | value plus supported type/class expression | `bool` |
 | `ord(s)` | 1 | `str` (exactly one codepoint) | `int` |
 | `chr(n)` | 1 | `int` (`0 <= n <= 0x10FFFF`) | `str` |
+
+`len(obj)` on a class instance that defines `__len__(self) -> int` rewrites to a
+direct `obj.__len__()` call and raises `ValueError` at runtime when the returned
+length is negative. Built-in containers keep their inline lowering.
 
 `range(..., 0)` is diagnosed statically when the zero step is a constant integer
 literal, including a unary sign.

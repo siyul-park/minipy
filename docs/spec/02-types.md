@@ -160,6 +160,12 @@ decorator expressions are rejected.
 Methods require a first `self` parameter. `self` may omit an annotation; if it is
 annotated, it must match the containing class type. `__init__` must return `None`.
 
+A restricted set of special methods has fixed signature constraints enforced by
+the checker: `__len__(self) -> int`, `__getitem__(self, index) -> T`, and
+`__setitem__(self, index, value) -> None`. They let a class participate in
+`len(obj)`, `obj[i]`, and `obj[i] = v` through static dispatch; see
+`docs/spec/04-static-semantics.md`.
+
 Builtin exception classes are seeded into the class table so `raise`, `except`,
 and `isinstance` can reason about their identities.
 

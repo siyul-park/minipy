@@ -58,6 +58,7 @@ type Compiler struct {
 	genExprs   map[*ast.GeneratorExp]*function
 	callSpec   map[*ast.CallExpr]*specialization
 	callArgs   map[*ast.CallExpr][]ast.Expr
+	lenDunder  map[*ast.CallExpr]bool
 	locals     map[string]*local
 	current    *function
 	temps      map[string]int
@@ -278,6 +279,7 @@ func (c *Compiler) init(b *program.Builder, check *checker, native *nativeRuntim
 	c.genExprs = check.genExprs
 	c.callSpec = check.callSpec
 	c.callArgs = check.callArgs
+	c.lenDunder = check.lenDunder
 	c.locals = nil
 	c.current = nil
 	c.temps = map[string]int{}
@@ -1069,7 +1071,7 @@ func (c *Compiler) assignTarget(target ast.Expr, value ast.Expr) {
 		c.expr(t.X)
 		c.expr(t.Index)
 		c.expr(value)
-		switch c.types[t.X].(type) {
+		switch recv := c.types[t.X].(type) {
 		case *types.List:
 			c.emit(instr.SWAP)
 			c.emit(instr.I64_TO_I32)
@@ -1077,6 +1079,11 @@ func (c *Compiler) assignTarget(target ast.Expr, value ast.Expr) {
 			c.emit(instr.ARRAY_SET)
 		case *types.Dict:
 			c.emit(instr.MAP_SET)
+		case *types.Class:
+			owner, m := c.methodOwner(recv.Name, "__setitem__")
+			c.funcValue(m, owner.methodBody["__setitem__"])
+			c.emit(instr.CALL)
+			c.emit(instr.DROP)
 		default:
 			panic("unsupported subscript assignment")
 		}
@@ -2156,6 +2163,11 @@ func (c *Compiler) subscript(x *ast.Subscript) {
 	case *types.Tuple:
 		c.emit(instr.I64_TO_I32)
 		c.emit(instr.STRUCT_GET)
+	case *types.Class:
+		cls := c.types[x.X].(*types.Class)
+		owner, m := c.methodOwner(cls.Name, "__getitem__")
+		c.funcValue(m, owner.methodBody["__getitem__"])
+		c.emit(instr.CALL)
 	default:
 		if types.Equal(c.types[x.X], types.Str) {
 			c.callHost(c.strIndex()) // stack has string and index; returns one-codepoint string
@@ -2420,9 +2432,37 @@ func (c *Compiler) call(x *ast.CallExpr) {
 		return
 	}
 
+	if c.lenDunder[x] {
+		c.emitLenDunder(x)
+		return
+	}
 	if sym, ok := c.reg.SymbolByKey(c.symbol(name.Name)); ok {
 		sym.Emit(c, x.Args)
 	}
+}
+
+// emitLenDunder lowers len(obj) to a direct obj.__len__() call and guards the
+// result against negative values, raising ValueError to match CPython.
+func (c *Compiler) emitLenDunder(x *ast.CallExpr) {
+	arg := x.Args[0]
+	cls := c.types[arg].(*types.Class)
+	owner, m := c.methodOwner(cls.Name, "__len__")
+	c.expr(arg)
+	c.funcValue(m, owner.methodBody["__len__"])
+	c.emit(instr.CALL)
+	ok := c.label()
+	c.emit(instr.DUP)
+	c.emit(instr.I64_CONST, 0)
+	c.emit(instr.I64_GE_S)
+	c.brIf(ok)
+	c.emit(instr.DROP)
+	c.emitExceptionStruct(c.classes["ValueError"], func() {
+		c.constGet(vmtypes.String("__len__() should return >= 0"))
+	})
+	c.emit(instr.I32_CONST, uint64(vmtypes.ErrorCodeNone))
+	c.emit(instr.ERROR_NEW)
+	c.emit(instr.THROW)
+	c.bind(ok)
 }
 
 func (c *Compiler) nativeHost(moduleName, symbol string) *interp.HostFunction {

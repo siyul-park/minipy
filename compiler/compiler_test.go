@@ -1796,6 +1796,13 @@ func TestCompileErrors(t *testing.T) {
 		"@dataclass\nclass Point:\n    x: int\np: Point = Point(1)\nprint(p.y)\n":              token.UndefinedName,
 		"@dataclass\nclass Point:\n    x: int\np: Point = Point(1)\nprint(p.missing())\n":      token.UnsupportedFeature,
 		"class Point:\n    x: int\n    def __init__(self, x: int) -> int:\n        return x\n": token.TypeMismatch,
+		// class special methods (__len__ / __getitem__ / __setitem__)
+		"class C:\n    def __init__(self) -> None:\n        pass\n    def __len__(self) -> str:\n        return \"x\"\n":                                                token.TypeMismatch,
+		"class C:\n    def __init__(self) -> None:\n        pass\n    def __getitem__(self) -> int:\n        return 0\n":                                              token.ArityMismatch,
+		"class C:\n    def __init__(self) -> None:\n        pass\n    def __setitem__(self, i: int, v: int) -> int:\n        return 0\n":                               token.TypeMismatch,
+		"class C:\n    def __init__(self) -> None:\n        pass\nc: C = C()\nprint(str(c[0]))\n":                                                                     token.NotIndexable,
+		"class C:\n    def __init__(self) -> None:\n        pass\nc: C = C()\nc[0] = 1\n":                                                                            token.NotIndexable,
+		"class C:\n    def __init__(self) -> None:\n        pass\n    def __getitem__(self, i: int) -> int:\n        return i\nc: C = C()\nprint(str(c[\"x\"]))\n":     token.TypeMismatch,
 		// M9: del, assert, match
 		"n: int = 1\ndel n\nprint(str(n))\n": token.UseBeforeDefinition,
 		"assert 1\n":                         token.TypeMismatch,
@@ -1835,6 +1842,79 @@ func TestCompileErrors(t *testing.T) {
 		require.Errorf(t, err, "src=%q", src)
 		code(t, err, want)
 	}
+}
+
+// TestCompileClassSpecialMethods covers the restricted static dispatch of
+// __len__, __getitem__, and __setitem__ on statically known classes: each
+// operation lowers to a direct method call, inheritance resolves the method,
+// non-int index types are honored, and a negative __len__ raises ValueError.
+func TestCompileClassSpecialMethods(t *testing.T) {
+	t.Run("__len__", func(t *testing.T) {
+		require.Equal(t, "3\n", run(t,
+			"class Box:\n"+
+				"    n: int\n"+
+				"    def __init__(self, n: int) -> None:\n"+
+				"        self.n = n\n"+
+				"    def __len__(self) -> int:\n"+
+				"        return self.n\n"+
+				"print(str(len(Box(3))))\n"))
+	})
+
+	t.Run("__getitem__ and __setitem__", func(t *testing.T) {
+		require.Equal(t, "5\n", run(t,
+			"class Wrap:\n"+
+				"    xs: list[int]\n"+
+				"    def __init__(self, xs: list[int]) -> None:\n"+
+				"        self.xs = xs\n"+
+				"    def __getitem__(self, i: int) -> int:\n"+
+				"        return self.xs[i]\n"+
+				"    def __setitem__(self, i: int, v: int) -> None:\n"+
+				"        self.xs[i] = v\n"+
+				"w: Wrap = Wrap([1, 2])\n"+
+				"w[1] = 5\n"+
+				"print(str(w[1]))\n"))
+	})
+
+	t.Run("inherited __len__", func(t *testing.T) {
+		require.Equal(t, "4\n", run(t,
+			"class Base:\n"+
+				"    n: int\n"+
+				"    def __init__(self, n: int) -> None:\n"+
+				"        self.n = n\n"+
+				"    def __len__(self) -> int:\n"+
+				"        return self.n\n"+
+				"class Sub(Base):\n"+
+				"    def __init__(self, n: int) -> None:\n"+
+				"        self.n = n\n"+
+				"print(str(len(Sub(4))))\n"))
+	})
+
+	t.Run("non-int index type", func(t *testing.T) {
+		require.Equal(t, "1\n", run(t,
+			"class M:\n"+
+				"    def __init__(self) -> None:\n"+
+				"        pass\n"+
+				"    def __getitem__(self, k: str) -> int:\n"+
+				"        return 1\n"+
+				"print(str(M()[\"x\"]))\n"))
+	})
+
+	t.Run("builtin container len is unchanged", func(t *testing.T) {
+		require.Equal(t, "3\n", run(t, "print(str(len([1, 2, 3])))\n"))
+	})
+
+	t.Run("negative __len__ raises ValueError", func(t *testing.T) {
+		require.Equal(t, "caught\n", run(t,
+			"class Neg:\n"+
+				"    def __init__(self) -> None:\n"+
+				"        pass\n"+
+				"    def __len__(self) -> int:\n"+
+				"        return -1\n"+
+				"try:\n"+
+				"    print(str(len(Neg())))\n"+
+				"except ValueError:\n"+
+				"    print(\"caught\")\n"))
+	})
 }
 
 // TestCompileBoolI1 pins down that Python bool is a uniformly i1-kinded value
