@@ -375,6 +375,39 @@ class Point(Base):
 		require.Nil(t, function.Body[1].(*ast.Yield).Value)
 	})
 
+	t.Run("yield from parses with From flag", func(t *testing.T) {
+		mod, err := parse(`def ints() -> Iterator[int]:
+    yield from xs
+`)
+		require.NoError(t, err)
+		function := mod.Body[0].(*ast.Function)
+		y := function.Body[0].(*ast.Yield)
+		require.True(t, y.From)
+		require.Equal(t, "xs", y.Value.(*ast.Name).Name)
+	})
+
+	t.Run("yield expression in expression position", func(t *testing.T) {
+		mod, err := parse(`def f() -> Iterator[int]:
+    x = yield 1
+`)
+		require.NoError(t, err)
+		function := mod.Body[0].(*ast.Function)
+		y := function.Body[0].(*ast.Assign).Value.(*ast.YieldExpr)
+		require.False(t, y.From)
+		require.Equal(t, int64(1), y.Value.(*ast.IntLit).Value)
+	})
+
+	t.Run("yield from expression in expression position", func(t *testing.T) {
+		mod, err := parse(`def f() -> Iterator[int]:
+    x = yield from xs
+`)
+		require.NoError(t, err)
+		function := mod.Body[0].(*ast.Function)
+		y := function.Body[0].(*ast.Assign).Value.(*ast.YieldExpr)
+		require.True(t, y.From)
+		require.Equal(t, "xs", y.Value.(*ast.Name).Name)
+	})
+
 	t.Run("comprehensions and set display", func(t *testing.T) {
 		mod, err := parse("xs: list[int] = [i for i in range(3) if i < 2]\nd: dict[str, int] = {str(i): i for i in range(2)}\ns: set[int] = {i for i in [1, 2]}\nt: set[int] = {1, 2}\n")
 		require.NoError(t, err)
@@ -558,7 +591,6 @@ func TestParseErrors(t *testing.T) {
 		"1 = 2\n":                      token.SyntaxError,
 		"else:\n    pass\n":            token.SyntaxError,
 		"@other\nclass C:\n    pass\n": token.UnsupportedFeature,
-		"def f() -> Iterator[int]:\n    yield from xs\n": token.UnsupportedFeature,
 	}
 	for src, code := range cases {
 		_, err := parse(src)

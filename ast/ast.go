@@ -193,9 +193,11 @@ type Return struct {
 }
 
 // Yield is a generator suspension statement. Value is nil for bare `yield`.
+// From is true for `yield from iter`, which delegates to a child iterator.
 type Yield struct {
 	Base
 	Value Expr
+	From  bool
 }
 
 // Delete is `del target1, target2, ...`. Each target is a Name, Subscript, or

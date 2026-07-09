@@ -73,8 +73,8 @@ full CPython compatibility.
 | `break`/`continue` | ✅ | Checked for loop scope. |
 | `return` | ✅ | Checked for function scope and result type. |
 | `yield` statement | ✅ | Supported in generator functions returning `Iterator[T]`. |
-| `yield` expression | ⏳ | Parsed, rejected by checker. |
-| `yield from` | ⏳ | Parsed/reported as unsupported. |
+| `yield` expression | ✅ | Expression-position `x = yield v`; result type `None` in v1. |
+| `yield from` | ✅ | Delegates to an iterable; result type `None` in v1. |
 | `global` | ✅ | Function-scope declaration. |
 | `nonlocal` | ✅ | Requires enclosing binding. |
 | `type` alias statement | ✅ | Compile-time alias. |
@@ -141,7 +141,7 @@ full CPython compatibility.
 | Starred list/set elements | ◐ | Statically typed sources only. |
 | Dict unpacking in displays | ◐ | Dict sources only; dynamic call unpack still unsupported. |
 | List/dict/set comprehensions | ✅ | Eager construction; name targets. |
-| Generator expressions | ✅ | Iterator result. |
+| Generator expressions | ✅ | Lazy; lowers to a synthesized generator function. |
 | Async comprehensions | ⏳ | Parsed, rejected. |
 | Await expressions | ⏳ | Parsed, rejected. |
 | F-strings | ◐ | Printable replacement fields, limited conversions/format nesting. |

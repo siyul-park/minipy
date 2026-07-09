@@ -1434,6 +1434,160 @@ with Ctx("a") as a, Ctx("b") as b:
 	})
 }
 
+func TestGeneratorYieldFrom(t *testing.T) {
+	t.Run("yield from range and list", func(t *testing.T) {
+		src := `def chained() -> Iterator[int]:
+    yield from range(3)
+    yield from [10, 20]
+total: int = 0
+for v in chained():
+    total = total + v
+print(str(total))
+`
+		require.Equal(t, "33\n", run(t, src))
+	})
+
+	t.Run("yield from string", func(t *testing.T) {
+		src := `def letters() -> Iterator[str]:
+    yield from "ab"
+s: str = ""
+for c in letters():
+    s = s + c
+print(s)
+`
+		require.Equal(t, "ab\n", run(t, src))
+	})
+
+	t.Run("yield from another generator", func(t *testing.T) {
+		src := `def inner() -> Iterator[int]:
+    yield 5
+    yield 6
+def outer() -> Iterator[int]:
+    yield from inner()
+total: int = 0
+for v in outer():
+    total = total + v
+print(str(total))
+`
+		require.Equal(t, "11\n", run(t, src))
+	})
+
+	t.Run("expression position yield observes None resume value", func(t *testing.T) {
+		src := `def g() -> Iterator[int]:
+    x = yield 1
+    yield 2
+total: int = 0
+for v in g():
+    total = total + v
+print(str(total))
+`
+		require.Equal(t, "3\n", run(t, src))
+	})
+
+	t.Run("next advances a held generator expression", func(t *testing.T) {
+		src := `gen: Iterator[int] = (x * 2 for x in range(3))
+print(str(next(gen)))
+print(str(next(gen)))
+print(str(next(gen)))
+`
+		require.Equal(t, "0\n2\n4\n", run(t, src))
+	})
+
+	t.Run("next advances a held yield from generator", func(t *testing.T) {
+		src := `def chained() -> Iterator[int]:
+    yield from range(3)
+g: Iterator[int] = chained()
+print(str(next(g)))
+print(str(next(g)))
+print(str(next(g)))
+`
+		require.Equal(t, "0\n1\n2\n", run(t, src))
+	})
+
+	t.Run("generator expression is lazy", func(t *testing.T) {
+		src := `seen: list[int] = []
+def gen() -> Iterator[int]:
+    for x in range(3):
+        seen.append(x)
+        yield x
+it: Iterator[int] = gen()
+first: int = len(seen)
+a: int = next(it)
+after: int = len(seen)
+print(str(first))
+print(str(a))
+print(str(after))
+`
+		require.Equal(t, "1\n0\n2\n", run(t, src))
+	})
+
+	t.Run("generator expression over range", func(t *testing.T) {
+		src := `total: int = 0
+for v in (x * 2 for x in range(3)):
+    total = total + v
+print(str(total))
+`
+		require.Equal(t, "6\n", run(t, src))
+	})
+
+	t.Run("nested generator expression captures outer local", func(t *testing.T) {
+		src := `base: int = 10
+vals: list[int] = [base + x for x in range(3)]
+print(str(vals[0]))
+print(str(vals[2]))
+`
+		require.Equal(t, "10\n12\n", run(t, src))
+	})
+
+	t.Run("generator expression with filter", func(t *testing.T) {
+		src := `vals: list[int] = [x for x in range(5) if x % 2 == 1]
+print(str(len(vals)))
+print(str(vals[1]))
+`
+		require.Equal(t, "2\n3\n", run(t, src))
+	})
+
+	t.Run("yield from non-iterable is rejected", func(t *testing.T) {
+		src := `def f() -> Iterator[int]:
+    yield from 5
+`
+		_, err := Compile(strings.NewReader(src), WithOutput(io.Discard))
+		require.Error(t, err)
+		require.True(t, count(t, err, token.TypeMismatch) > 0)
+	})
+
+	t.Run("yield from str into int generator is rejected", func(t *testing.T) {
+		src := `def f() -> Iterator[int]:
+    yield from "ab"
+`
+		_, err := Compile(strings.NewReader(src), WithOutput(io.Discard))
+		require.Error(t, err)
+		require.True(t, count(t, err, token.TypeMismatch) > 0)
+	})
+
+	t.Run("yield expression outside function is rejected", func(t *testing.T) {
+		src := `x = yield 1
+`
+		_, err := Compile(strings.NewReader(src), WithOutput(io.Discard))
+		require.Error(t, err)
+		require.True(t, count(t, err, token.SyntaxError) > 0)
+	})
+
+	t.Run("yield from drives an infinite child lazily", func(t *testing.T) {
+		src := `def ones() -> Iterator[int]:
+    while True:
+        yield 1
+n: int = 0
+for v in ones():
+    n = n + 1
+    if n == 3:
+        break
+print(str(n))
+`
+		require.Equal(t, "3\n", run(t, src))
+	})
+}
+
 func TestCompileFString(t *testing.T) {
 	t.Run("debug, conversion, and nested format specs run", func(t *testing.T) {
 		cases := []struct {

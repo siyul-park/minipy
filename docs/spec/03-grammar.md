@@ -218,9 +218,9 @@ power           ::= primary ['**' factor]
 primary         ::= atom {call | attribute | subscript_expr}
 ```
 
-`:=` is accepted only when the left side is a name. `yield from` and yield
-expressions are parsed but rejected by the checker; yield statements in generator
-functions are supported. `await` is parse-only.
+`:=` is accepted only when the left side is a name. `yield` statements and
+`yield`/`yield from` expressions are supported inside generator functions
+returning `Iterator[T]`; `await` is parse-only.
 
 ## Calls and Primaries
 

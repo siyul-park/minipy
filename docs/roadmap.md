@@ -109,6 +109,8 @@ These are implemented with deliberate limits, not undocumented bugs.
 - First-class callable/module/class value model, if the project decides it is
   worth the extra runtime complexity.
 - Slice assignment for lists and strings where semantics are clear.
+- Generator `send`/`throw`/`close` and return-value propagation; v1 supports
+  `yield`/`yield from` with a `None` resume value only.
 - Richer class decorators or decorator-call lowering.
 - More complete context-manager protocol coverage for `with`.
 - ExceptionGroup / `except*` support.

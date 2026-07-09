@@ -135,6 +135,7 @@ type checker struct {
 	aliases    map[string]*alias
 	aliasDecls map[*ast.AnnAssign]bool
 	lambdas    map[*ast.LambdaExpr]*function
+	genExprs   map[*ast.GeneratorExp]*function
 	order      []string
 	classOrder []string
 	loops      int // enclosing-loop depth, for break/continue validation
@@ -193,6 +194,7 @@ func newChecker(loaders ...*loader) *checker {
 		aliases:    map[string]*alias{},
 		aliasDecls: map[*ast.AnnAssign]bool{},
 		lambdas:    map[*ast.LambdaExpr]*function{},
+		genExprs:   map[*ast.GeneratorExp]*function{},
 		narrowed:   map[string]types.Type{},
 		temps:      map[string]types.Type{},
 		callSpec:   map[*ast.CallExpr]*specialization{},
@@ -2618,30 +2620,90 @@ func (c *checker) returnStmt(n *ast.Return) {
 }
 
 func (c *checker) yieldStmt(n *ast.Yield) {
+	c.checkYield(n.Value, n.From, n.Pos())
+}
+
+func (c *checker) checkYield(value ast.Expr, from bool, pos token.Pos) {
 	if c.current == nil {
-		c.errs.Add(n.Pos(), token.SyntaxError, "'yield' outside function")
-		if n.Value != nil {
-			c.expr(n.Value)
+		c.errs.Add(pos, token.SyntaxError, "'yield' outside function")
+		if value != nil {
+			c.expr(value)
 		}
 		return
 	}
 	iter, ok := c.current.result.(*types.Iterator)
 	if !ok {
 		if c.current.result != types.Invalid {
-			c.errs.Add(n.Pos(), token.TypeMismatch, "yield in function returning %s; expected Iterator[T]", c.current.result)
+			c.errs.Add(pos, token.TypeMismatch, "yield in function returning %s; expected Iterator[T]", c.current.result)
 		}
-		if n.Value != nil {
-			c.expr(n.Value)
+		if value != nil {
+			c.expr(value)
+		}
+		return
+	}
+	if from {
+		if value == nil {
+			c.errs.Add(pos, token.SyntaxError, "'yield from' needs an iterable")
+			return
+		}
+		vt := c.expr(value)
+		if vt != types.Invalid && !c.iterableType(vt) {
+			c.errs.Add(pos, token.TypeMismatch, "'yield from' needs an iterable, got %s", vt)
+			return
+		}
+		et := types.None
+		if vt != types.Invalid {
+			et = iterableElem(vt)
+		}
+		if et != types.Invalid && iter.Elem != types.Invalid && !types.AssignableTo(et, iter.Elem) {
+			c.errs.Add(pos, token.TypeMismatch, "cannot yield from %s into generator yielding %s", vt, iter.Elem)
 		}
 		return
 	}
 	yt := types.None
-	if n.Value != nil {
-		yt = c.exprWithHint(n.Value, iter.Elem)
+	if value != nil {
+		yt = c.exprWithHint(value, iter.Elem)
 	}
 	if yt != types.Invalid && iter.Elem != types.Invalid && !types.AssignableTo(yt, iter.Elem) {
-		c.errs.Add(n.Pos(), token.TypeMismatch, "cannot yield %s from generator yielding %s", yt, iter.Elem)
+		c.errs.Add(pos, token.TypeMismatch, "cannot yield %s from generator yielding %s", yt, iter.Elem)
 	}
+}
+
+func (c *checker) iterableType(t types.Type) bool {
+	switch t.(type) {
+	case *types.Iterator, *types.Dict, *types.Set, *types.List:
+		return true
+	default:
+		return types.Equal(t, types.Str)
+	}
+}
+
+// synthGenExpr builds a hidden generator function whose body is equivalent to
+// `for target in iter: if cond: yield elem`, so a generator expression lowers
+// to a lazily resumed coroutine instead of an eagerly built list.
+func (c *checker) synthGenExpr(n *ast.GeneratorExp, elem types.Type) *function {
+	info := newFunction("<genexpr>")
+	info.result = types.NewIterator(elem)
+	info.inferResult = false
+	info.generator = true
+	info.parent = c.current
+	info.mod = c.mod
+	info.body = c.synthGenBody(n.Clauses, n.Elem)
+	c.checkFunctionBody(info.body, nil, info, n.Pos())
+	return info
+}
+
+func (c *checker) synthGenBody(clauses []*ast.Comprehension, elem ast.Expr) []ast.Stmt {
+	inner := []ast.Stmt{&ast.Yield{Base: ast.Base{Position: elem.Pos()}, Value: elem}}
+	for i := len(clauses) - 1; i >= 0; i-- {
+		clause := clauses[i]
+		body := inner
+		for j := len(clause.Ifs) - 1; j >= 0; j-- {
+			body = []ast.Stmt{&ast.If{Base: ast.Base{Position: clause.Ifs[j].Pos()}, Cond: clause.Ifs[j], Body: body}}
+		}
+		inner = []ast.Stmt{&ast.For{Base: ast.Base{Position: clause.Pos()}, Target: clause.Target, Iter: clause.Iter, Body: body}}
+	}
+	return inner
 }
 
 func blockReturns(body []ast.Stmt) bool {
@@ -2702,36 +2764,178 @@ func blockTerminates(body []ast.Stmt) bool {
 
 func containsYield(body []ast.Stmt) bool {
 	for _, s := range body {
-		switch n := s.(type) {
-		case *ast.Yield:
+		if stmtHasYield(s) {
 			return true
-		case *ast.If:
-			if containsYield(n.Body) || containsYield(n.Orelse) {
+		}
+	}
+	return false
+}
+
+func stmtHasYield(s ast.Stmt) bool {
+	switch n := s.(type) {
+	case *ast.Yield:
+		return true
+	case *ast.ExprStmt:
+		return exprHasYield(n.X)
+	case *ast.Return:
+		return n.Value != nil && exprHasYield(n.Value)
+	case *ast.AnnAssign:
+		return n.Value != nil && exprHasYield(n.Value)
+	case *ast.Assign:
+		return exprHasYield(n.Value) || exprHasYield(n.Target)
+	case *ast.AugAssign:
+		return exprHasYield(n.Value) || exprHasYield(n.Target)
+	case *ast.Assert:
+		return (n.Test != nil && exprHasYield(n.Test)) || (n.Msg != nil && exprHasYield(n.Msg))
+	case *ast.Raise:
+		return (n.Exc != nil && exprHasYield(n.Exc)) || (n.Cause != nil && exprHasYield(n.Cause))
+	case *ast.If:
+		return exprHasYield(n.Cond) || containsYield(n.Body) || containsYield(n.Orelse)
+	case *ast.While:
+		return exprHasYield(n.Cond) || containsYield(n.Body) || containsYield(n.Orelse)
+	case *ast.For:
+		return exprHasYield(n.Iter) || exprHasYield(n.Target) || containsYield(n.Body) || containsYield(n.Orelse)
+	case *ast.Match:
+		if n.Subject != nil && exprHasYield(n.Subject) {
+			return true
+		}
+		for _, c := range n.Cases {
+			if containsYield(c.Body) {
 				return true
 			}
-		case *ast.While:
-			if containsYield(n.Body) || containsYield(n.Orelse) {
+		}
+	case *ast.Try:
+		if containsYield(n.Body) || containsYield(n.Orelse) || containsYield(n.Finalbody) {
+			return true
+		}
+		for _, h := range n.Handlers {
+			if containsYield(h.Body) {
 				return true
 			}
-		case *ast.For:
-			if containsYield(n.Body) || containsYield(n.Orelse) {
+		}
+	case *ast.With:
+		for _, item := range n.Items {
+			if exprHasYield(item.Context) {
 				return true
 			}
-		case *ast.Try:
-			if containsYield(n.Body) || containsYield(n.Orelse) || containsYield(n.Finalbody) {
+		}
+		return containsYield(n.Body)
+	case *ast.Function, *ast.Class:
+		return false
+	}
+	return false
+}
+
+func exprHasYield(e ast.Expr) bool {
+	if e == nil {
+		return false
+	}
+	switch n := e.(type) {
+	case *ast.YieldExpr:
+		return true
+	case *ast.UnaryExpr:
+		return exprHasYield(n.X)
+	case *ast.BinaryExpr:
+		return exprHasYield(n.X) || exprHasYield(n.Y)
+	case *ast.BoolOp:
+		return exprHasYield(n.X) || exprHasYield(n.Y)
+	case *ast.Compare:
+		if exprHasYield(n.X) {
+			return true
+		}
+		for _, c := range n.Comparators {
+			if exprHasYield(c) {
 				return true
 			}
-			for _, h := range n.Handlers {
-				if containsYield(h.Body) {
-					return true
-				}
-			}
-		case *ast.With:
-			if containsYield(n.Body) {
+		}
+	case *ast.CallExpr:
+		if exprHasYield(n.Fn) {
+			return true
+		}
+		for _, a := range n.Args {
+			if exprHasYield(a) {
 				return true
 			}
-		case *ast.Function:
-			continue
+		}
+	case *ast.IfExp:
+		return exprHasYield(n.Body) || exprHasYield(n.Cond) || exprHasYield(n.Orelse)
+	case *ast.NamedExpr:
+		return exprHasYield(n.Value)
+	case *ast.LambdaExpr:
+		return false
+	case *ast.AwaitExpr:
+		return exprHasYield(n.X)
+	case *ast.Starred:
+		return exprHasYield(n.X)
+	case *ast.Attribute:
+		return exprHasYield(n.X)
+	case *ast.Subscript:
+		return exprHasYield(n.X) || exprHasYield(n.Index)
+	case *ast.Slice:
+		return exprHasYield(n.Lower) || exprHasYield(n.Upper) || exprHasYield(n.Step)
+	case *ast.TupleLit:
+		for _, e := range n.Elems {
+			if exprHasYield(e) {
+				return true
+			}
+		}
+	case *ast.ListLit:
+		for _, e := range n.Elems {
+			if exprHasYield(e) {
+				return true
+			}
+		}
+	case *ast.DictLit:
+		for i, k := range n.Keys {
+			if exprHasYield(k) || exprHasYield(n.Values[i]) {
+				return true
+			}
+		}
+	case *ast.SetLit:
+		for _, e := range n.Elems {
+			if exprHasYield(e) {
+				return true
+			}
+		}
+	case *ast.GeneratorExp:
+		if exprHasYield(n.Elem) {
+			return true
+		}
+		return compHasYield(n.Clauses)
+	case *ast.ListComp:
+		if exprHasYield(n.Elem) {
+			return true
+		}
+		return compHasYield(n.Clauses)
+	case *ast.SetComp:
+		if exprHasYield(n.Elem) {
+			return true
+		}
+		return compHasYield(n.Clauses)
+	case *ast.DictComp:
+		if exprHasYield(n.Key) || exprHasYield(n.Value) {
+			return true
+		}
+		return compHasYield(n.Clauses)
+	case *ast.FString:
+		for _, p := range n.Parts {
+			if f, ok := p.(*ast.FStringExpr); ok && exprHasYield(f.Expr) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func compHasYield(clauses []*ast.Comprehension) bool {
+	for _, cl := range clauses {
+		if exprHasYield(cl.Iter) {
+			return true
+		}
+		for _, f := range cl.Ifs {
+			if exprHasYield(f) {
+				return true
+			}
 		}
 	}
 	return false
@@ -2977,14 +3181,18 @@ func (c *checker) typeOf(e ast.Expr, hint types.Type) types.Type {
 		c.errs.Add(n.Pos(), token.UnsupportedFeature, "await is parse-only until scheduler support lands")
 		return types.Invalid
 	case *ast.YieldExpr:
-		if n.Value != nil {
-			c.expr(n.Value)
+		if c.current != nil {
+			c.current.generator = true
 		}
-		c.errs.Add(n.Pos(), token.UnsupportedFeature, "yield expressions are not supported yet")
-		return types.Invalid
+		c.checkYield(n.Value, n.From, n.Pos())
+		return types.None
 	case *ast.GeneratorExp:
 		elem := c.compElem(n.Clauses, n.Elem)
-		return types.NewIterator(elem)
+		t := types.NewIterator(elem)
+		if c.genExprs[n] == nil {
+			c.genExprs[n] = c.synthGenExpr(n, elem)
+		}
+		return t
 	case *ast.Attribute:
 		return c.fieldType(n, c.expr(n.X))
 	case *ast.FString:

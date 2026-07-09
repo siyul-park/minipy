@@ -199,8 +199,13 @@ slot. Length mismatch maps to `ValueError`.
 ### Comprehensions and Generators
 
 List/dict/set comprehensions lower as eager construction loops. Generator
-expressions and generator functions lower to iterator/coroutine-style values and
-are consumed by `next`/iteration paths.
+functions lower to iterator/coroutine-style values. Generator expressions lower to
+a synthesized, lazily resumed generator function (`<genexpr>`) that is invoked to
+produce the `Iterator[T]` handle without running the body; closure capture reuses
+the same machinery as lambdas. `yield from` drains the delegated iterator with the
+`CORO_DONE`/`CORO_VALUE`/`RESUME` protocol and re-yields each value; `yield`
+expressions lower via the same `YIELD` primitive, leaving the (v1 `None`) resume
+value on the stack.
 
 ### F-strings
 

@@ -630,12 +630,12 @@ func (p *Parser) parseSimpleStmt() ast.Stmt {
 	case token.YIELD:
 		t := p.cur()
 		p.advance()
+		from := false
 		if p.at(token.FROM) {
-			p.errs.Add(t.Pos, token.UnsupportedFeature, "'yield from' is not supported yet")
-			p.skipToStmtEnd()
-			return nil
+			from = true
+			p.advance()
 		}
-		return &ast.Yield{Base: ast.Base{Position: t.Pos}, Value: p.parseOptionalExpression()}
+		return &ast.Yield{Base: ast.Base{Position: t.Pos}, Value: p.parseOptionalExpression(), From: from}
 	case token.RAISE:
 		return p.parseRaise()
 	case token.GLOBAL:

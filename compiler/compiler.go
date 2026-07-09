@@ -54,6 +54,7 @@ type Compiler struct {
 	attrNative map[*ast.Attribute]module.Symbol
 	reg        *module.Registry
 	lambdas    map[*ast.LambdaExpr]*function
+	genExprs   map[*ast.GeneratorExp]*function
 	callSpec   map[*ast.CallExpr]*specialization
 	callArgs   map[*ast.CallExpr][]ast.Expr
 	locals     map[string]*local
@@ -273,6 +274,7 @@ func (c *Compiler) init(b *program.Builder, check *checker, native *nativeRuntim
 	c.attrNative = check.attrNative
 	c.reg = check.reg
 	c.lambdas = check.lambdas
+	c.genExprs = check.genExprs
 	c.callSpec = check.callSpec
 	c.callArgs = check.callArgs
 	c.locals = nil
@@ -1685,13 +1687,51 @@ func (c *Compiler) returnStmt(n *ast.Return) {
 }
 
 func (c *Compiler) yield(n *ast.Yield) {
-	if n.Value != nil {
-		c.expr(n.Value)
+	c.yieldCore(n.Value, n.From)
+	c.emit(instr.DROP)
+}
+
+func (c *Compiler) yieldExpr(n *ast.YieldExpr) {
+	c.yieldCore(n.Value, n.From)
+}
+
+// yieldCore emits a yield (or yield from) and leaves the resume value on the
+// stack as the expression result. For v1 the resume value type is None, so
+// resumed generators observe None through the result.
+func (c *Compiler) yieldCore(value ast.Expr, from bool) {
+	if from {
+		iterSlot := c.tmp()
+		if lt, ok := c.types[value].(*types.List); ok {
+			c.expr(value)
+			c.callHost(c.listIter(lt))
+		} else {
+			c.iterate(value, c.types[value])
+		}
+		c.emit(instr.GLOBAL_SET, uint64(iterSlot))
+		top := c.label()
+		end := c.label()
+		c.bind(top)
+		c.emit(instr.GLOBAL_GET, uint64(iterSlot))
+		c.emit(instr.CORO_DONE)
+		c.brIf(end)
+		c.emit(instr.GLOBAL_GET, uint64(iterSlot))
+		c.emit(instr.CORO_VALUE)
+		c.emit(instr.YIELD)
+		c.emit(instr.DROP)
+		c.emitResumeIterator(iterSlot)
+		c.br(top)
+		c.bind(end)
+		c.emit(instr.GLOBAL_GET, uint64(iterSlot))
+		c.emit(instr.DROP)
+		c.emit(instr.REF_NULL)
+		return
+	}
+	if value != nil {
+		c.expr(value)
 	} else {
 		c.emit(instr.REF_NULL)
 	}
 	c.emit(instr.YIELD)
-	c.emit(instr.DROP)
 }
 
 func (c *Compiler) emitNoneReturn() {
@@ -1786,6 +1826,8 @@ func (c *Compiler) expr(n ast.Expr) {
 		c.dictComp(x)
 	case *ast.SetComp:
 		c.setComp(x)
+	case *ast.YieldExpr:
+		c.yieldExpr(x)
 	case *ast.GeneratorExp:
 		c.generatorExp(x)
 	case *ast.TupleLit:
@@ -1986,17 +2028,12 @@ func (c *Compiler) setComp(x *ast.SetComp) {
 }
 
 func (c *Compiler) generatorExp(x *ast.GeneratorExp) {
-	iter := c.types[x].(*types.Iterator)
-	listType := types.NewList(iter.Elem)
-	slot := c.tmp()
-	c.emit(instr.I32_CONST, 0)
-	c.emit(instr.ARRAY_NEW_DEFAULT, c.typeIndex(listType))
-	c.emit(instr.GLOBAL_SET, uint64(slot))
-	c.comp(x.Clauses, func() {
-		c.appendListSlot(slot, func() { c.expr(x.Elem) })
-	})
-	c.emit(instr.GLOBAL_GET, uint64(slot))
-	c.callHost(c.listIter(listType))
+	info := c.genExprs[x]
+	if info == nil {
+		return
+	}
+	c.funcValue(info, info.body)
+	c.emit(instr.CALL)
 }
 
 func (c *Compiler) comp(clauses []*ast.Comprehension, body func()) {

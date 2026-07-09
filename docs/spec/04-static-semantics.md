@@ -245,10 +245,14 @@ Replacement fields must be printable. Conversions are limited to `!s`, `!r`, and
 
 ### Async and Yield Expressions
 
-`async def`, `async for`, `async with`, async comprehensions, `await`, and yield
-expressions parse but are rejected before lowering. Yield statements are supported
-inside generator functions returning `Iterator[T]`; a generator cannot return a
-value.
+`async def`, `async for`, `async with`, async comprehensions, and `await` parse
+but are rejected before lowering. Yield statements and yield expressions (in
+expression position, including `yield from`) are supported inside generator
+functions returning `Iterator[T]`; a generator cannot return a value. A `yield`
+expression's result type is `None` in v1 (resume input is dropped). `yield from`
+requires an iterable target (`Iterator[T]`, list, dict, set, str, range) whose
+element type is assignable to the generator's `T`; the delegated values are
+re-yielded and the `yield from` result is `None`.
 
 ## Statements
 
