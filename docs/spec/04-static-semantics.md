@@ -278,6 +278,35 @@ Constraints:
 - `__init__` must return `None`
 - dataclass fields with defaults must not precede non-default fields
 
+#### Restricted special methods
+
+A statically known class may opt into a limited set of Python operations by
+declaring recognized special methods. Only `__len__`, `__getitem__`, and
+`__setitem__` participate; no general operator overloading, descriptor protocol,
+or dynamic dispatch is introduced. The method must be declared on the class or
+inherited through the static class model.
+
+Recognized signatures are validated eagerly at class-definition time for
+parameter count, and at each use site for types:
+
+- `__len__(self) -> int`
+- `__getitem__(self, index: I) -> T`
+- `__setitem__(self, index: I, value: T) -> None`
+
+Operation rewrites when the receiver is a class instance with the matching
+method:
+
+- `len(obj)` resolves to `obj.__len__()`; the result type must be `int`.
+- `obj[index]` resolves to `obj.__getitem__(index)`; `index` must be assignable
+  to the declared index parameter (any statically declared index type is
+  allowed, not only `int`).
+- `obj[index] = value` resolves to `obj.__setitem__(index, value)`; `index` and
+  `value` must be assignable to the declared parameters and the method must
+  return `None`.
+
+A class receiver without the required method reuses the existing `NotIndexable`
+diagnostic. Slicing on classes and `__iter__` dispatch are not supported.
+
 ### Pattern Matching
 
 The checker validates each pattern against the subject type and declares capture

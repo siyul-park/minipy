@@ -160,6 +160,10 @@ type checker struct {
 	attrSym    map[*ast.Attribute]string
 	attrMod    map[*ast.Attribute]string
 	attrNative map[*ast.Attribute]module.Symbol
+	// lenDunder marks len() call sites whose argument is a class instance, so
+	// the compiler lowers them to a direct obj.__len__() call instead of the
+	// native len builtin.
+	lenDunder map[*ast.CallExpr]bool
 }
 
 // maxSpecializations caps monomorphic instantiations per function; past it,
@@ -206,6 +210,7 @@ func newChecker(loaders ...*loader) *checker {
 		attrSym:    map[*ast.Attribute]string{},
 		attrMod:    map[*ast.Attribute]string{},
 		attrNative: map[*ast.Attribute]module.Symbol{},
+		lenDunder:  map[*ast.CallExpr]bool{},
 	}
 	c.declareBuiltinExceptions()
 	return c
@@ -1518,6 +1523,10 @@ func (c *checker) assignTarget(target ast.Expr, value ast.Expr, pos token.Pos) {
 			c.listSliceMutation(t, slice, receiver, value)
 			return
 		}
+		if cls, ok := receiver.(*types.Class); ok {
+			c.classSetItem(t, cls, value)
+			return
+		}
 		index := c.expr(t.Index)
 		valueType := c.expr(value)
 		elem := c.indexResultType(t, receiver, index)
@@ -1536,6 +1545,34 @@ func (c *checker) assignTarget(target ast.Expr, value ast.Expr, pos token.Pos) {
 	default:
 		c.errs.Add(pos, token.SyntaxError, "cannot assign to this expression")
 		c.expr(value)
+	}
+}
+
+// classSetItem resolves obj[index] = value for a class instance via
+// __setitem__, validating the index and value against the method's declared
+// parameters and requiring a None result.
+func (c *checker) classSetItem(t *ast.Subscript, cls *types.Class, value ast.Expr) {
+	index := c.expr(t.Index)
+	valueType := c.expr(value)
+	info := c.classes[cls.Name]
+	if info == nil {
+		return
+	}
+	m := method(info, "__setitem__")
+	if m == nil || len(m.params) != 3 {
+		c.errs.Add(t.Pos(), token.NotIndexable, "%s does not support item assignment", cls)
+		return
+	}
+	idxParam := m.params[1].typ
+	if index != types.Invalid && idxParam != types.Invalid && !types.AssignableTo(index, idxParam) {
+		c.errs.Add(t.Index.Pos(), token.TypeMismatch, "%s.__setitem__ index must be %s, got %s", info.name, idxParam, index)
+	}
+	valParam := m.params[2].typ
+	if valueType != types.Invalid && valParam != types.Invalid && !types.AssignableTo(valueType, valParam) {
+		c.errs.Add(value.Pos(), token.TypeMismatch, "%s.__setitem__ value must be %s, got %s", info.name, valParam, valueType)
+	}
+	if m.result != types.Invalid && !types.Equal(m.result, types.None) {
+		c.errs.Add(t.Pos(), token.TypeMismatch, "%s.__setitem__ must return None, got %s", info.name, m.result)
 	}
 }
 
@@ -2103,6 +2140,35 @@ func (c *checker) classMethod(info *class, n *ast.Function) {
 	method.generator = containsYield(n.Body)
 	info.methods[n.Name.Name] = method
 	info.methodBody[n.Name.Name] = n.Body
+	c.checkSpecialMethod(info, n, method)
+}
+
+// checkSpecialMethod eagerly validates the signatures of the restricted set of
+// special methods minipy statically dispatches (__len__, __getitem__,
+// __setitem__). Parameter counts are checked here; return types are checked
+// only when annotated, because unannotated results are inferred from the body
+// after class checking and are re-validated at each use site.
+func (c *checker) checkSpecialMethod(info *class, n *ast.Function, method *function) {
+	switch n.Name.Name {
+	case "__len__":
+		if len(method.params) != 1 {
+			c.errs.Add(n.Pos(), token.ArityMismatch, "%s.__len__ must take only self", info.name)
+		}
+		if n.Returns != nil && method.result != types.Invalid && !types.Equal(method.result, types.Int) {
+			c.errs.Add(n.Returns.Pos(), token.TypeMismatch, "%s.__len__ must return int, got %s", info.name, method.result)
+		}
+	case "__getitem__":
+		if len(method.params) != 2 {
+			c.errs.Add(n.Pos(), token.ArityMismatch, "%s.__getitem__ must take self and an index", info.name)
+		}
+	case "__setitem__":
+		if len(method.params) != 3 {
+			c.errs.Add(n.Pos(), token.ArityMismatch, "%s.__setitem__ must take self, an index, and a value", info.name)
+		}
+		if n.Returns != nil && method.result != types.Invalid && !types.Equal(method.result, types.None) {
+			c.errs.Add(n.Returns.Pos(), token.TypeMismatch, "%s.__setitem__ must return None, got %s", info.name, method.result)
+		}
+	}
 }
 
 func (c *checker) checkDataclassDefaults(info *class) {
@@ -3318,6 +3384,8 @@ func (c *checker) indexResultType(n *ast.Subscript, receiver, index types.Type) 
 		}
 		c.errs.Add(n.Index.Pos(), token.UnsupportedFeature, "tuple index must be a constant int")
 		return types.Invalid
+	case *types.Class:
+		return c.classGetItemType(n, t, index)
 	default:
 		if types.Equal(receiver, types.Str) {
 			if index != types.Invalid && !types.Equal(index, types.Int) {
@@ -3330,6 +3398,25 @@ func (c *checker) indexResultType(n *ast.Subscript, receiver, index types.Type) 
 		}
 		return types.Invalid
 	}
+}
+
+// classGetItemType resolves obj[index] for a class instance via __getitem__,
+// validating the index against the method's declared index parameter.
+func (c *checker) classGetItemType(n *ast.Subscript, cls *types.Class, index types.Type) types.Type {
+	info := c.classes[cls.Name]
+	if info == nil {
+		return types.Invalid
+	}
+	m := method(info, "__getitem__")
+	if m == nil || len(m.params) != 2 {
+		c.errs.Add(n.Pos(), token.NotIndexable, "%s is not indexable", cls)
+		return types.Invalid
+	}
+	param := m.params[1].typ
+	if index != types.Invalid && param != types.Invalid && !types.AssignableTo(index, param) {
+		c.errs.Add(n.Index.Pos(), token.TypeMismatch, "%s.__getitem__ index must be %s, got %s", info.name, param, index)
+	}
+	return m.result
 }
 
 func (c *checker) sliceResultType(n *ast.Slice, receiver types.Type) types.Type {
@@ -3769,7 +3856,35 @@ func (c *checker) callType(n *ast.CallExpr) types.Type {
 		c.errs.Add(name.Pos(), token.UndefinedName, "name %q is not defined", name.Name)
 		return types.Invalid
 	}
+	if name.Name == "len" && len(n.Args) == 1 && len(n.StarArgs) == 0 && len(n.Keywords) == 0 {
+		if result, ok := c.classLenCall(n); ok {
+			return result
+		}
+	}
 	return c.checkNativeCall(res.native, n)
+}
+
+// classLenCall rewrites len(obj) to obj.__len__() when obj is a class instance
+// exposing __len__. Built-in containers fall through to the native len builtin.
+func (c *checker) classLenCall(n *ast.CallExpr) (types.Type, bool) {
+	cls, ok := c.expr(n.Args[0]).(*types.Class)
+	if !ok {
+		return types.Invalid, false
+	}
+	info := c.classes[cls.Name]
+	if info == nil {
+		return types.Invalid, false
+	}
+	m := method(info, "__len__")
+	if m == nil {
+		c.errs.Add(n.Pos(), token.TypeMismatch, "len() does not accept these arguments")
+		return types.Invalid, true
+	}
+	if m.result != types.Invalid && !types.Equal(m.result, types.Int) {
+		c.errs.Add(n.Pos(), token.TypeMismatch, "%s.__len__ must return int, got %s", info.name, m.result)
+	}
+	c.lenDunder[n] = true
+	return types.Int, true
 }
 
 // checkNativeCall type-checks a native call, rejecting starred and keyword
