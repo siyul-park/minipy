@@ -61,6 +61,7 @@ type function struct {
 	// type-checks under that tuple. The union/Any body still compiles to the
 	// global slot as the fallback.
 	specializable bool
+	decorated     bool // has at least one decorator; disables specialization so calls cannot bypass the wrapper
 	body          []ast.Stmt
 	astParams     []*ast.Param
 	instances     []*specialization
@@ -1880,6 +1881,7 @@ func (c *checker) declareFuncs(body []ast.Stmt) {
 		}
 		info.body = f.Body
 		info.astParams = f.Params
+		info.decorated = len(f.DecoratorExprs) > 0
 		info.specializable = specializable(info)
 		info.slot = c.declare(f.Name.Name, types.Invalid, f.Pos())
 		c.functions[key] = info
@@ -1979,22 +1981,19 @@ func (c *checker) classStmt(n *ast.Class) {
 	if info == nil {
 		return
 	}
-	if len(n.DecoratorExprs) != len(n.Decorators) {
-		for _, dec := range n.DecoratorExprs {
-			if _, ok := dec.(*ast.Name); !ok {
-				c.errs.Add(dec.Pos(), token.UnsupportedFeature, "decorator expressions are not supported yet")
-			}
-		}
+	c.classDecorators(info, n.DecoratorExprs)
+	if len(n.Bases) > 1 {
+		c.errs.Add(n.Pos(), token.UnsupportedFeature, "multiple base classes are not supported yet (tracked by #16)")
 	}
-	if len(n.Bases) > 1 || len(n.Keywords) > 0 {
-		c.errs.Add(n.Pos(), token.UnsupportedFeature, "multiple bases and class keywords are not supported yet")
-	}
-	for _, dec := range n.Decorators {
-		if dec.Name == "dataclass" {
-			info.dataclass = true
-			continue
+	for _, kw := range n.Keywords {
+		switch {
+		case kw.Name == "":
+			c.errs.Add(kw.Pos(), token.UnsupportedFeature, "dynamic class keywords (**kwargs) are not supported")
+		case kw.Name == "metaclass":
+			c.errs.Add(kw.Pos(), token.UnsupportedFeature, "metaclass is not supported yet (tracked by #22)")
+		default:
+			c.errs.Add(kw.Pos(), token.UnsupportedFeature, "unknown class keyword %q", kw.Name)
 		}
-		c.errs.Add(dec.Pos(), token.UnsupportedFeature, "class decorator @%s is not supported", dec.Name)
 	}
 	if n.BaseClass != nil {
 		base := c.classes[c.resolveName(n.BaseClass.Name).key]
@@ -2030,6 +2029,35 @@ func (c *checker) classStmt(n *ast.Class) {
 				c.checkFunctionBody(f.Body, f.Params, method, f.Pos())
 			}
 		}
+	}
+}
+
+// classDecorators supports only @dataclass and @dataclass(), both of which
+// enable the existing dataclass constructor path with identical behavior.
+// Dataclass options, any other class decorator, and metaclasses are diagnosed
+// distinctly and tracked by follow-up issues (#32 and #22) rather than
+// collapsed into one generic diagnostic.
+func (c *checker) classDecorators(info *class, decorators []ast.Expr) {
+	for _, dec := range decorators {
+		if name, ok := dec.(*ast.Name); ok && name.Name == "dataclass" {
+			info.dataclass = true
+			continue
+		}
+		call, ok := dec.(*ast.CallExpr)
+		if !ok {
+			c.errs.Add(dec.Pos(), token.UnsupportedFeature, "class decorators other than @dataclass are not supported yet (tracked by #22)")
+			continue
+		}
+		name, ok := call.Fn.(*ast.Name)
+		if !ok || name.Name != "dataclass" {
+			c.errs.Add(dec.Pos(), token.UnsupportedFeature, "class decorators other than @dataclass are not supported yet (tracked by #22)")
+			continue
+		}
+		if len(call.Args) > 0 || len(call.Keywords) > 0 || len(call.StarArgs) > 0 || call.Kwargs != nil {
+			c.errs.Add(dec.Pos(), token.UnsupportedFeature, "dataclass options are not supported yet (tracked by #32)")
+			continue
+		}
+		info.dataclass = true
 	}
 }
 
@@ -2566,13 +2594,6 @@ func (c *checker) functionStmt(n *ast.Function) {
 	if n.Async {
 		c.errs.Add(n.Pos(), token.UnsupportedFeature, "async def is parse-only until scheduler support lands")
 	}
-	if len(n.DecoratorExprs) != len(n.Decorators) {
-		for _, dec := range n.DecoratorExprs {
-			if _, ok := dec.(*ast.Name); !ok {
-				c.errs.Add(dec.Pos(), token.UnsupportedFeature, "decorator expressions are not supported yet")
-			}
-		}
-	}
 	c.checkParamFeatures(n.Params)
 	if c.current != nil {
 		info := c.current.children[n.Name.Name]
@@ -2581,6 +2602,7 @@ func (c *checker) functionStmt(n *ast.Function) {
 		}
 		info.local.init = true
 		c.checkFunctionBody(n.Body, n.Params, info, n.Pos())
+		c.checkFunctionDecorators(n, info, &info.local.init)
 		return
 	}
 	info := c.functions[c.key(n.Name.Name)]
@@ -2589,6 +2611,55 @@ func (c *checker) functionStmt(n *ast.Function) {
 	}
 	info.slot.init = true
 	c.checkFunctionBody(n.Body, n.Params, info, n.Pos())
+	c.checkFunctionDecorators(n, info, &info.slot.init)
+}
+
+// checkFunctionDecorators type-checks a function's decorator expressions in
+// source order and requires each to evaluate to exactly Callable[[F], F],
+// where F is the function's own (possibly inferred) signature. The binding is
+// temporarily marked uninitialized while decorators are checked, so a
+// decorator referring to the function it decorates is diagnosed as
+// use-before-definition (Python evaluates decorators before the name binds).
+func (c *checker) checkFunctionDecorators(n *ast.Function, info *function, init *bool) {
+	if len(n.DecoratorExprs) == 0 {
+		return
+	}
+	f := types.NewCallable(srcTypes(info.params), info.result)
+	want := types.NewCallable([]types.Type{f}, f)
+	*init = false
+	for _, dec := range n.DecoratorExprs {
+		got := c.decoratorExprType(dec)
+		if got != types.Invalid && !types.Equal(got, want) {
+			c.errs.Add(dec.Pos(), token.TypeMismatch, "decorator must be %s, got %s", want, got)
+		}
+	}
+	*init = true
+}
+
+// decoratorExprType type-checks one decorator expression restricted to the
+// statically resolvable subset accepted by this issue: a bare name, a
+// module-qualified attribute, or a call of either. Other AST shapes (arbitrary
+// PEP 614 decorator expressions) are rejected without evaluation.
+func (c *checker) decoratorExprType(e ast.Expr) types.Type {
+	if !c.decoratorShapeOK(e) {
+		c.errs.Add(e.Pos(), token.UnsupportedFeature, "unsupported decorator expression")
+		return types.Invalid
+	}
+	return c.expr(e)
+}
+
+func (c *checker) decoratorShapeOK(e ast.Expr) bool {
+	switch n := e.(type) {
+	case *ast.Name:
+		return true
+	case *ast.Attribute:
+		_, ok := c.moduleExpr(n.X)
+		return ok
+	case *ast.CallExpr:
+		return c.decoratorShapeOK(n.Fn)
+	default:
+		return false
+	}
 }
 
 func (c *checker) checkParamFeatures(params []*ast.Param) {
@@ -3013,7 +3084,7 @@ func compHasYield(clauses []*ast.Comprehension) bool {
 // decided at the call site, which rolls back and falls back to the union/Any
 // body on any error.
 func specializable(info *function) bool {
-	if info.generator {
+	if info.generator || info.decorated {
 		return false
 	}
 	for _, p := range info.params {

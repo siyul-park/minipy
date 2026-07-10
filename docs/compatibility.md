@@ -99,16 +99,17 @@ full CPython compatibility.
 | Keyword-only params `*` | ✅ | Checked at call sites. |
 | `*args` parameter | ✅ | Collected as `list[T]`. |
 | `**kwargs` parameter | ✅ | Collected as `dict[str, T]`. |
-| Function decorators | ◐ | Bare-name decorators recorded; non-name expressions rejected by checker. |
+| Function decorators | ◐ | `@decorator`, `@module.decorator`, `@factory(...)`, `@module.factory(...)`, and stacking are supported when the decorator evaluates to exactly `Callable[[F], F]` for the decorated function's own signature `F`. Evaluated top to bottom, applied bottom to top, at definition time. Other decorator expression shapes (subscripts, boolean expressions, instance attributes) are rejected by the checker. |
 | Return type inference | ✅ | Joins value-return branches. |
 | Nested functions and closures | ✅ | Captures boxed when needed. |
 | Generator functions | ✅ | `Iterator[T]` result required. |
 | Class definitions | ✅ | Fixed field/method layout. |
 | Single inheritance | ✅ | One supported base class. |
 | Multiple inheritance | ⏳ | Parsed, rejected. |
-| Class keywords/metaclass syntax | ⏳ | Parsed, rejected. |
-| `@dataclass` | ✅ | Field constructor/default checks. |
-| Other class decorators | ⏳ | Rejected. |
+| Class keywords/metaclass syntax | ⏳ | Parsed, rejected: `metaclass=` and other class keywords are rejected (tracked by #22); `**kwargs` class keywords are rejected as dynamic. |
+| `@dataclass` | ✅ | `@dataclass` and `@dataclass()` behave identically; field constructor/default checks. |
+| `@dataclass(...)` with options | ⏳ | Parsed, rejected (tracked by #32). |
+| Other class decorators | ⏳ | Rejected (tracked by #22). |
 | Methods and `self` | ✅ | `self` required; `__init__` returns `None`. |
 | Special methods (`__len__`, `__getitem__`, `__setitem__`) | ◐ | Static dispatch only; `len(obj)`, `obj[i]`, `obj[i] = v`. No other dunders, slicing, or `__iter__`. |
 

@@ -1569,12 +1569,40 @@ func (c *Compiler) functionStmt(n *ast.Function) {
 			c.buildSpec(spec)
 		}
 	}
+	decSlots := c.emitDecoratorValues(n.DecoratorExprs)
 	c.funcValue(info, n.Body)
+	c.emitFunctionDecorators(decSlots)
 	if c.current != nil {
 		c.set(n.Name.Name)
 		return
 	}
 	c.emit(instr.GLOBAL_SET, uint64(info.slot.index))
+}
+
+// emitDecoratorValues evaluates decorator expressions in source order, each
+// into its own temp global slot, so evaluation happens exactly once and
+// stays separate from application order.
+func (c *Compiler) emitDecoratorValues(decorators []ast.Expr) []int {
+	if len(decorators) == 0 {
+		return nil
+	}
+	slots := make([]int, len(decorators))
+	for i, dec := range decorators {
+		slots[i] = c.tmp()
+		c.expr(dec)
+		c.emit(instr.GLOBAL_SET, uint64(slots[i]))
+	}
+	return slots
+}
+
+// emitFunctionDecorators applies each previously evaluated decorator to the
+// undecorated function value left on the stack by funcValue, in reverse
+// (bottom-to-top) order, leaving the final decorated value on the stack.
+func (c *Compiler) emitFunctionDecorators(slots []int) {
+	for i := len(slots) - 1; i >= 0; i-- {
+		c.emit(instr.GLOBAL_GET, uint64(slots[i]))
+		c.emit(instr.CALL)
+	}
 }
 
 // buildSpec compiles one specialization to a function constant, recording its

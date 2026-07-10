@@ -352,11 +352,6 @@ func (p *Parser) parseDecorated() ast.Stmt {
 		fn.DecoratorExprs = decoratorExprs
 		return fn
 	case token.CLASS:
-		for _, dec := range decorators {
-			if dec.Name != "dataclass" {
-				p.errs.Add(dec.Pos(), token.UnsupportedFeature, "class decorator @%s is not supported", dec.Name)
-			}
-		}
 		cls := p.parseClass(decorators).(*ast.Class)
 		cls.DecoratorExprs = decoratorExprs
 		return cls

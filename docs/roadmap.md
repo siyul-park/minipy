@@ -56,7 +56,10 @@ owned by `docs/spec/`; compatibility status is summarized in
   names/attributes, `del`, `assert`.
 - `if`, `while`, `for`, loop `else`, `break`, `continue`.
 - Functions, nested functions, closures, lambdas with `Callable` context.
-- Classes with fields/methods, single inheritance, `@dataclass`.
+- Classes with fields/methods, single inheritance, `@dataclass`/`@dataclass()`.
+- Function decorators (`@decorator`, `@module.decorator`, `@factory(...)`,
+  `@module.factory(...)`, stacking) that evaluate to `Callable[[F], F]` for the
+  decorated function's own signature.
 - Imports and source-module loading from configured roots.
 - Exceptions with `try`/`except`/`else`/`finally`, `raise`, and bare re-raise.
 - `with` statements for supported checked context-manager shapes.
@@ -87,8 +90,12 @@ These are implemented with deliberate limits, not undocumented bugs.
   values.
 - Keyword/starred calls are restricted outside direct minipy function calls.
 - Dynamic `**expr` call unpacking is not supported.
-- Multiple class bases, class keywords, and non-`@dataclass` class decorators are
-  not supported.
+- Multiple class bases, class keywords, and non-`@dataclass`/`@dataclass()` class
+  decorators are not supported.
+- Function decorators are restricted to a bare name, a module-qualified
+  attribute, or a call of either, and must evaluate to `Callable[[F], F]` for
+  the decorated function's own signature; other decorator expression shapes
+  (arbitrary PEP 614 expressions) are not supported.
 - `except*` is parsed but ExceptionGroup semantics are not implemented.
 - Async forms parse for diagnostics but are rejected.
 
@@ -111,7 +118,10 @@ These are implemented with deliberate limits, not undocumented bugs.
 - Slice assignment for lists and strings where semantics are clear.
 - Generator `send`/`throw`/`close` and return-value propagation; v1 supports
   `yield`/`yield from` with a `None` resume value only.
-- Richer class decorators or decorator-call lowering.
+- Richer class decorators (beyond `@dataclass`/`@dataclass()`), metaclasses, and
+  arbitrary PEP 614 decorator expressions.
+- Signature-changing decorators and callable parameter packs (`ParamSpec`,
+  `Concatenate`-like typing).
 - More complete context-manager protocol coverage for `with`.
 - ExceptionGroup / `except*` support.
 - Scheduler and coroutine runtime support for `async`/`await`.

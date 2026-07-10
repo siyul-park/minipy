@@ -163,10 +163,16 @@ decorated       ::= decorator+ (func_def | class_def | async_stmt)
 decorator       ::= '@' expression NEWLINE
 ```
 
-The parser records all class bases, class keywords, and decorator expressions.
-The checker supports one base class, no class keywords, `@dataclass`, bare-name
-function decorators, and method/field bodies. Non-name decorator expressions and
-unsupported class decorators produce diagnostics.
+The parser records all class bases, class keywords, and decorator expressions
+without validating their semantics; validation is entirely the checker's
+responsibility (see
+[04-static-semantics.md](04-static-semantics.md#decorators)). The checker
+supports one base class, `@dataclass`/`@dataclass()`, and method/field bodies.
+Function decorators support a bare name, a module-qualified attribute, and a
+call of either, provided the evaluated decorator is exactly `Callable[[F], F]`
+for the decorated function's signature `F`. Class keywords, multiple bases,
+other class decorators, and other decorator expression shapes produce
+diagnostics.
 
 ## Match Statements and Patterns
 

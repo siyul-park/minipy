@@ -263,6 +263,33 @@ calls within a module. Nested functions are captured as locals. Omitted return
 annotations are inferred; annotated returns are enforced. Generators must return
 `Iterator[T]` and yield values assignable to `T`.
 
+#### Decorators
+
+A decorated function's body is checked first, so its (possibly inferred) result
+type is final before decorators are checked. Let `F` be the function's own
+signature `Callable[[P1, P2, ...], R]`. Every decorator expression must
+evaluate to exactly `Callable[[F], F]`; a decorator factory call must return
+that type. Decorator expressions are restricted to:
+
+- a bare name (`@decorator`)
+- an attribute whose root resolves statically to a module (`@module.decorator`)
+- a call of either of the above (`@factory(...)`, `@module.factory(...)`)
+
+Other decorator expression shapes (subscripts, boolean expressions, decorators
+resolved through instance attributes, and other arbitrary PEP 614 expressions)
+are rejected with `UnsupportedFeature`. A decorator with a mismatched
+parameter or return type, an `Any` result, or a non-callable result is
+rejected with `TypeMismatch`.
+
+Decorator expressions are evaluated once, in source order, top to bottom;
+evaluated decorators are then applied bottom to top. Only the final decorated
+value is bound to the function name. While decorator expressions are checked,
+the function's own binding is treated as not yet initialized, so a decorator
+referring to the function it decorates is diagnosed as `UseBeforeDefinition`
+(matching Python's evaluate-before-bind order). A decorated function is not
+eligible for call-site specialization, so calls cannot bypass the decorator's
+wrapper through a specialized instantiation.
+
 ### Classes
 
 Classes are predeclared before class bodies are checked. Supported class bodies
@@ -270,10 +297,16 @@ contain annotated fields, methods, and `pass`.
 
 Constraints:
 
-- at most one supported base class
-- no class keywords
-- `@dataclass` is the supported class decorator
-- non-name decorator expressions are rejected
+- at most one supported base class; additional bases are rejected with
+  `UnsupportedFeature` (tracked by #16)
+- `metaclass=` and other named class keywords are rejected with
+  `UnsupportedFeature` (tracked by #22); `**kwargs` class keywords are
+  rejected as dynamic
+- `@dataclass` and `@dataclass()` are the supported class decorator forms and
+  behave identically; `@dataclass(...)` with any argument is rejected
+  (tracked by #32)
+- class decorators other than `@dataclass`/`@dataclass()` are rejected with
+  `UnsupportedFeature` (tracked by #22)
 - methods require `self`
 - `__init__` must return `None`
 - dataclass fields with defaults must not precede non-default fields

@@ -153,9 +153,15 @@ annotated fields, methods, and `pass`. Supported inheritance is single-base
 inheritance; multiple bases and class keywords are parsed but rejected by the
 checker.
 
-`@dataclass` is the supported class decorator. It enables constructor arguments
-from fields and default-field ordering checks. Other class decorators and complex
-decorator expressions are rejected.
+`@dataclass` and `@dataclass()` are the supported class decorator forms and behave
+identically: both enable constructor arguments from fields and default-field
+ordering checks. `@dataclass(...)` with any argument, other class decorators,
+and complex decorator expressions are rejected.
+
+A function decorator must evaluate to `Callable[[F], F]`, where `F` is the
+decorated function's own signature. See
+[04-static-semantics.md](04-static-semantics.md#decorators) for the accepted
+decorator expression shapes and evaluation/application order.
 
 Methods require a first `self` parameter. `self` may omit an annotation; if it is
 annotated, it must match the containing class type. `__init__` must return `None`.
