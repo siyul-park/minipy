@@ -45,8 +45,57 @@ const eofRune = rune(-1)
 // bom is the UTF-8 byte-order mark, skipped if it leads the input.
 const bom = '\uFEFF'
 
-var stringPrefixes = map[string]struct{}{
-	"r": {}, "R": {}, "f": {}, "F": {}, "b": {}, "B": {}, "u": {}, "U": {},
+// stringMode captures which of the (at most two) prefix letters preceded a
+// string/bytes literal: raw (r/R), f-string (f/F), bytes (b/B), or the
+// unsupported unicode marker (u/U). The zero value means an unprefixed
+// string.
+type stringMode struct {
+	raw     bool
+	fstr    bool
+	bytes   bool
+	unicode bool
+}
+
+// classifyPrefix reports the stringMode for a string-prefix identifier (e.g.
+// "r", "rb", "FR"), or ok == false if word is not a valid prefix combination.
+// An empty word is a valid, unprefixed mode.
+func classifyPrefix(word string) (mode stringMode, ok bool) {
+	if len(word) > 2 {
+		return stringMode{}, false
+	}
+	for _, r := range word {
+		switch r {
+		case 'r', 'R':
+			if mode.raw {
+				return stringMode{}, false
+			}
+			mode.raw = true
+		case 'f', 'F':
+			if mode.fstr {
+				return stringMode{}, false
+			}
+			mode.fstr = true
+		case 'b', 'B':
+			if mode.bytes {
+				return stringMode{}, false
+			}
+			mode.bytes = true
+		case 'u', 'U':
+			if mode.unicode {
+				return stringMode{}, false
+			}
+			mode.unicode = true
+		default:
+			return stringMode{}, false
+		}
+	}
+	if mode.fstr && mode.bytes {
+		return stringMode{}, false
+	}
+	if mode.unicode && (mode.raw || mode.fstr || mode.bytes) {
+		return stringMode{}, false
+	}
+	return mode, true
 }
 
 // New returns a Lexer over r.
@@ -146,7 +195,7 @@ func (l *Lexer) step() {
 		l.scanNumber()
 		l.lineHasTok = true
 	case c == '\'' || c == '"':
-		l.scanString(l.here(), false, false, false)
+		l.scanString(l.here(), stringMode{})
 		l.lineHasTok = true
 	default:
 		l.scanOperator()
@@ -226,12 +275,11 @@ func (l *Lexer) scanNameOrString() {
 	}
 	word := string(l.buf[start:l.pos])
 
-	if _, ok := stringPrefixes[word]; ok && (l.cur() == '\'' || l.cur() == '"') {
-		raw := word == "r" || word == "R"
-		fstr := word == "f" || word == "F"
-		bytes := word == "b" || word == "B" || word == "u" || word == "U"
-		l.scanString(pos, raw, fstr, bytes)
-		return
+	if word != "" && (l.cur() == '\'' || l.cur() == '"') {
+		if mode, ok := classifyPrefix(word); ok {
+			l.scanString(pos, mode)
+			return
+		}
 	}
 	l.add(token.Lookup(word), word, pos)
 }
@@ -302,11 +350,13 @@ func (l *Lexer) scanNumber() {
 	}
 }
 
-// scanString reads a string literal whose prefix (if any) started at pos and
-// whose opening quote is at the cursor. Escapes are decoded unless raw.
-func (l *Lexer) scanString(pos token.Pos, raw, fstr, bytes bool) {
-	if bytes {
-		l.errs.Add(pos, token.UnsupportedFeature, "bytes/unicode string prefixes are not supported yet")
+// scanString reads a string or bytes literal whose prefix (if any) started at
+// pos and whose opening quote is at the cursor. Escapes are decoded unless
+// mode.raw. In mode.bytes, directly written non-ASCII characters are
+// rejected and \u/\U are left undecoded (bytes has no Unicode escapes).
+func (l *Lexer) scanString(pos token.Pos, mode stringMode) {
+	if mode.unicode {
+		l.errs.Add(pos, token.UnsupportedFeature, "u/U string prefix is not supported")
 	}
 	q := l.cur()
 	triple := l.at(1) == q && l.at(2) == q
@@ -351,11 +401,12 @@ func (l *Lexer) scanString(pos token.Pos, raw, fstr, bytes bool) {
 			continue
 		}
 		if c == '\\' {
-			if raw {
+			if mode.raw {
 				builder.WriteRune(c)
 				l.pos++
 				l.col++
 				if l.cur() != eofRune {
+					l.checkBytesChar(mode, pos, l.cur())
 					builder.WriteRune(l.cur())
 					l.pos++
 					l.col++
@@ -364,23 +415,37 @@ func (l *Lexer) scanString(pos token.Pos, raw, fstr, bytes bool) {
 			}
 			l.pos++
 			l.col++
-			l.decodeEscape(&builder, pos)
+			l.decodeEscape(&builder, pos, mode)
 			continue
 		}
+		l.checkBytesChar(mode, pos, c)
 		builder.WriteRune(c)
 		l.pos++
 		l.col++
 	}
-	if fstr {
+	if mode.fstr {
 		l.add(token.FSTRING, builder.String(), pos)
+		return
+	}
+	if mode.bytes {
+		l.add(token.BYTES, builder.String(), pos)
 		return
 	}
 	l.add(token.STRING, builder.String(), pos)
 }
 
+// checkBytesChar reports a diagnostic when a non-ASCII character is written
+// directly (not via an escape) into a bytes literal.
+func (l *Lexer) checkBytesChar(mode stringMode, pos token.Pos, c rune) {
+	if mode.bytes && c > unicode.MaxASCII {
+		l.errs.Add(pos, token.LexError, "bytes literal cannot contain non-ASCII character %q", string(c))
+	}
+}
+
 // decodeEscape consumes one escape sequence (the backslash is already consumed)
-// and writes its decoded value to builder.
-func (l *Lexer) decodeEscape(builder *strings.Builder, pos token.Pos) {
+// and writes its decoded value to builder. In mode.bytes, \u and \U are not
+// Unicode escapes and fall through to the unknown-escape rule.
+func (l *Lexer) decodeEscape(builder *strings.Builder, pos token.Pos, mode stringMode) {
 	c := l.cur()
 	if c == eofRune {
 		l.errs.Add(pos, token.LexError, "unterminated escape sequence")
@@ -412,11 +477,21 @@ func (l *Lexer) decodeEscape(builder *strings.Builder, pos token.Pos) {
 	case 'v':
 		builder.WriteByte('\v')
 	case 'x':
-		l.decodeHex(builder, pos, 2)
+		l.decodeHex(builder, pos, 2, mode.bytes)
 	case 'u':
-		l.decodeHex(builder, pos, 4)
+		if mode.bytes {
+			builder.WriteByte('\\')
+			builder.WriteRune(c)
+			return
+		}
+		l.decodeHex(builder, pos, 4, false)
 	case 'U':
-		l.decodeHex(builder, pos, 8)
+		if mode.bytes {
+			builder.WriteByte('\\')
+			builder.WriteRune(c)
+			return
+		}
+		l.decodeHex(builder, pos, 8, false)
 	default:
 		// Unknown escape: keep the backslash and the character (Python's lenient rule).
 		builder.WriteByte('\\')
@@ -424,8 +499,10 @@ func (l *Lexer) decodeEscape(builder *strings.Builder, pos token.Pos) {
 	}
 }
 
-// decodeHex reads exactly n hex digits and writes the resulting rune.
-func (l *Lexer) decodeHex(builder *strings.Builder, pos token.Pos, n int) {
+// decodeHex reads exactly n hex digits and writes the resulting value. When
+// asByte is set (a bytes literal's \xNN), the value is written as a single
+// raw byte instead of being UTF-8 encoded as a rune.
+func (l *Lexer) decodeHex(builder *strings.Builder, pos token.Pos, n int, asByte bool) {
 	l.fill(n - 1)
 	if l.pos+n > len(l.buf) {
 		l.errs.Add(pos, token.LexError, "truncated \\x/\\u/\\U escape")
@@ -439,6 +516,10 @@ func (l *Lexer) decodeHex(builder *strings.Builder, pos token.Pos, n int) {
 	}
 	l.pos += n
 	l.col += n
+	if asByte {
+		builder.WriteByte(byte(v))
+		return
+	}
 	builder.WriteRune(rune(v))
 }
 

@@ -36,6 +36,7 @@ const (
 	FLOAT
 	STRING
 	FSTRING
+	BYTES
 
 	// Keywords — the full Python reserved set (docs/spec/01-lexical.md).
 	keywordBeg
@@ -137,6 +138,7 @@ var names = map[Type]string{
 	FLOAT:   "FLOAT",
 	STRING:  "STRING",
 	FSTRING: "FSTRING",
+	BYTES:   "BYTES",
 
 	TRUE:     "True",
 	FALSE:    "False",

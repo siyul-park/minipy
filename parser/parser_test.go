@@ -203,6 +203,18 @@ func TestParse(t *testing.T) {
 		require.Equal(t, "abcd", mod.Body[0].(*ast.ExprStmt).X.(*ast.StrLit).Value)
 	})
 
+	t.Run("adjacent bytes concatenation", func(t *testing.T) {
+		mod, err := parse(`b"ab" b"cd"` + "\n")
+		require.NoError(t, err)
+		require.Equal(t, "abcd", mod.Body[0].(*ast.ExprStmt).X.(*ast.BytesLit).Value)
+	})
+
+	t.Run("bytes literal", func(t *testing.T) {
+		mod, err := parse(`b"ab"` + "\n")
+		require.NoError(t, err)
+		require.Equal(t, "ab", mod.Body[0].(*ast.ExprStmt).X.(*ast.BytesLit).Value)
+	})
+
 	t.Run("semicolon separated statements", func(t *testing.T) {
 		mod, err := parse("a = 1; b = 2\n")
 		require.NoError(t, err)
@@ -597,6 +609,8 @@ func TestParseErrors(t *testing.T) {
 	cases := map[string]token.Code{
 		"1 = 2\n":           token.SyntaxError,
 		"else:\n    pass\n": token.SyntaxError,
+		"\"ab\" b\"cd\"\n":  token.SyntaxError,
+		"b\"ab\" \"cd\"\n":  token.SyntaxError,
 	}
 	for src, code := range cases {
 		_, err := parse(src)

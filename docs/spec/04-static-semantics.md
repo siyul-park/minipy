@@ -96,7 +96,7 @@ Annotations resolve through primitive names, aliases, classes, imported module
 attributes, and generic forms:
 
 ```text
-int float bool str None Any
+int float bool str bytes None Any
 list[T] dict[K, V] set[T] tuple[...] Iterator[T] Callable[[...], R]
 A | B
 typing.Optional[T] typing.Union[...] typing.Annotated[T, ...]
@@ -188,15 +188,25 @@ lowerer prunes the impossible branch.
 - Lists require `int` indexes and return their element type.
 - Dicts require assignable key types and return the value type.
 - Strings require `int` indexes and return `str`.
+- Bytes require `int` indexes and return `int` (unsigned `0..255`).
 - Tuples require a constant integer index and return the corresponding field type.
-- Slicing is supported for lists and strings; bounds must be `int` when present.
-- Slice assignment is not supported.
+- Slicing is supported for lists, strings, and bytes (returning `bytes`); bounds
+  must be `int` when present.
+- Slice assignment is not supported. For bytes specifically, item assignment,
+  slice assignment, and `del` all report `NotIndexable` because bytes is
+  immutable, not because it is otherwise non-indexable.
 
 ### Operators
 
 Operator type rules are centralized in the `operator` package. Syntax operators
 and `operator.*` native calls share the same rules. `and`/`or` require `bool`
 operands and return `bool`; `not` is unary bool negation.
+
+`bytes + bytes` concatenates to `bytes`. `bytes` supports only `==`/`!=`
+comparisons (ordering operators are `NotComparable`) and `in`/`not in` against
+an `int` needle in `0..255`. `bytes` has no other operator support: no
+ordering, no hashing (so it cannot be a dict key or set element), and no
+`str`/`repr`/truthiness conversion.
 
 `@` is syntactically accepted but unsupported because no matrix type/semantics are
 implemented.
@@ -250,7 +260,7 @@ but are rejected before lowering. Yield statements and yield expressions (in
 expression position, including `yield from`) are supported inside generator
 functions returning `Iterator[T]`; a generator cannot return a value. A `yield`
 expression's result type is `None` in v1 (resume input is dropped). `yield from`
-requires an iterable target (`Iterator[T]`, list, dict, set, str, range) whose
+requires an iterable target (`Iterator[T]`, list, dict, set, str, bytes, range) whose
 element type is assignable to the generator's `T`; the delegated values are
 re-yielded and the `yield from` result is `None`.
 

@@ -120,7 +120,11 @@ func emitLen(e module.Emitter, args []ast.Expr) {
 	case *types.Tuple:
 		e.Emit(instr.I32_CONST, uint64(len(t.Elems)))
 	default:
-		e.Emit(instr.STRING_LEN)
+		if types.Equal(e.Type(arg), types.Bytes) {
+			e.Emit(instr.ARRAY_LEN)
+		} else {
+			e.Emit(instr.STRING_LEN)
+		}
 	}
 	e.Emit(instr.I32_TO_I64_S)
 }
@@ -172,6 +176,8 @@ func emitIter(e module.Emitter, args []ast.Expr) {
 	default:
 		if types.Equal(typ, types.Str) {
 			e.CallHost(strIter())
+		} else if types.Equal(typ, types.Bytes) {
+			e.CallHost(bytesIter())
 		}
 	}
 }

@@ -115,9 +115,29 @@ func TestPrintable(t *testing.T) {
 	require.False(t, Printable(NewUnion(Int, NewClass("Point", nil))))
 }
 
+func TestBytes(t *testing.T) {
+	t.Run("name", func(t *testing.T) {
+		require.Equal(t, "bytes", Bytes.String())
+	})
+	t.Run("non-numeric", func(t *testing.T) {
+		require.False(t, Bytes.IsNumeric())
+	})
+	t.Run("VM is an i8 array", func(t *testing.T) {
+		require.Equal(t, vmtypes.NewArrayType(vmtypes.TypeI8), Bytes.VM())
+	})
+	t.Run("equality", func(t *testing.T) {
+		require.True(t, Equal(Bytes, Bytes))
+		require.False(t, Equal(Bytes, Str))
+		require.False(t, Equal(Bytes, NewList(Int)))
+	})
+	t.Run("not printable", func(t *testing.T) {
+		require.False(t, Printable(Bytes))
+	})
+}
+
 func TestResolve(t *testing.T) {
 	for name, want := range map[string]Type{
-		"int": Int, "float": Float, "bool": Bool, "str": Str, "None": None, "Any": Any,
+		"int": Int, "float": Float, "bool": Bool, "str": Str, "bytes": Bytes, "None": None, "Any": Any,
 	} {
 		got, ok := Resolve(name)
 		require.Truef(t, ok, "name=%s", name)

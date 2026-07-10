@@ -82,6 +82,7 @@ runtime values.
 | `float` | minivm `f64` |
 | `bool` | minivm boolean integer path |
 | `str` | minivm string |
+| `bytes` | minivm `array[i8]` |
 | `None`, `Any`, unions, iterators | reference values |
 | `list[T]` | minivm array |
 | `dict[K, V]` | minivm map |
@@ -108,7 +109,8 @@ positions and storing each target. Starred rest targets build a list of the
 remaining homogeneous elements.
 
 Subscript assignment supports list and dict item writes. Slice assignment is not
-lowered. Attribute assignment lowers to struct field writes. When the receiver is
+lowered; bytes item/slice assignment is rejected by the checker before reaching
+the lowerer (bytes is immutable). Attribute assignment lowers to struct field writes. When the receiver is
 a class instance with `__setitem__`, `obj[i] = v` lowers to a direct
 `obj.__setitem__(i, v)` method call and drops the returned `None`.
 
@@ -179,11 +181,28 @@ All operator syntax lowers through the `operator` package so syntax and
 numeric opcodes where possible; operations that need runtime helpers use native
 host functions registered by the operator module.
 
-### Containers and Strings
+### Containers, Strings, and Bytes
 
 List, dict, set, and tuple displays lower to minivm array/map/struct creation
 paths. String indexing/slicing and list iteration use host ABI helpers when the VM
 primitive set does not provide the exact operation.
+
+A bytes literal allocates an `array[i8]` sized to the decoded byte payload
+(`ARRAY_NEW_DEFAULT`) and fills it byte by byte (`ARRAY_SET`) — it never goes
+through list lowering, since `bytes` is its own primitive VM array type, not
+`list[int]`. Bytes indexing, direct iteration, and comprehension iteration all
+read the raw `i8` array element with `ARRAY_GET` and then normalize it: mask to
+`0xff` and widen to `i64`, undoing `i8`'s sign extension so the source-level
+`int` element is always unsigned in `0..255` (the compiler helper
+`normalizeByteElem` is the single place this happens; `bytesIter`, used by
+`iter(bytes)`, applies the same unsigned reinterpretation on the host side).
+Bytes slicing and list slicing share one host helper (`arraySlice`, generic
+over any array-backed VM type) that allocates and returns a fresh array of the
+receiver's VM type rather than mutating the receiver — for bytes this is the
+only slicing path, since bytes has no in-place mutation. Bytes concatenation
+(`+`), `==`/`!=`, and `in`/`not in` lower through dedicated `operator` host
+functions (`bytesConcat`, `bytesEqual`, `bytesContains`) that read both
+operands via the shared array-element host ABI view.
 
 List methods lower without dynamic attribute lookup. `append`, `pop`, `insert`,
 `extend`, and `reverse` mutate the receiver with minivm array opcodes and

@@ -59,7 +59,7 @@ Implemented builtin functions:
 | `float(x)` | 1 | `int`, `float`, `bool`, `str` | `float` |
 | `bool(x)` | 1 | convertible values and supported containers | `bool` |
 | `abs(x)` | 1 | `int`, `float` | same as input |
-| `len(x)` | 1 | `str`, list, dict, set, tuple, or class instance with `__len__` | `int` |
+| `len(x)` | 1 | `str`, `bytes`, list, dict, set, tuple, or class instance with `__len__` | `int` |
 | `enumerate(xs)` | 1 | `list[T]` | `list[tuple[int, T]]` |
 | `zip(a, b)` | 2 | `list[A]`, `list[B]` | `list[tuple[A, B]]` |
 | `range(stop)` | 1 | `int` | `Iterator[int]` |
@@ -147,8 +147,10 @@ surrogate range. This diverges from CPython, which accepts the full
 
 ## Iteration Builtins
 
-`iter` accepts lists, dicts, sets, iterators, and strings. Dict iteration produces
-keys; set iteration produces elements; string iteration produces strings.
+`iter` accepts lists, dicts, sets, iterators, strings, and bytes. Dict iteration
+produces keys; set iteration produces elements; string iteration produces
+strings; bytes iteration produces `int` elements in `0..255` (`bytesIter`
+reinterprets the underlying signed `i8` storage as unsigned).
 
 `next` consumes `Iterator[T]`. End-of-iteration follows the runtime iterator /
 coroutine protocol and traps through the VM when the iterator is exhausted.
@@ -228,6 +230,13 @@ neg pos invert contains not_ abs truth
 The syntax forms `+`, `-`, `*`, `/`, `//`, `%`, `**`, bitwise operators, shifts,
 comparisons, membership, unary operators, and logical truth helpers delegate to
 these same type rules and emitters.
+
+`bytes` participates in a narrow slice of these: `add` (`+`) concatenates two
+`bytes` into a new `bytes`; `eq`/`ne` compare by length and content; `contains`
+(`in`/`not in`) accepts an `int` needle in `0..255`. `lt`/`le`/`gt`/`ge` and the
+other numeric/bitwise operators reject `bytes` (`NotComparable` for ordering,
+type mismatch otherwise) — bytes has no ordering, hashing, or truthiness/
+conversion support.
 
 ## `typing`
 

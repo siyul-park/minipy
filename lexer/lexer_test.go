@@ -203,6 +203,100 @@ func TestLex(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, "AB\a\b\f\v\r\x00\\q", tokens[0].Literal)
 	})
+
+	t.Run("bytes literals", func(t *testing.T) {
+		t.Run("prefix case variants", func(t *testing.T) {
+			for _, prefix := range []string{"b", "B", "br", "Br", "bR", "BR", "rb", "Rb", "rB", "RB"} {
+				tokens, err := lex(prefix + `"ab"`)
+				require.NoErrorf(t, err, "prefix=%q", prefix)
+				require.Equalf(t, token.BYTES, tokens[0].Type, "prefix=%q", prefix)
+				require.Equalf(t, "ab", tokens[0].Literal, "prefix=%q", prefix)
+			}
+		})
+
+		t.Run("single, double, and triple quotes", func(t *testing.T) {
+			single, err := lex(`b'ab'`)
+			require.NoError(t, err)
+			require.Equal(t, "ab", single[0].Literal)
+
+			double, err := lex(`b"ab"`)
+			require.NoError(t, err)
+			require.Equal(t, "ab", double[0].Literal)
+
+			triple, err := lex("b'''a\"b'''")
+			require.NoError(t, err)
+			require.Equal(t, "a\"b", triple[0].Literal)
+		})
+
+		t.Run("empty bytes literal", func(t *testing.T) {
+			tokens, err := lex(`b""`)
+			require.NoError(t, err)
+			require.Equal(t, token.BYTES, tokens[0].Type)
+			require.Equal(t, "", tokens[0].Literal)
+		})
+
+		t.Run("byte payloads via hex escape", func(t *testing.T) {
+			cases := map[string]byte{
+				`b"\x00"`: 0x00,
+				`b"\x7f"`: 0x7f,
+				`b"\x80"`: 0x80,
+				`b"\xff"`: 0xff,
+			}
+			for src, want := range cases {
+				tokens, err := lex(src)
+				require.NoErrorf(t, err, "src=%q", src)
+				require.Lenf(t, tokens[0].Literal, 1, "src=%q", src)
+				require.Equalf(t, want, tokens[0].Literal[0], "src=%q", src)
+			}
+		})
+
+		t.Run("simple escapes decode", func(t *testing.T) {
+			tokens, err := lex(`b"a\nb\t\\c"`)
+			require.NoError(t, err)
+			require.Equal(t, "a\nb\t\\c", tokens[0].Literal)
+		})
+
+		t.Run("invalid hex escape keeps unknown-escape rule for the bad digit", func(t *testing.T) {
+			_, err := lex(`b"\xzz"`)
+			require.Error(t, err)
+		})
+
+		t.Run("truncated hex escape", func(t *testing.T) {
+			_, err := lex(`b"\x4"`)
+			require.Error(t, err)
+			hasCode(t, err, token.LexError)
+		})
+
+		t.Run("raw bytes preserve backslashes", func(t *testing.T) {
+			tokens, err := lex(`rb"a\nb"`)
+			require.NoError(t, err)
+			require.Equal(t, `a\nb`, tokens[0].Literal)
+		})
+
+		t.Run("direct non-ASCII character rejected", func(t *testing.T) {
+			_, err := lex("b\"café\"")
+			require.Error(t, err)
+			hasCode(t, err, token.LexError)
+		})
+
+		t.Run("u and U escapes are not Unicode-decoded", func(t *testing.T) {
+			tokens, err := lex(`b"A\U00000041"`)
+			require.NoError(t, err)
+			require.Equal(t, `A\U00000041`, tokens[0].Literal)
+		})
+
+		t.Run("ordinary strings and f-strings unaffected", func(t *testing.T) {
+			str, err := lex(`"hi"`)
+			require.NoError(t, err)
+			require.Equal(t, token.STRING, str[0].Type)
+			require.Equal(t, "hi", str[0].Literal)
+
+			fstr, err := lex(`f"x={x}"`)
+			require.NoError(t, err)
+			require.Equal(t, token.FSTRING, fstr[0].Type)
+			require.Equal(t, "x={x}", fstr[0].Literal)
+		})
+	})
 }
 
 func TestLexer_Next(t *testing.T) {
@@ -256,8 +350,8 @@ func TestLexErrors(t *testing.T) {
 		require.Contains(t, err.Error(), "unterminated")
 	})
 
-	t.Run("bytes prefix unsupported", func(t *testing.T) {
-		_, err := lex(`b"x"`)
+	t.Run("unicode prefix unsupported", func(t *testing.T) {
+		_, err := lex(`u"x"`)
 		hasCode(t, err, token.UnsupportedFeature)
 	})
 

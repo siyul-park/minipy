@@ -1617,7 +1617,7 @@ func (p *Parser) parseAtom() ast.Expr {
 		p.advance()
 		v, _ := strconv.ParseFloat(t.Literal, 64)
 		return &ast.FloatLit{Base: ast.Base{Position: t.Pos}, Value: v}
-	case token.STRING, token.FSTRING:
+	case token.STRING, token.FSTRING, token.BYTES:
 		return p.parseString()
 	case token.LPAREN:
 		return p.parseGroup()
@@ -1636,20 +1636,30 @@ func (p *Parser) parseAtom() ast.Expr {
 	}
 }
 
-// parseString folds adjacent string literals into one StrLit (compile-time
-// concatenation, docs/spec/01-lexical.md).
+// parseString folds adjacent string or bytes literals into one StrLit or
+// BytesLit (compile-time concatenation, docs/spec/01-lexical.md). Adjacent
+// str and bytes literals may not be mixed.
 func (p *Parser) parseString() ast.Expr {
 	t := p.cur()
 	if t.Type == token.FSTRING {
 		p.advance()
 		return &ast.FString{Base: ast.Base{Position: t.Pos}, Parts: p.parseFStringParts(t.Literal, t.Pos)}
 	}
+	kind := t.Type
 	var value strings.Builder
 	value.WriteString(t.Literal)
 	p.advance()
-	for p.at(token.STRING) {
+	for p.at(token.STRING) || p.at(token.BYTES) {
+		if p.cur().Type != kind {
+			p.errs.Add(p.cur().Pos, token.SyntaxError, "cannot mix bytes and nonbytes literals")
+			p.advance()
+			continue
+		}
 		value.WriteString(p.cur().Literal)
 		p.advance()
+	}
+	if kind == token.BYTES {
+		return &ast.BytesLit{Base: ast.Base{Position: t.Pos}, Value: value.String()}
 	}
 	return &ast.StrLit{Base: ast.Base{Position: t.Pos}, Value: value.String()}
 }

@@ -238,3 +238,24 @@ func strIter() *interp.HostFunction {
 		},
 	)
 }
+
+// bytesIter yields each byte as an int in 0..255, reinterpreting the
+// underlying signed i8 storage as unsigned (so 0x80 and 0xff yield 128/255,
+// not negative values).
+func bytesIter() *interp.HostFunction {
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: []vmtypes.Type{types.Bytes.VM()}, Returns: []vmtypes.Type{vmtypes.TypeRef}},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			_, elems := hostabi.ArrayElems(i, params[0])
+			values := make([]vmtypes.Boxed, len(elems))
+			for idx, e := range elems {
+				values[idx] = vmtypes.BoxI64(int64(uint8(e.I32())))
+			}
+			addr, err := i.Alloc(hostabi.NewIterator("bytes.iterator", values))
+			if err != nil {
+				return nil, err
+			}
+			return []vmtypes.Boxed{vmtypes.BoxRef(addr)}, nil
+		},
+	)
+}

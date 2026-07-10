@@ -50,7 +50,7 @@ full CPython compatibility.
 | Float literals | ✅ | Parsed as `float64`. |
 | Imaginary literals | ❌ | No complex type. |
 | String literals | ✅ | Plain/raw/triple strings and adjacent string concatenation. |
-| Bytes literals | ❌ | Prefix recognized only for diagnostics. |
+| Bytes literals | ◐ | `b`/`B`/`br`/`rb` (case variants), single/double/triple quotes, adjacent-literal concatenation, ASCII-only direct characters, `\xNN` decoded, `\u`/`\U` not decoded, raw backslash preservation; no `bytes()` constructor or `bytearray`. |
 | f-strings | ◐ | Single token plus parser-split parts; conversions `!s`, `!r`, `!a`; one nested format level. |
 | Named Unicode escapes | ❌ | `\N{...}` is not implemented. |
 
@@ -168,7 +168,7 @@ full CPython compatibility.
 | Monomorphic specialization | ✅ | For union/Any params with concrete direct call tuples, capped per function. |
 | Arbitrary precision int | ❌ | Uses signed 64-bit. |
 | Complex | ❌ | No runtime type. |
-| Bytes | ❌ | No runtime type. |
+| Bytes | ◐ | `bytes` primitive type (`array[i8]`); `len`, indexing (unsigned `0..255`), slicing, `+`, `==`/`!=`, `in`/`not in`, direct iteration, comprehensions, `iter(bytes)`. No `bytes()`/`bytearray`, no methods, no ordering, no hashing/dict-set keys, no `print`/`str`/`repr`/truthiness. |
 | General Python object model | ❌ | No descriptors, metaclasses, MRO, dynamic attributes, or runtime namespace dictionaries. |
 
 ## Builtins and Modules

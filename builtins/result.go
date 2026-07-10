@@ -45,7 +45,7 @@ func lenResult(args []types.Type) (types.Type, bool) {
 	case *types.List, *types.Dict, *types.Set, *types.Tuple:
 		return types.Int, true
 	default:
-		if types.Equal(args[0], types.Str) {
+		if types.Equal(args[0], types.Str) || types.Equal(args[0], types.Bytes) {
 			return types.Int, true
 		}
 	}
@@ -140,6 +140,9 @@ func iterableElem(t types.Type) types.Type {
 	default:
 		if types.Equal(t, types.Str) {
 			return types.Str
+		}
+		if types.Equal(t, types.Bytes) {
+			return types.Int
 		}
 		return types.Invalid
 	}

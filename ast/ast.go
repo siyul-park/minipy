@@ -388,6 +388,14 @@ type StrLit struct {
 	Value string
 }
 
+// BytesLit is a decoded bytes literal. Value holds the decoded byte payload
+// in a Go string, which can carry arbitrary byte values (not necessarily
+// valid UTF-8).
+type BytesLit struct {
+	Base
+	Value string
+}
+
 // BoolLit is `True` or `False`.
 type BoolLit struct {
 	Base
@@ -627,6 +635,7 @@ func (*LambdaExpr) exprNode()   {}
 func (*IntLit) exprNode()       {}
 func (*FloatLit) exprNode()     {}
 func (*StrLit) exprNode()       {}
+func (*BytesLit) exprNode()     {}
 func (*BoolLit) exprNode()      {}
 func (*NoneLit) exprNode()      {}
 func (*UnaryExpr) exprNode()    {}

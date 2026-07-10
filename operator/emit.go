@@ -55,6 +55,8 @@ func EmitBinary(e module.Emitter, op token.Type, left, right types.Type, pushLef
 		pushRight()
 		if left == types.Str {
 			e.Emit(instr.STRING_CONCAT)
+		} else if left == types.Bytes {
+			e.CallHost(bytesConcat())
 		} else {
 			e.Emit(simpleBinOp(op, left))
 		}
@@ -80,6 +82,22 @@ func EmitCompareStack(e module.Emitter, op token.Type, left, right types.Type) {
 		}
 		return
 	}
+	if left == types.Bytes || right == types.Bytes {
+		// The checker restricts bytes comparisons to == and != (docs/spec/04),
+		// so op is guaranteed to be one of those here. != is == negated
+		// in-line rather than a second host function: a same-signature sibling
+		// host function is indistinguishable from bytesEqual once interned,
+		// since the constant pool dedups host functions by their
+		// (Params, Returns) signature string alone (module.Emitter's CallHost
+		// -> lowerer.constOf -> program.Builder.Const), not by closure
+		// identity — two host functions sharing a signature collide into one
+		// constant slot.
+		e.CallHost(bytesEqual())
+		if op == token.NE {
+			e.Emit(instr.I32_EQZ)
+		}
+		return
+	}
 	e.Emit(cmpOpcode(op, left))
 }
 
@@ -98,6 +116,8 @@ func emitContains(e module.Emitter, op token.Type, needle, haystack types.Type) 
 	default:
 		if types.Equal(haystack, types.Str) {
 			e.CallHost(strContains())
+		} else if types.Equal(haystack, types.Bytes) {
+			e.CallHost(bytesContains())
 		}
 	}
 	if op == token.NOTIN {
