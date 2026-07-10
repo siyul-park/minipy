@@ -16,7 +16,7 @@ func getAttrCheck(c module.Checker, args []ast.Expr, pos token.Pos) types.Type {
 	if !ok {
 		return types.Invalid
 	}
-	if name == classIDField {
+	if internalField(cls, name) {
 		c.Error(args[1].Pos(), token.UnsupportedFeature, "attribute %q is internal", name)
 		return types.Invalid
 	}
@@ -29,11 +29,11 @@ func getAttrCheck(c module.Checker, args []ast.Expr, pos token.Pos) types.Type {
 }
 
 func hasAttrCheck(c module.Checker, args []ast.Expr, pos token.Pos) types.Type {
-	_, name, ok := checkAttribute(c, "hasattr", args, pos)
+	cls, name, ok := checkAttribute(c, "hasattr", args, pos)
 	if !ok {
 		return types.Invalid
 	}
-	if name == classIDField {
+	if internalField(cls, name) {
 		c.Error(args[1].Pos(), token.UnsupportedFeature, "attribute %q is internal", name)
 		return types.Invalid
 	}
@@ -93,4 +93,16 @@ func classField(cls *types.Class, name string) (int, types.Field, bool) {
 		}
 	}
 	return 0, types.Field{}, false
+}
+
+func internalField(cls *types.Class, name string) bool {
+	if name != classIDField {
+		return false
+	}
+	for _, exception := range Exceptions() {
+		if cls.Name == exception.Name {
+			return true
+		}
+	}
+	return false
 }
