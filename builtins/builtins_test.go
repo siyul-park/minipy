@@ -82,7 +82,7 @@ func TestResultFuncs(t *testing.T) {
 	t.Run("iter and next", func(t *testing.T) {
 		it, ok := iterResult([]types.Type{list})
 		require.True(t, ok)
-		require.Truef(t, types.Equal(it, types.NewIterator(types.Int)), "iterResult(list) = %s", it)
+		require.Truef(t, types.Equal(it, types.NewIterator(types.Int)), "iterResult = %s", it)
 
 		got, ok := nextResult([]types.Type{it})
 		require.True(t, ok)
