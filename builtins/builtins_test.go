@@ -12,7 +12,7 @@ func TestNew(t *testing.T) {
 	m := New()
 	require.Equal(t, "builtins", m.Name())
 	want := []string{"print", "str", "int", "float", "bool", "abs", "len",
-		"enumerate", "zip", "range", "iter", "next", "ord", "chr", "isinstance"}
+		"enumerate", "zip", "range", "iter", "next", "ord", "chr", "getattr", "hasattr", "isinstance"}
 	for _, name := range want {
 		_, ok := m.Symbol(name)
 		require.Truef(t, ok, "missing symbol %q", name)
