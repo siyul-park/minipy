@@ -67,6 +67,8 @@ Implemented builtin functions:
 | `range(start, stop, step)` | 3 | `int`, `int`, `int` | `Iterator[int]` |
 | `iter(x)` | 1 | iterable values | `Iterator[T]` |
 | `next(it)` | 1 | `Iterator[T]` | `T` |
+| `getattr(obj, "field")` | 2 | concrete class instance plus string literal field name | declared field type |
+| `hasattr(obj, "field")` | 2 | concrete class instance plus string literal field name | `bool` |
 | `isinstance(x, T)` | 2 | value plus supported type/class expression | `bool` |
 | `ord(s)` | 1 | `str` (exactly one codepoint) | `int` |
 | `chr(n)` | 1 | `int` (`0 <= n <= 0x10FFFF`) | `str` |
@@ -77,6 +79,30 @@ length is negative. Built-in containers keep their inline lowering.
 
 `range(..., 0)` is diagnosed statically when the zero step is a constant integer
 literal, including a unary sign.
+
+## Static Attribute Builtins
+
+`getattr` and `hasattr` expose only the part of attribute introspection that can
+be resolved entirely by the checker:
+
+- the receiver must have one concrete class type
+- the attribute name must be a string literal
+- only declared or inherited fields participate
+- methods, modules, containers, unions, `Any`, and dynamically computed names are
+  unsupported
+- compiler-internal fields such as `__classid` are not exposed
+
+`getattr(obj, "field")` has the field's declared source type and lowers exactly
+like direct `obj.field` access: evaluate the receiver once and emit `STRUCT_GET`
+with the statically resolved field index. A missing field is an `UndefinedName`
+diagnostic.
+
+`hasattr(obj, "field")` evaluates the receiver once for normal expression side
+effects, discards the value, and returns a compile-time-resolved boolean. A
+missing field is therefore `False`, not a runtime lookup or exception.
+
+There is no third default argument for `getattr`, no bound-method result, and no
+runtime metadata table or dynamic `__dict__` fallback.
 
 ## Printable and Convertible Values
 
