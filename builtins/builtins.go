@@ -42,6 +42,8 @@ func New() module.Module {
 		callSymbol("next", spec{1, 1, nextResult}, emitNext, nil),
 		callSymbol("ord", spec{1, 1, ordResult}, emitOrd, valueHost(ordHost)),
 		callSymbol("chr", spec{1, 1, chrResult}, emitChr, valueHost(chrHost)),
+		module.NewSymbol(Name, "getattr", getAttrCheck, emitGetAttr, nil),
+		module.NewSymbol(Name, "hasattr", hasAttrCheck, emitHasAttr, nil),
 		module.NewSymbol(Name, "isinstance", isInstanceCheck, emitIsInstance, nil),
 	)
 }
