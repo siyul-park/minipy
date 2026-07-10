@@ -32,6 +32,16 @@ func TestCompileAttributeBuiltins(t *testing.T) {
 		require.Equal(t, "3\n", run(t, src))
 	})
 
+	t.Run("source field with internal spelling runs", func(t *testing.T) {
+		src := "@dataclass\n" +
+			"class C:\n" +
+			"    __classid: int\n" +
+			"c: C = C(5)\n" +
+			"print(str(getattr(c, \"__classid\")))\n" +
+			"print(str(hasattr(c, \"__classid\")))\n"
+		require.Equal(t, "5\nTrue\n", run(t, src))
+	})
+
 	t.Run("receiver is evaluated once", func(t *testing.T) {
 		src := "calls: int = 0\n" +
 			"@dataclass\n" +
