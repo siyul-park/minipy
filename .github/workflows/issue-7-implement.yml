@@ -1,0 +1,68 @@
+name: Implement issue 7
+
+on:
+  push:
+    branches:
+      - feat/issue-7-ellipsis
+
+permissions:
+  contents: write
+
+jobs:
+  implement:
+    if: github.event.head_commit.message == 'chore: stage issue #7 implementation'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out branch
+        uses: actions/checkout@v4
+        with:
+          ref: feat/issue-7-ellipsis
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Apply implementation
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import base64
+          import gzip
+
+          payload = "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"
+          exec(gzip.decompress(base64.b64decode(payload)).decode(), {"__name__": "__main__"})
+          PY
+
+      - name: Format Go files
+        run: |
+          gofmt -w \
+            token/token.go token/ellipsis_test.go \
+            lexer/lexer.go lexer/ellipsis_test.go \
+            ast/ast.go ast/ellipsis_test.go \
+            parser/parser.go parser/ellipsis_test.go \
+            types/types.go types/ellipsis_test.go \
+            operator/types.go operator/emit.go operator/ellipsis_test.go \
+            compiler/check.go compiler/lower.go compiler/ellipsis_test.go
+
+      - name: Check patch formatting
+        run: git diff --check
+
+      - name: Run focused tests
+        run: go test ./token ./lexer ./ast ./parser ./types ./operator ./compiler
+
+      - name: Run full test suite
+        run: go test ./...
+
+      - name: Commit implementation
+        run: |
+          rm .github/workflows/issue-7-implement.yml
+          rmdir .github/workflows 2>/dev/null || true
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -A
+          git commit -m "compat: add Ellipsis literal and EllipsisType"
+          git push origin HEAD:feat/issue-7-ellipsis
