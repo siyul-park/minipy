@@ -1102,7 +1102,7 @@ func (c *lowerer) unpackAssignStar(target *ast.TupleLit, value ast.Expr, valueSl
 				c.emit(instr.I64_CONST, uint64(suffix))
 				c.emit(instr.I64_SUB)
 				c.emit(instr.I64_CONST, 1)
-				c.callHost(c.listSlice(c.types[value]))
+				c.callHost(c.arraySlice(c.types[value]))
 				c.set(name.Name)
 				continue
 			}
@@ -1456,6 +1456,9 @@ func (c *lowerer) emitIterableFor(n *ast.For) {
 	c.emit(instr.GLOBAL_GET, uint64(idxSlot))
 	c.emit(instr.I64_TO_I32)
 	c.emit(instr.ARRAY_GET)
+	if types.Equal(c.types[n.Iter], types.Bytes) {
+		c.normalizeByteElem()
+	}
 	c.setLoopTarget(n.Target)
 
 	c.loops = append(c.loops, loopLabels{cont: cont, brk: end})
@@ -1801,6 +1804,8 @@ func (c *lowerer) expr(n ast.Expr) {
 		c.emit(instr.REF_NULL)
 	case *ast.StrLit:
 		c.constGet(vmtypes.String(x.Value))
+	case *ast.BytesLit:
+		c.bytesLit(x)
 	case *ast.Name:
 		c.get(x.Name)
 		c.narrowCast(x)
@@ -1879,6 +1884,21 @@ func (c *lowerer) listLit(x *ast.ListLit) {
 		c.emit(instr.DUP)
 		c.emit(instr.I32_CONST, uint64(i))
 		c.expr(elem)
+		c.emit(instr.ARRAY_SET)
+	}
+}
+
+// bytesLit allocates an array[i8] sized to the decoded byte payload and fills
+// it byte by byte. It never goes through list[int] lowering: bytes is its own
+// primitive VM array type (types.Bytes), not types.NewList(types.Int).
+func (c *lowerer) bytesLit(x *ast.BytesLit) {
+	raw := []byte(x.Value)
+	c.emit(instr.I32_CONST, uint64(len(raw)))
+	c.emit(instr.ARRAY_NEW_DEFAULT, c.typeIndex(types.Bytes))
+	for i, b := range raw {
+		c.emit(instr.DUP)
+		c.emit(instr.I32_CONST, uint64(i))
+		c.emit(instr.I32_CONST, uint64(b))
 		c.emit(instr.ARRAY_SET)
 	}
 }
@@ -2094,6 +2114,9 @@ func (c *lowerer) iterComp(clause *ast.Comprehension, targetSlot int, body func(
 	c.emit(instr.GLOBAL_GET, uint64(idxSlot))
 	c.emit(instr.I64_TO_I32)
 	c.emit(instr.ARRAY_GET)
+	if types.Equal(c.types[clause.Iter], types.Bytes) {
+		c.normalizeByteElem()
+	}
 	c.emit(instr.GLOBAL_SET, uint64(targetSlot))
 	c.compFilters(clause.Ifs, cont)
 	body()
@@ -2169,10 +2192,26 @@ func (c *lowerer) subscript(x *ast.Subscript) {
 		c.funcValue(m, owner.methodBody["__getitem__"])
 		c.emit(instr.CALL)
 	default:
-		if types.Equal(c.types[x.X], types.Str) {
+		if types.Equal(c.types[x.X], types.Bytes) {
+			c.emit(instr.I64_TO_I32)
+			c.emit(instr.ARRAY_GET)
+			c.normalizeByteElem()
+		} else if types.Equal(c.types[x.X], types.Str) {
 			c.callHost(c.strIndex()) // stack has string and index; returns one-codepoint string
 		}
 	}
+}
+
+// normalizeByteElem reinterprets the array[i8] element ARRAY_GET just pushed
+// as an unsigned byte in 0..255 and widens it to the int (i64) that source
+// bytes indexing, direct iteration, and comprehensions all expose. It is the
+// single place that undoes i8's sign extension so indexing, direct for
+// loops, and comprehensions stay consistent with bytesIter's unsigned view
+// (builtins/host.go).
+func (c *lowerer) normalizeByteElem() {
+	c.emit(instr.I32_CONST, 0xff)
+	c.emit(instr.I32_AND)
+	c.emit(instr.I32_TO_I64_S)
 }
 
 func (c *lowerer) namedExpr(x *ast.NamedExpr) {
@@ -2188,8 +2227,12 @@ func (c *lowerer) slice(x *ast.Subscript, s *ast.Slice) {
 	c.sliceBound(s.Step)
 	switch c.types[x.X].(type) {
 	case *types.List:
-		c.callHost(c.listSlice(c.types[x.X]))
+		c.callHost(c.arraySlice(c.types[x.X]))
 	default:
+		if types.Equal(c.types[x.X], types.Bytes) {
+			c.callHost(c.arraySlice(c.types[x.X]))
+			return
+		}
 		c.callHost(c.strSlice())
 	}
 }
@@ -2993,7 +3036,11 @@ func mapSet(m vmtypes.Value, key, val vmtypes.Boxed) {
 	}
 }
 
-func (c *lowerer) listSlice(receiver types.Type) *interp.HostFunction {
+// arraySlice builds `receiver[a:b:c]` for any array-backed VM type (list or
+// bytes): it works on the generic array element view (hostabi.ArrayElems),
+// so it stays receiver-agnostic and returns a freshly allocated array of the
+// same VM type rather than mutating the receiver.
+func (c *lowerer) arraySlice(receiver types.Type) *interp.HostFunction {
 	return interp.NewHostFunction(
 		&vmtypes.FunctionType{Params: []vmtypes.Type{receiver.VM(), vmtypes.TypeI64, vmtypes.TypeI64, vmtypes.TypeI64}, Returns: []vmtypes.Type{receiver.VM()}},
 		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {

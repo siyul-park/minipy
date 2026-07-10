@@ -24,6 +24,9 @@ func BinaryType(c module.Checker, left types.Type, op token.Type, right types.Ty
 		if types.Equal(left, types.Str) && types.Equal(right, types.Str) {
 			return types.Str
 		}
+		if types.Equal(left, types.Bytes) && types.Equal(right, types.Bytes) {
+			return types.Bytes
+		}
 		if list, ok := left.(*types.List); ok && types.AssignableTo(right, left) {
 			return types.NewList(list.Elem)
 		}
@@ -125,6 +128,10 @@ func Comparable(c module.Checker, op token.Type, left, right types.Type, pos tok
 		c.Error(pos, token.UnsupportedFeature, "comparing to None uses 'is'")
 		return
 	}
+	if (types.Equal(left, types.Bytes) || types.Equal(right, types.Bytes)) && op != token.EQ && op != token.NE {
+		c.Error(pos, token.NotComparable, "'%s' not supported between instances of %s and %s", op, left, right)
+		return
+	}
 	if !types.Equal(left, right) {
 		c.Error(pos, token.NotComparable, "'%s' not supported between instances of %s and %s", op, left, right)
 	}
@@ -153,6 +160,9 @@ func ContainsType(needle, haystack types.Type) bool {
 	case *types.Set:
 		return types.AssignableTo(needle, t.Elem)
 	default:
+		if types.Equal(haystack, types.Bytes) {
+			return types.Equal(needle, types.Int)
+		}
 		return types.Equal(haystack, types.Str) && types.Equal(needle, types.Str)
 	}
 }

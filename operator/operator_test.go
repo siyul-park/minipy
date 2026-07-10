@@ -35,6 +35,9 @@ func TestBinaryType(t *testing.T) {
 		{"mixed add", types.Int, types.Float, token.PLUS, types.Invalid, true},
 		{"str concat", types.Str, types.Str, token.PLUS, types.Str, false},
 		{"str repeat", types.Str, types.Int, token.STAR, types.Str, false},
+		{"bytes concat", types.Bytes, types.Bytes, token.PLUS, types.Bytes, false},
+		{"bytes plus str mismatch", types.Bytes, types.Str, token.PLUS, types.Invalid, true},
+		{"bytes star unsupported", types.Bytes, types.Int, token.STAR, types.Invalid, true},
 		{"true div", types.Int, types.Int, token.SLASH, types.Float, false},
 		{"bitand", types.Int, types.Int, token.AMP, types.Int, false},
 		{"bitand float", types.Float, types.Float, token.AMP, types.Invalid, true},
@@ -60,6 +63,12 @@ func TestComparable(t *testing.T) {
 		{"eq mismatch", token.EQ, types.Int, types.Str, true},
 		{"in list", token.IN, types.Int, types.NewList(types.Int), false},
 		{"in non-container", token.IN, types.Int, types.Int, true},
+		{"bytes eq", token.EQ, types.Bytes, types.Bytes, false},
+		{"bytes ne", token.NE, types.Bytes, types.Bytes, false},
+		{"bytes lt rejected", token.LT, types.Bytes, types.Bytes, true},
+		{"bytes le rejected", token.LE, types.Bytes, types.Bytes, true},
+		{"bytes in bytes needle wrong type", token.IN, types.Str, types.Bytes, true},
+		{"int in bytes", token.IN, types.Int, types.Bytes, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -73,6 +82,8 @@ func TestComparable(t *testing.T) {
 func TestContainsType(t *testing.T) {
 	require.True(t, operator.ContainsType(types.Int, types.NewList(types.Int)))
 	require.False(t, operator.ContainsType(types.Int, types.Int))
+	require.True(t, operator.ContainsType(types.Int, types.Bytes))
+	require.False(t, operator.ContainsType(types.Str, types.Bytes))
 }
 
 func TestOperatorNames(t *testing.T) {

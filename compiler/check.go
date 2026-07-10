@@ -1344,6 +1344,9 @@ func iterableElem(t types.Type) types.Type {
 		if types.Equal(t, types.Str) {
 			return types.Str
 		}
+		if types.Equal(t, types.Bytes) {
+			return types.Int
+		}
 		return types.Invalid
 	}
 }
@@ -1549,6 +1552,12 @@ func (c *checker) assignTarget(target ast.Expr, value ast.Expr, pos token.Pos) {
 			c.classSetItem(t, cls, value)
 			return
 		}
+		if types.Equal(receiver, types.Bytes) {
+			c.errs.Add(t.Pos(), token.NotIndexable, "bytes does not support item assignment")
+			c.expr(t.Index)
+			c.expr(value)
+			return
+		}
 		index := c.expr(t.Index)
 		valueType := c.expr(value)
 		elem := c.indexResultType(t, receiver, index)
@@ -1605,7 +1614,9 @@ func (c *checker) listSliceMutation(target *ast.Subscript, slice *ast.Slice, rec
 	}
 	list, ok := receiver.(*types.List)
 	if !ok {
-		if receiver != types.Invalid {
+		if types.Equal(receiver, types.Bytes) {
+			c.errs.Add(target.Pos(), token.NotIndexable, "bytes is immutable and does not support slice assignment")
+		} else if receiver != types.Invalid {
 			c.errs.Add(target.Pos(), token.UnsupportedFeature, "cannot mutate a slice of %s", receiver)
 		}
 		if value != nil {
@@ -3266,6 +3277,8 @@ func (c *checker) typeOf(e ast.Expr, hint types.Type) types.Type {
 		return types.Bool
 	case *ast.StrLit:
 		return types.Str
+	case *ast.BytesLit:
+		return types.Bytes
 	case *ast.NoneLit:
 		return types.None
 	case *ast.Name:
@@ -3485,6 +3498,12 @@ func (c *checker) indexResultType(n *ast.Subscript, receiver, index types.Type) 
 			}
 			return types.Str
 		}
+		if types.Equal(receiver, types.Bytes) {
+			if index != types.Invalid && !types.Equal(index, types.Int) {
+				c.errs.Add(n.Index.Pos(), token.TypeMismatch, "bytes index must be int, got %s", index)
+			}
+			return types.Int
+		}
 		if receiver != types.Invalid {
 			c.errs.Add(n.Pos(), token.NotIndexable, "%s is not indexable", receiver)
 		}
@@ -3519,6 +3538,9 @@ func (c *checker) sliceResultType(n *ast.Slice, receiver types.Type) types.Type 
 	default:
 		if types.Equal(receiver, types.Str) {
 			return types.Str
+		}
+		if types.Equal(receiver, types.Bytes) {
+			return types.Bytes
 		}
 		if receiver != types.Invalid {
 			c.errs.Add(n.Pos(), token.NotIndexable, "%s is not sliceable", receiver)

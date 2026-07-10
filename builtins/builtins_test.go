@@ -54,6 +54,12 @@ func TestResultFuncs(t *testing.T) {
 		require.False(t, ok)
 	})
 
+	t.Run("len bytes", func(t *testing.T) {
+		got, ok := lenResult([]types.Type{types.Bytes})
+		require.True(t, ok)
+		require.Truef(t, types.Equal(got, types.Int), "lenResult(bytes) = %s", got)
+	})
+
 	t.Run("abs", func(t *testing.T) {
 		got, ok := absResult([]types.Type{types.Float})
 		require.True(t, ok)
@@ -87,6 +93,12 @@ func TestResultFuncs(t *testing.T) {
 		got, ok := nextResult([]types.Type{it})
 		require.True(t, ok)
 		require.Truef(t, types.Equal(got, types.Int), "nextResult = %s", got)
+	})
+
+	t.Run("iter bytes yields int", func(t *testing.T) {
+		it, ok := iterResult([]types.Type{types.Bytes})
+		require.True(t, ok)
+		require.Truef(t, types.Equal(it, types.NewIterator(types.Int)), "iterResult(bytes) = %s", it)
 	})
 
 	t.Run("ord", func(t *testing.T) {

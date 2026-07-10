@@ -37,6 +37,7 @@ before lowering to minivm types.
 | `float` | IEEE-754 `float64` | `f64` |
 | `bool` | truth value, distinct from `int` | `i1`/integer boolean |
 | `str` | immutable string value | minivm string |
+| `bytes` | immutable sequence of bytes (0..255) | minivm `array[i8]` |
 | `None` | absence of value | ref/null-like value |
 | `Any` | dynamic fallback top type | dynamic ref |
 | `list[T]` | homogeneous mutable sequence | minivm array of `T` |
@@ -133,6 +134,19 @@ For example, `int` is not assignable to `float`; write `float(x)` explicitly.
 `int` is signed 64-bit and `float` is `float64`. minipy does not implement
 Python's arbitrary-precision integers, complex numbers, or implicit mixed numeric
 arithmetic. Operators reject unsupported type combinations during checking.
+
+## Bytes
+
+`bytes` is a distinct primitive type, resolved via `types.Resolve("bytes")` and
+backed by minivm `array[i8]` — it is not `list[int]` and does not share list's
+lowering path. Indexing and direct iteration expose elements as `int` in
+`0..255` (the signed `i8` storage is reinterpreted as unsigned). `bytes` is
+immutable: item assignment, slice assignment, and deletion are rejected by the
+checker (`token.NotIndexable`). `bytes` values do not support `bytes()`
+construction, `bytearray`, string-style methods, ordering comparisons (`<`,
+`>`, etc.), hashing/use as dict keys or set elements, or `print`/`str`/`repr`/
+truthiness — only `len`, indexing, slicing, concatenation (`+`), `==`/`!=`,
+`in`/`not in`, and iteration (including comprehensions) are supported.
 
 ## Containers and Keys
 

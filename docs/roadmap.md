@@ -39,7 +39,7 @@ owned by `docs/spec/`; compatibility status is summarized in
 
 ### Static type system ✅
 
-- Primitive source types: `int`, `float`, `bool`, `str`, `None`, `Any`.
+- Primitive source types: `int`, `float`, `bool`, `str`, `bytes`, `None`, `Any`.
 - Containers: `list[T]`, `dict[K, V]`, `set[T]`, fixed tuples.
 - Classes, single inheritance, methods, `@dataclass` construction, builtin
   exception classes.
@@ -82,7 +82,10 @@ These are implemented with deliberate limits, not undocumented bugs.
 
 - Integers are signed 64-bit, not arbitrary precision.
 - Floats are `float64`; complex numbers are unsupported.
-- Bytes runtime values are unsupported.
+- Bytes literals and values are supported (`len`, indexing, slicing,
+  concatenation, `==`/`!=`, `in`/`not in`, iteration/comprehensions), but there
+  is no `bytes()` constructor, no `bytearray`, no bytes methods, no ordering
+  comparisons, and no hashing/dict-set key use.
 - Empty list/dict/set displays need an annotation or expected context.
 - Dict keys and set elements are limited to scalar hashable source types.
 - Tuple indexing needs a constant integer index.

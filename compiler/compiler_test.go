@@ -217,6 +217,194 @@ func TestCheckUnions(t *testing.T) {
 	})
 }
 
+// TestCheckBytes covers the checker-only typing rules for bytes (indexing,
+// slicing, iteration, and mutation rejection). Bytes literal lowering is out
+// of scope here (Phase C), so these assert type-checking only via checkOnly
+// rather than the full Compile/run pipeline.
+func TestCheckBytes(t *testing.T) {
+	t.Run("bytes literal has type bytes", func(t *testing.T) {
+		errs := checkOnly(t, "b: bytes = b\"ab\"\n")
+		require.Empty(t, errs)
+	})
+
+	t.Run("index yields int", func(t *testing.T) {
+		errs := checkOnly(t, "b: bytes = b\"ab\"\nn: int = b[0]\n")
+		require.Empty(t, errs)
+	})
+
+	t.Run("index requires int", func(t *testing.T) {
+		errs := checkOnly(t, "b: bytes = b\"ab\"\nprint(str(b[\"x\"]))\n")
+		require.NotEmpty(t, errs)
+		require.Equal(t, token.TypeMismatch, errs[0].Code)
+	})
+
+	t.Run("slice yields bytes", func(t *testing.T) {
+		errs := checkOnly(t, "b: bytes = b\"ab\"\nc: bytes = b[0:1]\n")
+		require.Empty(t, errs)
+	})
+
+	t.Run("iteration yields int", func(t *testing.T) {
+		errs := checkOnly(t, "b: bytes = b\"ab\"\nfor n in b:\n    print(str(n))\n")
+		require.Empty(t, errs)
+	})
+
+	t.Run("item assignment is rejected", func(t *testing.T) {
+		errs := checkOnly(t, "b: bytes = b\"ab\"\nb[0] = 1\n")
+		require.NotEmpty(t, errs)
+		require.Equal(t, token.NotIndexable, errs[0].Code)
+	})
+
+	t.Run("slice assignment is rejected", func(t *testing.T) {
+		errs := checkOnly(t, "b: bytes = b\"ab\"\nb[0:1] = b\"x\"\n")
+		require.NotEmpty(t, errs)
+		require.Equal(t, token.NotIndexable, errs[0].Code)
+	})
+
+	t.Run("item deletion is rejected", func(t *testing.T) {
+		errs := checkOnly(t, "b: bytes = b\"ab\"\ndel b[0]\n")
+		require.NotEmpty(t, errs)
+		require.Equal(t, token.UnsupportedFeature, errs[0].Code)
+	})
+
+	t.Run("slice deletion is rejected", func(t *testing.T) {
+		errs := checkOnly(t, "b: bytes = b\"ab\"\ndel b[0:1]\n")
+		require.NotEmpty(t, errs)
+		require.Equal(t, token.NotIndexable, errs[0].Code)
+	})
+
+	t.Run("concatenation with bytes is allowed", func(t *testing.T) {
+		errs := checkOnly(t, "a: bytes = b\"a\"\nb: bytes = b\"b\"\nc: bytes = a + b\n")
+		require.Empty(t, errs)
+	})
+
+	t.Run("concatenation with str is rejected", func(t *testing.T) {
+		errs := checkOnly(t, "b: bytes = b\"ab\"\nprint(str(b + \"x\"))\n")
+		require.NotEmpty(t, errs)
+		require.Equal(t, token.TypeMismatch, errs[0].Code)
+	})
+
+	t.Run("equality is allowed", func(t *testing.T) {
+		errs := checkOnly(t, "a: bytes = b\"a\"\nb: bytes = b\"b\"\nprint(str(a == b))\nprint(str(a != b))\n")
+		require.Empty(t, errs)
+	})
+
+	t.Run("ordering is rejected", func(t *testing.T) {
+		errs := checkOnly(t, "a: bytes = b\"a\"\nb: bytes = b\"b\"\nprint(str(a < b))\n")
+		require.NotEmpty(t, errs)
+		require.Equal(t, token.NotComparable, errs[0].Code)
+	})
+
+	t.Run("int membership is allowed", func(t *testing.T) {
+		errs := checkOnly(t, "b: bytes = b\"ab\"\nprint(str(0 in b))\n")
+		require.Empty(t, errs)
+	})
+
+	t.Run("str membership is rejected", func(t *testing.T) {
+		errs := checkOnly(t, "b: bytes = b\"ab\"\nprint(str(\"x\" in b))\n")
+		require.NotEmpty(t, errs)
+		require.Equal(t, token.NotIterable, errs[0].Code)
+	})
+
+	t.Run("len result is int", func(t *testing.T) {
+		errs := checkOnly(t, "b: bytes = b\"ab\"\nn: int = len(b)\n")
+		require.Empty(t, errs)
+	})
+
+	t.Run("iter result is Iterator[int]", func(t *testing.T) {
+		errs := checkOnly(t, "b: bytes = b\"ab\"\nit: Iterator[int] = iter(b)\n")
+		require.Empty(t, errs)
+	})
+}
+
+// TestCompileBytes covers full compile+run behavior for the bytes primitive:
+// literal creation, indexing, slicing, concatenation, comparisons,
+// membership, direct iteration, comprehensions, and iter/next. Compile-time
+// rejections (item/slice assignment, deletion) are already covered by
+// TestCheckBytes and are not repeated here.
+func TestCompileBytes(t *testing.T) {
+	t.Run("literal creation and annotation", func(t *testing.T) {
+		src := "b: bytes = b\"ab\"\nprint(str(len(b)))\n"
+		require.Equal(t, "2\n", run(t, src))
+	})
+
+	t.Run("empty literal", func(t *testing.T) {
+		src := "b: bytes = b\"\"\nprint(str(len(b)))\n"
+		require.Equal(t, "0\n", run(t, src))
+	})
+
+	t.Run("indexing returns non-negative int", func(t *testing.T) {
+		src := "b: bytes = b\"ab\"\nprint(str(b[0]))\nprint(str(b[1]))\n"
+		require.Equal(t, "97\n98\n", run(t, src))
+	})
+
+	t.Run("indexing 0x80 yields unsigned 128", func(t *testing.T) {
+		src := "b: bytes = b\"\\x80\"\nprint(str(b[0]))\n"
+		require.Equal(t, "128\n", run(t, src))
+	})
+
+	t.Run("indexing 0xff yields unsigned 255", func(t *testing.T) {
+		src := "b: bytes = b\"\\xff\"\nprint(str(b[0]))\n"
+		require.Equal(t, "255\n", run(t, src))
+	})
+
+	t.Run("empty slice", func(t *testing.T) {
+		src := "b: bytes = b\"abc\"\nc: bytes = b[1:1]\nprint(str(len(c)))\n"
+		require.Equal(t, "0\n", run(t, src))
+	})
+
+	t.Run("full slice", func(t *testing.T) {
+		src := "b: bytes = b\"abc\"\nc: bytes = b[:]\nprint(str(c[0]))\nprint(str(c[1]))\nprint(str(c[2]))\n"
+		require.Equal(t, "97\n98\n99\n", run(t, src))
+	})
+
+	t.Run("stepped slice", func(t *testing.T) {
+		src := "b: bytes = b\"abcdef\"\nc: bytes = b[::2]\nprint(str(len(c)))\nprint(str(c[0]))\nprint(str(c[1]))\nprint(str(c[2]))\n"
+		require.Equal(t, "3\n97\n99\n101\n", run(t, src))
+	})
+
+	t.Run("reversed slice", func(t *testing.T) {
+		src := "b: bytes = b\"abc\"\nc: bytes = b[::-1]\nprint(str(c[0]))\nprint(str(c[1]))\nprint(str(c[2]))\n"
+		require.Equal(t, "99\n98\n97\n", run(t, src))
+	})
+
+	t.Run("concatenation does not mutate inputs", func(t *testing.T) {
+		src := "a: bytes = b\"ab\"\nb: bytes = b\"cd\"\nc: bytes = a + b\n" +
+			"print(str(len(c)))\nprint(str(len(a)))\nprint(str(len(b)))\nprint(str(c[2]))\n"
+		require.Equal(t, "4\n2\n2\n99\n", run(t, src))
+	})
+
+	t.Run("equality and inequality", func(t *testing.T) {
+		src := "a: bytes = b\"ab\"\nb: bytes = b\"ab\"\nc: bytes = b\"cd\"\n" +
+			"print(str(a == b))\nprint(str(a == c))\nprint(str(a != c))\nprint(str(a != b))\n"
+		require.Equal(t, "True\nFalse\nTrue\nFalse\n", run(t, src))
+	})
+
+	t.Run("membership found and not found", func(t *testing.T) {
+		src := "b: bytes = b\"ab\"\nprint(str(97 in b))\nprint(str(122 in b))\n"
+		require.Equal(t, "True\nFalse\n", run(t, src))
+	})
+
+	t.Run("membership out of byte range is false", func(t *testing.T) {
+		src := "b: bytes = b\"ab\"\nprint(str(1000 in b))\n"
+		require.Equal(t, "False\n", run(t, src))
+	})
+
+	t.Run("direct for loop yields unsigned ints", func(t *testing.T) {
+		src := "b: bytes = b\"\\xff\\x80a\"\nfor n in b:\n    print(str(n))\n"
+		require.Equal(t, "255\n128\n97\n", run(t, src))
+	})
+
+	t.Run("list comprehension over bytes yields unsigned ints", func(t *testing.T) {
+		src := "b: bytes = b\"\\xff\\x80a\"\nns: list[int] = [n for n in b]\nprint(str(ns[0]))\nprint(str(ns[1]))\nprint(str(ns[2]))\n"
+		require.Equal(t, "255\n128\n97\n", run(t, src))
+	})
+
+	t.Run("iter/next yields unsigned ints", func(t *testing.T) {
+		src := "b: bytes = b\"\\xff\\x80\"\nit: Iterator[int] = iter(b)\nprint(str(next(it)))\nprint(str(next(it)))\n"
+		require.Equal(t, "255\n128\n", run(t, src))
+	})
+}
+
 func TestTypingAnnotations(t *testing.T) {
 	t.Run("string forward references resolve without future import", func(t *testing.T) {
 		errs := checkOnly(t, "class Node:\n    next: \"Node | None\"\nxs: list[\"Node\"] = []\n")
@@ -1866,6 +2054,14 @@ func TestCompileErrors(t *testing.T) {
 		"chr(\"A\")\n":        token.TypeMismatch,
 		"ord(\"A\", \"B\")\n": token.ArityMismatch,
 		"chr()\n":             token.ArityMismatch,
+		// bytes: immutability and typing rejections
+		"b: bytes = b\"ab\"\nb[0] = 1\n":                token.NotIndexable,
+		"b: bytes = b\"ab\"\nb[0:1] = b\"x\"\n":          token.NotIndexable,
+		"b: bytes = b\"ab\"\ndel b[0]\n":                 token.UnsupportedFeature,
+		"b: bytes = b\"ab\"\nprint(str(b < b\"cd\"))\n":  token.NotComparable,
+		"b: bytes = b\"ab\"\nprint(str(b + \"x\"))\n":    token.TypeMismatch,
+		"b: bytes = b\"ab\"\nprint(str(\"x\" in b))\n":   token.NotIterable,
+		"b: bytes = b\"ab\"\nprint(str(b[\"x\"]))\n":     token.TypeMismatch,
 	}
 	for src, want := range cases {
 		_, err := Compile(strings.NewReader(src), WithOutput(&bytes.Buffer{}))
