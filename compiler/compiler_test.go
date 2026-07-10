@@ -3,6 +3,7 @@ package compiler
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"strings"
 	"testing"
@@ -2025,5 +2026,43 @@ func TestCompileOrdChr(t *testing.T) {
 				"    print(\"ok\")\n"+
 				"except ValueError:\n"+
 				"    print(\"raised\")\n"))
+	})
+}
+
+// TestCompiler_lowerFailure exercises buildFunction's error-wrapping contract
+// directly: an unbound-label FunctionBuilder failure can only be produced by
+// hand, since the checker guarantees valid minipy source never emits one.
+func TestCompiler_lowerFailure(t *testing.T) {
+	for _, tc := range []struct {
+		kind, name, wantPrefix string
+	}{
+		{"function", "f", "build function f:"},
+		{"specialization", "f[i64]", "build specialization f[i64]:"},
+	} {
+		fb := vmtypes.NewFunctionBuilder(&vmtypes.FunctionType{})
+		fb.Br(fb.Label()) // branch to an unbound label -> Build() error
+		c := &Compiler{lower: &lowerState{}}
+
+		f, ok := c.buildFunction(fb, tc.kind, tc.name)
+
+		require.False(t, ok)
+		require.Nil(t, f)
+		require.ErrorContains(t, c.lower.err, tc.wantPrefix)
+		require.NotNil(t, errors.Unwrap(c.lower.err))
+	}
+
+	t.Run("keeps the first failure", func(t *testing.T) {
+		c := &Compiler{lower: &lowerState{}}
+		c.fail(errors.New("first"))
+		c.fail(errors.New("second"))
+		require.EqualError(t, c.lower.err, "first")
+	})
+
+	t.Run("shares failure through child compiler copies", func(t *testing.T) {
+		c := &Compiler{lower: &lowerState{}}
+		child := *c
+		child.fail(errors.New("boom"))
+		require.True(t, c.failed())
+		require.EqualError(t, c.lower.err, "boom")
 	})
 }

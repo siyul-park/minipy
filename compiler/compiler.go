@@ -69,6 +69,15 @@ type Compiler struct {
 	excepts    []int
 	next       int
 	boxed      map[*local]bool
+	lower      *lowerState
+}
+
+// lowerState holds the first function-assembly failure recorded while lowering.
+// Compiler copies made for nested function/specialization bodies (child := *c)
+// share the same *lowerState, so a failure in a child reaches the parent
+// Compile call.
+type lowerState struct {
+	err error
 }
 
 // config holds compile-time options.
@@ -232,6 +241,9 @@ func (c *Compiler) Compile() (*program.Program, error) {
 	b := program.NewBuilder()
 	c.init(b, chk, native)
 	c.module(entry)
+	if err := c.lower.err; err != nil {
+		return nil, err
+	}
 	b.Globals(c.globalTable()...)
 
 	prog, err := b.Build()
@@ -290,29 +302,61 @@ func (c *Compiler) init(b *program.Builder, check *checker, native *nativeRuntim
 	c.excepts = nil
 	c.next = len(check.globals)
 	c.boxed = map[*local]bool{}
+	c.lower = &lowerState{}
+}
+
+// fail records err as the lowering failure if none has been recorded yet.
+// Only the first failure is kept.
+func (c *Compiler) fail(err error) {
+	if c.lower.err == nil {
+		c.lower.err = err
+	}
+}
+
+// failed reports whether a lowering failure has already been recorded.
+func (c *Compiler) failed() bool {
+	return c.lower.err != nil
 }
 
 func (c *Compiler) emit(op instr.Opcode, operands ...uint64) {
+	if c.failed() {
+		return
+	}
 	c.code.emit(op, operands...)
 }
 
 func (c *Compiler) label() instr.Label {
+	if c.failed() {
+		return 0
+	}
 	return c.code.label()
 }
 
 func (c *Compiler) bind(l instr.Label) {
+	if c.failed() {
+		return
+	}
 	c.code.bind(l)
 }
 
 func (c *Compiler) br(l instr.Label) {
+	if c.failed() {
+		return
+	}
 	c.code.br(l)
 }
 
 func (c *Compiler) brIf(l instr.Label) {
+	if c.failed() {
+		return
+	}
 	c.code.brIf(l)
 }
 
 func (c *Compiler) tryRegion(start, end, catch instr.Label, depth int) {
+	if c.failed() {
+		return
+	}
 	c.code.try(start, end, catch, depth)
 }
 
@@ -357,12 +401,18 @@ func (c *Compiler) globalTable() []vmtypes.Type {
 // landing instruction — branch targets must stay within the code (analysis
 // rejects a jump to len(code)).
 func (c *Compiler) module(mod *moduleInfo) {
+	if c.failed() {
+		return
+	}
 	c.buildCallSpecs(c.callSpec)
 	c.emitModule(mod)
 	c.emit(instr.NOP)
 }
 
 func (c *Compiler) emitModule(mod *moduleInfo) {
+	if c.failed() {
+		return
+	}
 	if mod == nil || mod.emitted || mod.native {
 		return
 	}
@@ -375,6 +425,9 @@ func (c *Compiler) emitModule(mod *moduleInfo) {
 
 // block lowers a statement sequence (a module body or a compound block).
 func (c *Compiler) block(body []ast.Stmt) {
+	if c.failed() {
+		return
+	}
 	for _, s := range body {
 		c.stmt(s)
 		if iff, ok := s.(*ast.If); ok && len(iff.Orelse) == 0 && blockReturns(iff.Body) {
@@ -1605,14 +1658,30 @@ func (c *Compiler) emitFunctionDecorators(slots []int) {
 	}
 }
 
+// buildFunction finalizes fb, recording rather than panicking on an assembly
+// failure (unbound label, branch-offset overflow). kind is "function" or
+// "specialization"; name identifies the failing function in the wrapped error.
+func (c *Compiler) buildFunction(fb *vmtypes.FunctionBuilder, kind, name string) (*vmtypes.Function, bool) {
+	f, err := fb.Build()
+	if err != nil {
+		c.fail(fmt.Errorf("build %s %s: %w", kind, name, err))
+		return nil, false
+	}
+	return f, true
+}
+
 // buildSpec compiles one specialization to a function constant, recording its
 // index on the instance. Specializations are top-level and capture nothing.
 func (c *Compiler) buildSpec(spec *specialization) {
-	if spec == nil || spec.emitted || spec.emitting {
+	if c.failed() || spec == nil || spec.emitted || spec.emitting {
 		return
 	}
 	spec.emitting = true
+	defer func() { spec.emitting = false }()
 	c.buildCallSpecs(spec.calls)
+	if c.failed() {
+		return
+	}
 
 	info := spec.info
 	fb := vmtypes.NewFunctionBuilder(&vmtypes.FunctionType{
@@ -1640,13 +1709,12 @@ func (c *Compiler) buildSpec(spec *specialization) {
 		c.next = child.next
 	}
 
-	f, err := fb.Build()
-	if err != nil {
-		panic(err)
+	f, ok := c.buildFunction(fb, "specialization", spec.key)
+	if !ok {
+		return
 	}
 	info.constIdx = c.prog.Const(f)
 	spec.emitted = true
-	spec.emitting = false
 }
 
 func (c *Compiler) buildCallSpecs(calls map[*ast.CallExpr]*specialization) {
@@ -1663,6 +1731,9 @@ func (c *Compiler) function(n *ast.Function) *function {
 }
 
 func (c *Compiler) funcValue(info *function, body []ast.Stmt) {
+	if c.failed() {
+		return
+	}
 	fb := vmtypes.NewFunctionBuilder(&vmtypes.FunctionType{
 		Params:  vmParams(info),
 		Returns: vmReturns(info.result),
@@ -1686,9 +1757,9 @@ func (c *Compiler) funcValue(info *function, body []ast.Stmt) {
 		c.next = child.next
 	}
 
-	function, err := fb.Build()
-	if err != nil {
-		panic(err)
+	function, ok := c.buildFunction(fb, "function", info.name)
+	if !ok {
+		return
 	}
 	for _, name := range info.capOrder {
 		cap := info.captures[name]
@@ -1818,6 +1889,9 @@ func vmReturns(t types.Type) []vmtypes.Type {
 
 // expr lowers an expression, leaving exactly one value on the stack.
 func (c *Compiler) expr(n ast.Expr) {
+	if c.failed() {
+		return
+	}
 	switch x := n.(type) {
 	case *ast.IntLit:
 		c.emit(instr.I64_CONST, uint64(x.Value))
