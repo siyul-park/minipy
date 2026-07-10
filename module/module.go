@@ -60,8 +60,6 @@ type Emitter interface {
 	Expr(ast.Expr)
 	// Type returns the recorded type of an expression.
 	Type(ast.Expr) types.Type
-	// ConstGet pushes a constant value.
-	ConstGet(v vmtypes.Value)
 	// TypeIndex interns a runtime type and returns its index.
 	TypeIndex(t types.Type) uint64
 	// CallHost emits a call to a value-returning host function.

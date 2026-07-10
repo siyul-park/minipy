@@ -217,6 +217,27 @@ func newChecker(loaders ...*loader) *checker {
 	return c
 }
 
+// checker adapts to module.Checker so native modules can drive type-checking
+// without depending on compiler internals.
+var _ module.Checker = (*checker)(nil)
+
+// Check type-checks a sub-expression and returns its type.
+func (c *checker) Check(e ast.Expr) types.Type { return c.expr(e) }
+
+// Type returns the already-recorded type of an expression.
+func (c *checker) Type(e ast.Expr) types.Type { return c.types[e] }
+
+// SetType records the resolved type of an expression.
+func (c *checker) SetType(e ast.Expr, t types.Type) { c.types[e] = t }
+
+// ResolveType interprets an expression as a type annotation.
+func (c *checker) ResolveType(e ast.Expr) types.Type { return c.resolveType(e) }
+
+// Error reports a static error.
+func (c *checker) Error(pos token.Pos, code token.Code, format string, args ...any) {
+	c.errs.Add(pos, code, format, args...)
+}
+
 func (f *function) addParam(p parameter) {
 	if f.paramIndex == nil {
 		f.paramIndex = map[string]int{}

@@ -1433,6 +1433,35 @@ with Ctx("a") as a, Ctx("b") as b:
 		require.Error(t, err)
 		require.ErrorContains(t, err, "read source")
 	})
+
+	t.Run("Compile is repeatable for a nested specialized function with a native call", func(t *testing.T) {
+		src := "def identity(x):\n" +
+			"    return x\n" +
+			"def report() -> None:\n" +
+			"    print(str(identity(3)))\n" +
+			"    print(identity(\"hi\"))\n" +
+			"report()\n"
+		var buf bytes.Buffer
+		c := New(strings.NewReader(src), WithOutput(&buf))
+
+		first, err := c.Compile()
+		require.NoError(t, err)
+		vm1 := interp.New(first)
+		defer vm1.Close()
+		require.NoError(t, vm1.Run(context.Background()))
+		firstOut := buf.String()
+		buf.Reset()
+
+		second, err := c.Compile()
+		require.NoError(t, err)
+		vm2 := interp.New(second)
+		defer vm2.Close()
+		require.NoError(t, vm2.Run(context.Background()))
+		secondOut := buf.String()
+
+		require.Equal(t, "3\nhi\n", firstOut)
+		require.Equal(t, firstOut, secondOut)
+	})
 }
 
 func TestGeneratorYieldFrom(t *testing.T) {
@@ -1798,12 +1827,12 @@ func TestCompileErrors(t *testing.T) {
 		"@dataclass\nclass Point:\n    x: int\np: Point = Point(1)\nprint(p.missing())\n":      token.UnsupportedFeature,
 		"class Point:\n    x: int\n    def __init__(self, x: int) -> int:\n        return x\n": token.TypeMismatch,
 		// class special methods (__len__ / __getitem__ / __setitem__)
-		"class C:\n    def __init__(self) -> None:\n        pass\n    def __len__(self) -> str:\n        return \"x\"\n":                                                token.TypeMismatch,
-		"class C:\n    def __init__(self) -> None:\n        pass\n    def __getitem__(self) -> int:\n        return 0\n":                                              token.ArityMismatch,
-		"class C:\n    def __init__(self) -> None:\n        pass\n    def __setitem__(self, i: int, v: int) -> int:\n        return 0\n":                               token.TypeMismatch,
-		"class C:\n    def __init__(self) -> None:\n        pass\nc: C = C()\nprint(str(c[0]))\n":                                                                     token.NotIndexable,
-		"class C:\n    def __init__(self) -> None:\n        pass\nc: C = C()\nc[0] = 1\n":                                                                            token.NotIndexable,
-		"class C:\n    def __init__(self) -> None:\n        pass\n    def __getitem__(self, i: int) -> int:\n        return i\nc: C = C()\nprint(str(c[\"x\"]))\n":     token.TypeMismatch,
+		"class C:\n    def __init__(self) -> None:\n        pass\n    def __len__(self) -> str:\n        return \"x\"\n":                                           token.TypeMismatch,
+		"class C:\n    def __init__(self) -> None:\n        pass\n    def __getitem__(self) -> int:\n        return 0\n":                                           token.ArityMismatch,
+		"class C:\n    def __init__(self) -> None:\n        pass\n    def __setitem__(self, i: int, v: int) -> int:\n        return 0\n":                           token.TypeMismatch,
+		"class C:\n    def __init__(self) -> None:\n        pass\nc: C = C()\nprint(str(c[0]))\n":                                                                  token.NotIndexable,
+		"class C:\n    def __init__(self) -> None:\n        pass\nc: C = C()\nc[0] = 1\n":                                                                          token.NotIndexable,
+		"class C:\n    def __init__(self) -> None:\n        pass\n    def __getitem__(self, i: int) -> int:\n        return i\nc: C = C()\nprint(str(c[\"x\"]))\n": token.TypeMismatch,
 		// M9: del, assert, match
 		"n: int = 1\ndel n\nprint(str(n))\n": token.UseBeforeDefinition,
 		"assert 1\n":                         token.TypeMismatch,
@@ -2041,28 +2070,35 @@ func TestCompiler_lowerFailure(t *testing.T) {
 	} {
 		fb := vmtypes.NewFunctionBuilder(&vmtypes.FunctionType{})
 		fb.Br(fb.Label()) // branch to an unbound label -> Build() error
-		c := &Compiler{lower: &lowerState{}}
+		c := &lowerer{}
 
 		f, ok := c.buildFunction(fb, tc.kind, tc.name)
 
 		require.False(t, ok)
 		require.Nil(t, f)
-		require.ErrorContains(t, c.lower.err, tc.wantPrefix)
-		require.NotNil(t, errors.Unwrap(c.lower.err))
+		require.ErrorContains(t, c.err, tc.wantPrefix)
+		require.NotNil(t, errors.Unwrap(c.err))
 	}
 
 	t.Run("keeps the first failure", func(t *testing.T) {
-		c := &Compiler{lower: &lowerState{}}
+		c := &lowerer{}
 		c.fail(errors.New("first"))
 		c.fail(errors.New("second"))
-		require.EqualError(t, c.lower.err, "first")
+		require.EqualError(t, c.err, "first")
 	})
 
-	t.Run("shares failure through child compiler copies", func(t *testing.T) {
-		c := &Compiler{lower: &lowerState{}}
-		child := *c
+	t.Run("adopts a child's failure and temp high-water mark", func(t *testing.T) {
+		c := &lowerer{next: 3}
+		child := c.child(target{}, &function{}, nil, nil, nil)
 		child.fail(errors.New("boom"))
+		child.tmp()
+		child.tmp()
+
+		require.False(t, c.failed())
+		c.adopt(child)
+
 		require.True(t, c.failed())
-		require.EqualError(t, c.lower.err, "boom")
+		require.EqualError(t, c.err, "boom")
+		require.Equal(t, child.next, c.next)
 	})
 }

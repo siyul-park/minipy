@@ -92,6 +92,11 @@ type nativeRuntime struct {
 	out     io.Writer
 }
 
+// nativeRuntime adapts to module.Runtime so native modules can produce
+// runtime values (host functions bound to the program's output) without
+// depending on compiler internals.
+var _ module.Runtime = (*nativeRuntime)(nil)
+
 func newLoader(reg *module.Registry, paths []searchEntry) *loader {
 	if reg == nil {
 		reg = defaultRegistry()
@@ -114,6 +119,9 @@ func newNativeRuntime(reg *module.Registry, out io.Writer) *nativeRuntime {
 	rt.modules = reg.Values(rt)
 	return rt
 }
+
+// Out returns the writer bound to native symbols' runtime values.
+func (rt *nativeRuntime) Out() io.Writer { return rt.out }
 
 func (ld *loader) loadEntry(mod *ast.Module) (*moduleInfo, map[string]*moduleInfo) {
 	entry := &moduleInfo{
