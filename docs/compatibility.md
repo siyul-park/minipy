@@ -131,7 +131,7 @@ full CPython compatibility.
 | Calls | ✅ | Direct minipy calls support args, kwargs, defaults, `*tuple`, `*args`, `**kwargs` parameters. |
 | Dynamic `**kwargs` call unpack | ⏳ | Parsed, rejected. |
 | Keyword/star native calls | ⏳ | Rejected for native/builtin method/dynamic callable paths. |
-| Attribute access | ◐ | Classes/modules supported; arbitrary object attributes out of scope. |
+| Attribute access | ◐ | Classes/modules supported; arbitrary object attributes out of scope. Literal-only `getattr`/`hasattr` support declared class fields. |
 | Indexing | ✅ | Lists, dicts, strings, constant tuple indexes. |
 | Slicing | ✅ | Lists and strings. |
 | Slice assignment/deletion | ◐ | `list[T]` contiguous slices only; omitted step or literal `1`; replacement length must match. |
@@ -169,7 +169,7 @@ full CPython compatibility.
 | Arbitrary precision int | ❌ | Uses signed 64-bit. |
 | Complex | ❌ | No runtime type. |
 | Bytes | ❌ | No runtime type. |
-| General Python object model | ❌ | No descriptors, metaclasses, MRO, dynamic attributes. |
+| General Python object model | ❌ | No descriptors, metaclasses, MRO, dynamic attributes, or runtime namespace dictionaries. |
 
 ## Builtins and Modules
 
@@ -179,6 +179,7 @@ full CPython compatibility.
 | `ord`, `chr` | ✅ | Unicode codepoint conversion; static `str->int` / `int->str`; `ValueError` for invalid inputs. `chr` rejects surrogate codepoints (`0xD800..0xDFFF`), diverging from CPython. |
 | `range`, `iter`, `next` | ✅ | Iterator paths. |
 | `enumerate`, `zip` | ✅ | List-based eager helpers. |
+| `getattr`, `hasattr` | ◐ | Concrete class instances and literal declared field names only; no methods, dynamic strings, defaults, or runtime lookup. |
 | `isinstance` | ✅ | Type/class checks and narrowing support. |
 | Builtin exceptions | ✅ | Seeded class hierarchy. |
 | `operator` module | ✅ | Native functions for syntax operator semantics. |
