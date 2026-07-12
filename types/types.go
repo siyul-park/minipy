@@ -88,14 +88,6 @@ type Union struct {
 	Members []Type
 }
 
-// TypeVar is an inference placeholder used by the whole-program solver while it
-// resolves the types of unannotated bindings. It must be resolved to a concrete
-// type, union, or Any before code generation; reaching VM() is a bug.
-type TypeVar struct {
-	ID    int
-	Bound Type
-}
-
 // primitive is the shared representation for scalar source types.
 type primitive struct {
 	name string
@@ -260,11 +252,6 @@ func NewUnion(members ...Type) Type {
 	return &Union{Members: uniq}
 }
 
-// newTypeVar returns a fresh inference type variable with the given id.
-func newTypeVar(id int) *TypeVar {
-	return &TypeVar{ID: id}
-}
-
 // isUnion reports whether t is a union and returns it.
 func isUnion(t Type) (*Union, bool) {
 	u, ok := t.(*Union)
@@ -291,20 +278,6 @@ func Erase(t Type) Type {
 	default:
 		return t
 	}
-}
-
-// isOptional reports whether t is a union that includes None (i.e. Optional).
-func isOptional(t Type) bool {
-	u, ok := isUnion(t)
-	if !ok {
-		return false
-	}
-	for _, m := range u.Members {
-		if Equal(m, None) {
-			return true
-		}
-	}
-	return false
 }
 
 // Join returns the least upper bound of a and b in the lattice
@@ -420,7 +393,18 @@ func Printable(t Type) bool {
 		return true
 	}
 	switch v := t.(type) {
-	case *List, *Dict, *Set, *Tuple:
+	case *List:
+		return Printable(v.Elem)
+	case *Dict:
+		return Printable(v.Key) && Printable(v.Value)
+	case *Set:
+		return Printable(v.Elem)
+	case *Tuple:
+		for _, elem := range v.Elems {
+			if !Printable(elem) {
+				return false
+			}
+		}
 		return true
 	case *Literal:
 		return Printable(v.Base)
@@ -777,28 +761,6 @@ func (t *Union) Equal(o Type) bool {
 	return true
 }
 
-func (t *TypeVar) String() string {
-	if t == nil {
-		return "<invalid>"
-	}
-	if t.Bound != nil {
-		return t.Bound.String()
-	}
-	return "?"
-}
-func (t *TypeVar) IsNumeric() bool {
-	return t != nil && t.Bound != nil && t.Bound.IsNumeric()
-}
-func (*TypeVar) VM() vmtypes.Type {
-	// A type variable must be resolved before code generation; reaching here is
-	// a compiler bug, so report the invalid (nil) VM type rather than guessing.
-	return nil
-}
-func (t *TypeVar) Equal(o Type) bool {
-	other, ok := o.(*TypeVar)
-	return ok && t != nil && other != nil && t.ID == other.ID
-}
-
 // sealed restricts Type implementations to this package.
 func (primitive) sealed() {}
 func (*List) sealed()     {}
@@ -811,4 +773,3 @@ func (*Callable) sealed() {}
 func (*Literal) sealed()  {}
 func (*Module) sealed()   {}
 func (*Union) sealed()    {}
-func (*TypeVar) sealed()  {}

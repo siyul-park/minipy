@@ -2,6 +2,8 @@ package hostabi
 
 import vmtypes "github.com/siyul-park/minivm/types"
 
+var _ vmtypes.Traceable = (*Iterator)(nil)
+
 // Iterator is an eager, in-memory iterator value over a fixed slice of boxed
 // values. It implements the minivm coroutine/iterator protocol used by list and
 // string iteration and by the builtin iter().
@@ -52,8 +54,7 @@ func (it *Iterator) Next() bool {
 	return true
 }
 
-func (it *Iterator) Refs() []vmtypes.Ref {
-	var refs []vmtypes.Ref
+func (it *Iterator) Refs(refs []vmtypes.Ref) []vmtypes.Ref {
 	for _, v := range it.values {
 		if v.Kind() == vmtypes.KindRef && v.Ref() != 0 {
 			refs = append(refs, vmtypes.Ref(v.Ref()))

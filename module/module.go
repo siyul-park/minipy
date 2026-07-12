@@ -35,6 +35,12 @@ type Symbol interface {
 	Name() string
 	Check(c Checker, args []ast.Expr, pos token.Pos) types.Type
 	Emit(e Emitter, args []ast.Expr)
+}
+
+// RuntimeSymbol is a Symbol that also provides a runtime value, usually a host
+// function. Inline-only symbols implement Symbol alone.
+type RuntimeSymbol interface {
+	Symbol
 	Value(r Runtime) vmtypes.Value
 }
 
@@ -42,8 +48,6 @@ type Symbol interface {
 type Checker interface {
 	// Check type-checks a sub-expression and returns its type.
 	Check(ast.Expr) types.Type
-	// Type returns the already-recorded type of an expression.
-	Type(ast.Expr) types.Type
 	// SetType records the resolved type of an expression.
 	SetType(ast.Expr, types.Type)
 	// ResolveType interprets an expression as a type annotation.
@@ -68,6 +72,8 @@ type Emitter interface {
 	CallHostVoid(fn *interp.HostFunction)
 	// Host returns the runtime-bound host function for a native symbol.
 	Host(module, symbol string) *interp.HostFunction
+	// Runtime returns the runtime resources bound to this compilation.
+	Runtime() Runtime
 	// Label allocates a fresh branch target.
 	Label() instr.Label
 	// Bind binds a label to the current position.

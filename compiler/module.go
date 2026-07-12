@@ -37,8 +37,6 @@ type moduleInfo struct {
 	native    bool
 	fsys      fs.FS
 	dir       string
-	checked   bool
-	emitted   bool
 	loading   bool
 }
 
@@ -50,7 +48,6 @@ type binding struct {
 type loader struct {
 	reg     *module.Registry
 	finders []finder
-	dist    *distIndex
 	paths   []searchEntry
 	modules map[string]*moduleInfo
 	stack   []string
@@ -106,7 +103,6 @@ func newLoader(reg *module.Registry, paths []searchEntry) *loader {
 		paths:   append([]searchEntry(nil), paths...),
 		modules: map[string]*moduleInfo{},
 	}
-	ld.dist = newDistIndex(ld.paths)
 	// Finder chain, the importlib sys.meta_path analog: native modules resolve
 	// first (CPython's BuiltinImporter), then source modules on the search roots
 	// (PathFinder), so native modules win over same-named files.
@@ -123,7 +119,7 @@ func newNativeRuntime(reg *module.Registry, out io.Writer) *nativeRuntime {
 // Out returns the writer bound to native symbols' runtime values.
 func (rt *nativeRuntime) Out() io.Writer { return rt.out }
 
-func (ld *loader) loadEntry(mod *ast.Module) (*moduleInfo, map[string]*moduleInfo) {
+func (ld *loader) loadEntry(mod *ast.Module) *moduleInfo {
 	entry := &moduleInfo{
 		name:     "__main__",
 		path:     "<stdin>",
@@ -132,7 +128,7 @@ func (ld *loader) loadEntry(mod *ast.Module) (*moduleInfo, map[string]*moduleInf
 	}
 	ld.modules[entry.name] = entry
 	ld.scan(entry)
-	return entry, ld.modules
+	return entry
 }
 
 func (ld *loader) loadModule(name string, pos token.Pos) *moduleInfo {
@@ -239,12 +235,6 @@ func (ld *loader) loadBuiltin(name string) *moduleInfo {
 	}
 	ld.modules[name] = m
 	return m
-}
-
-// distribution returns the installed distribution providing a top-level import
-// name, or false if none is installed on the search roots.
-func (ld *loader) distribution(importName string) (*distribution, bool) {
-	return ld.dist.distribution(importName)
 }
 
 func (ld *loader) scan(m *moduleInfo) {

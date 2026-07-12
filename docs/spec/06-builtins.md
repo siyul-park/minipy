@@ -19,7 +19,7 @@ symbols lower to bytecode or host helpers, read `05-codegen.md`.
 | builtin functions and exceptions | `builtins/` |
 | operator functions and shared operator rules | `operator/` |
 | host ABI helper values | `hostabi/` |
-| checker integration | `compiler/check.go` |
+| checker integration | `compiler/check*.go` |
 | lowering integration | `compiler/compiler.go` |
 
 ## Summary
@@ -43,6 +43,10 @@ A native module symbol carries:
 - a type-check function
 - a bytecode emit function
 - an optional runtime value/host function
+
+Applications extend the default registry with `compiler.WithNativeModules`.
+Module and symbol names must be unique; duplicate registration is a configuration
+error. Symbols that lower entirely to bytecode do not need a runtime value.
 
 Native functions are callable by name, but they are not first-class values. A
 program cannot store `print` in a variable and call it later.
@@ -72,6 +76,8 @@ Implemented builtin functions:
 | `isinstance(x, T)` | 2 | value plus supported type/class expression | `bool` |
 | `ord(s)` | 1 | `str` (exactly one codepoint) | `int` |
 | `chr(n)` | 1 | `int` (`0 <= n <= 0x10FFFF`) | `str` |
+
+`print` and `str` render supported lists, tuples, dictionaries, and sets recursively using Python-style delimiters and quoted nested strings.
 
 `len(obj)` on a class instance that defines `__len__(self) -> int` rewrites to a
 direct `obj.__len__()` call and raises `ValueError` at runtime when the returned

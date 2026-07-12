@@ -61,6 +61,16 @@ func WithModules(fsys fs.FS) Option {
 	return func(c *config) { c.paths = append(c.paths, searchEntry{fsys: fsys, dir: "."}) }
 }
 
+// WithNativeModules adds native modules to the default registry. The builtins,
+// operator, and typing modules remain registered; duplicate module names panic
+// as a configuration error.
+func WithNativeModules(modules ...module.Module) Option {
+	return func(c *config) {
+		registered := append(c.reg.Modules(), modules...)
+		c.reg = module.NewRegistry(registered, module.WithFallback(c.reg.FallbackName()))
+	}
+}
+
 // WithModulePath adds directories inside fsys as ordered module search roots.
 func WithModulePath(fsys fs.FS, dirs ...string) Option {
 	return func(c *config) {
@@ -102,14 +112,14 @@ func (c *Compiler) Compile() (*program.Program, error) {
 	}
 	mod, parseErr := parser.Parse(bytes.NewReader(c.src))
 
-	entry, chk, err := c.check(mod, parseErr)
+	checked, err := c.check(mod, parseErr)
 	if err != nil {
 		return nil, err
 	}
 
 	native := newNativeRuntime(c.config.reg, c.config.out)
-	low := newLowerer(program.NewBuilder(), chk, native)
-	prog, err := low.lower(entry)
+	low := newLowerer(program.NewBuilder(), checked, native)
+	prog, err := low.lower()
 	if err != nil {
 		return nil, err
 	}
@@ -137,9 +147,9 @@ func defaultConfig() config {
 // check loads and type-checks mod (merging any parser diagnostics), returning
 // the entry module and checker on success or a token.ErrorList describing
 // every parse, load, and type error found.
-func (c *Compiler) check(mod *ast.Module, parseErr error) (*moduleInfo, *checker, error) {
+func (c *Compiler) check(mod *ast.Module, parseErr error) (*checkedProgram, error) {
 	ld := newLoader(c.config.reg, c.config.paths)
-	entry, _ := ld.loadEntry(mod)
+	entry := ld.loadEntry(mod)
 	chk := newChecker(ld)
 	chk.checkProgram(entry)
 
@@ -150,7 +160,7 @@ func (c *Compiler) check(mod *ast.Module, parseErr error) (*moduleInfo, *checker
 	errs = append(errs, ld.errs...)
 	errs = append(errs, chk.errs...)
 	if err := errs.Err(); err != nil {
-		return nil, nil, err
+		return nil, err
 	}
-	return entry, chk, nil
+	return chk.result(entry), nil
 }

@@ -16,10 +16,10 @@ how checked forms lower to bytecode, read `05-codegen.md`.
 
 | Concern | Source |
 |---|---|
-| checker implementation | `compiler/check.go` |
+| checker implementation | `compiler/check*.go` |
 | type lattice | `types/types.go`, `docs/spec/02-types.md` |
 | AST shapes | `ast/ast.go` |
-| parser shape | `parser/parser.go`, `docs/spec/03-grammar.md` |
+| parser shape | `parser/*.go`, `docs/spec/03-grammar.md` |
 | native call rules | `builtins/`, `operator/`, `docs/spec/06-builtins.md` |
 | diagnostics | `token/error.go` |
 

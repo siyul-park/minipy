@@ -28,8 +28,8 @@ type spec struct {
 // New builds the builtins native module.
 func New() module.Module {
 	return module.NewNative(Name,
-		callSymbol("print", spec{1, 1, printable(types.None)}, emitPrint, func(r module.Runtime) vmtypes.Value { return printHost(r.Out()) }),
-		callSymbol("str", spec{1, 1, printable(types.Str)}, emitStr, valueHost(strHost)),
+		callSymbol("print", spec{1, 1, printable(types.None)}, emitPrint, nil),
+		callSymbol("str", spec{1, 1, printable(types.Str)}, emitStr, nil),
 		callSymbol("int", spec{1, 1, convert(types.Int)}, emitInt, valueHost(intParseHost)),
 		callSymbol("float", spec{1, 1, convert(types.Float)}, emitFloat, valueHost(floatParseHost)),
 		callSymbol("bool", spec{1, 1, boolResult}, emitBool, nil),
@@ -42,9 +42,9 @@ func New() module.Module {
 		callSymbol("next", spec{1, 1, nextResult}, emitNext, nil),
 		callSymbol("ord", spec{1, 1, ordResult}, emitOrd, valueHost(ordHost)),
 		callSymbol("chr", spec{1, 1, chrResult}, emitChr, valueHost(chrHost)),
-		module.NewSymbol(Name, "getattr", getAttrCheck, emitGetAttr, nil),
-		module.NewSymbol(Name, "hasattr", hasAttrCheck, emitHasAttr, nil),
-		module.NewSymbol(Name, "isinstance", isInstanceCheck, emitIsInstance, nil),
+		module.NewSymbol("getattr", getAttrCheck, emitGetAttr, nil),
+		module.NewSymbol("hasattr", hasAttrCheck, emitHasAttr, nil),
+		module.NewSymbol("isinstance", isInstanceCheck, emitIsInstance, nil),
 	)
 }
 
@@ -52,7 +52,7 @@ func callSymbol(name string, sp spec, emit module.EmitFunc, value module.ValueFu
 	check := func(c module.Checker, args []ast.Expr, pos token.Pos) types.Type {
 		return checkBuiltin(c, name, sp, args, pos)
 	}
-	return module.NewSymbol(Name, name, check, emit, value)
+	return module.NewSymbol(name, check, emit, value)
 }
 
 func checkBuiltin(c module.Checker, name string, sp spec, args []ast.Expr, pos token.Pos) types.Type {

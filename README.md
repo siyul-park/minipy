@@ -22,8 +22,9 @@ without preserving CPython's fully dynamic object model.
 - **Python-like syntax with explicit limits** — functions, classes, imports,
   control flow, exceptions, pattern matching, comprehensions, slicing, f-strings,
   generators, and common builtins are supported within the documented subset.
-- **Native module model** — `builtins` and `operator` are registered native
-  modules, and source modules load through explicit `fs.FS` search roots.
+- **Native module model** — `builtins`, `operator`, and `typing` are registered
+  native modules; applications can add modules with `compiler.WithNativeModules`,
+  and source modules load through explicit `fs.FS` search roots.
 
 ## Current status
 
@@ -51,7 +52,7 @@ the compiler.
 | `module/` | Native/source module registry contracts. |
 | `builtins/` | Native `builtins` module and exception hierarchy. |
 | `operator/` | Native `operator` module and shared operator semantics. |
-| `hostabi/` | Runtime host ABI helpers and iterator/coroutine bridge types. |
+| `hostabi/` | Checked host ABI conversion, formatting, and iterator bridge helpers. |
 | `compiler/` | Loader, checker, lowerer, optimizer/verification pipeline, and import support. |
 | `cmd/minipy/` | CLI and REPL. |
 | `docs/README.md` | Documentation map and ownership guide. |

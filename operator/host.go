@@ -16,7 +16,14 @@ func powInt() *interp.HostFunction {
 	return interp.NewHostFunction(
 		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeI64, vmtypes.TypeI64}, Returns: []vmtypes.Type{vmtypes.TypeI64}},
 		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
-			base, exp := hostabi.LoadI64(i, params[0]), hostabi.LoadI64(i, params[1])
+			base, err := hostabi.LoadI64(i, params[0])
+			if err != nil {
+				return nil, err
+			}
+			exp, err := hostabi.LoadI64(i, params[1])
+			if err != nil {
+				return nil, err
+			}
 			if exp < 0 {
 				return nil, fmt.Errorf("int ** negative exponent is not an int")
 			}
@@ -48,9 +55,16 @@ func listContains(elem, receiver types.Type) *interp.HostFunction {
 	return interp.NewHostFunction(
 		&vmtypes.FunctionType{Params: []vmtypes.Type{receiver.VM(), elem.VM()}, Returns: []vmtypes.Type{vmtypes.TypeI1}},
 		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
-			_, elems := hostabi.ArrayElems(i, params[0])
+			_, elems, err := hostabi.ArrayElems(i, params[0])
+			if err != nil {
+				return nil, err
+			}
 			for _, e := range elems {
-				if hostabi.BoxedEqual(i, e, params[1]) {
+				equal, err := hostabi.BoxedEqual(i, e, params[1])
+				if err != nil {
+					return nil, err
+				}
+				if equal {
 					return []vmtypes.Boxed{vmtypes.BoxI1(true)}, nil
 				}
 			}
@@ -63,7 +77,15 @@ func strContains() *interp.HostFunction {
 	return interp.NewHostFunction(
 		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeString, vmtypes.TypeString}, Returns: []vmtypes.Type{vmtypes.TypeI1}},
 		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
-			if strings.Contains(hostabi.LoadStr(i, params[0]), hostabi.LoadStr(i, params[1])) {
+			haystack, err := hostabi.LoadStr(i, params[0])
+			if err != nil {
+				return nil, err
+			}
+			needle, err := hostabi.LoadStr(i, params[1])
+			if err != nil {
+				return nil, err
+			}
+			if strings.Contains(haystack, needle) {
 				return []vmtypes.Boxed{vmtypes.BoxI1(true)}, nil
 			}
 			return []vmtypes.Boxed{vmtypes.BoxI1(false)}, nil
@@ -78,8 +100,14 @@ func bytesConcat() *interp.HostFunction {
 	return interp.NewHostFunction(
 		&vmtypes.FunctionType{Params: []vmtypes.Type{types.Bytes.VM(), types.Bytes.VM()}, Returns: []vmtypes.Type{types.Bytes.VM()}},
 		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
-			_, a := hostabi.ArrayElems(i, params[0])
-			_, b := hostabi.ArrayElems(i, params[1])
+			_, a, err := hostabi.ArrayElems(i, params[0])
+			if err != nil {
+				return nil, err
+			}
+			_, b, err := hostabi.ArrayElems(i, params[1])
+			if err != nil {
+				return nil, err
+			}
 			elems := make([]vmtypes.Boxed, 0, len(a)+len(b))
 			elems = append(elems, a...)
 			elems = append(elems, b...)
@@ -89,25 +117,35 @@ func bytesConcat() *interp.HostFunction {
 }
 
 // bytesContentEqual compares two byte arrays by length and content.
-func bytesContentEqual(i *interp.Interpreter, a, b vmtypes.Boxed) bool {
-	_, ae := hostabi.ArrayElems(i, a)
-	_, be := hostabi.ArrayElems(i, b)
+func bytesContentEqual(i *interp.Interpreter, a, b vmtypes.Boxed) (bool, error) {
+	_, ae, err := hostabi.ArrayElems(i, a)
+	if err != nil {
+		return false, err
+	}
+	_, be, err := hostabi.ArrayElems(i, b)
+	if err != nil {
+		return false, err
+	}
 	if len(ae) != len(be) {
-		return false
+		return false, nil
 	}
 	for idx := range ae {
 		if ae[idx].I32() != be[idx].I32() {
-			return false
+			return false, nil
 		}
 	}
-	return true
+	return true, nil
 }
 
 func bytesEqual() *interp.HostFunction {
 	return interp.NewHostFunction(
 		&vmtypes.FunctionType{Params: []vmtypes.Type{types.Bytes.VM(), types.Bytes.VM()}, Returns: []vmtypes.Type{vmtypes.TypeI1}},
 		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
-			return []vmtypes.Boxed{vmtypes.BoxI1(bytesContentEqual(i, params[0], params[1]))}, nil
+			equal, err := bytesContentEqual(i, params[0], params[1])
+			if err != nil {
+				return nil, err
+			}
+			return []vmtypes.Boxed{vmtypes.BoxI1(equal)}, nil
 		},
 	)
 }
@@ -118,8 +156,14 @@ func bytesContains() *interp.HostFunction {
 	return interp.NewHostFunction(
 		&vmtypes.FunctionType{Params: []vmtypes.Type{types.Bytes.VM(), types.Int.VM()}, Returns: []vmtypes.Type{vmtypes.TypeI1}},
 		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
-			_, elems := hostabi.ArrayElems(i, params[0])
-			needle := hostabi.LoadI64(i, params[1])
+			_, elems, err := hostabi.ArrayElems(i, params[0])
+			if err != nil {
+				return nil, err
+			}
+			needle, err := hostabi.LoadI64(i, params[1])
+			if err != nil {
+				return nil, err
+			}
 			for _, e := range elems {
 				if int64(uint8(e.I32())) == needle {
 					return []vmtypes.Boxed{vmtypes.BoxI1(true)}, nil

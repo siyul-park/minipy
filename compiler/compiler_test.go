@@ -67,7 +67,7 @@ func count(t *testing.T, err error, want token.Code) int {
 func checkOnly(t *testing.T, src string) token.ErrorList {
 	t.Helper()
 	mod, parseErr := parser.Parse(strings.NewReader(src))
-	chk := newChecker()
+	chk := newChecker(nil)
 	chk.check(mod)
 	var errs token.ErrorList
 	if pl, ok := parseErr.(token.ErrorList); ok {
@@ -856,8 +856,36 @@ print(b)
 		require.Equal(t, "True\nTrue\nTrue\ne\n1\nTrue\n5\nz\n", run(t, src))
 	})
 
+	t.Run("typed dict host methods", func(t *testing.T) {
+		src := `b: dict[bool, int] = {True: 1, False: 2}
+print(str(b.get(True)))
+print(str(len(b.values())))
+bm: dict[bool, int] = {**b, True: 4}
+print(str(bm.get(True)))
+f: dict[float, int] = {1.5: 3}
+print(str(f.get(1.5)))
+print(str(len(f.items())))
+s: dict[str, int] = {"x": 5}
+sm: dict[str, int] = {**s, "y": 6}
+print(str(sm.get("y")))
+`
+		require.Equal(t, "1\n2\n4\n3\n1\n6\n", run(t, src))
+	})
+
+	t.Run("print and str render containers", func(t *testing.T) {
+		src := `print([1, 2])
+print([True, False])
+print((1, "x"))
+print({"b": 2, "a": 1})
+print({2, 1})
+print(str(["x"]))
+`
+		require.Equal(t, "[1, 2]\n[True, False]\n(1, 'x')\n{'a': 1, 'b': 2}\n{1, 2}\n['x']\n", run(t, src))
+	})
+
 	t.Run("str methods enumerate zip and f-string", func(t *testing.T) {
-		src := `print("A,B".lower())
+		src := `print("a,b".upper())
+print("A,B".lower())
 print("a,b".split(",")[1])
 print("-".join(["x", "y"]))
 print(str("abc".find("b")))
@@ -868,7 +896,7 @@ for a, b in zip([1, 2], [3, 4]):
 x: int = 7
 print(f"x={x:03d}")
 `
-		require.Equal(t, "a,b\nb\nx-y\n1\n04\n15\n4\n6\nx=007\n", run(t, src))
+		require.Equal(t, "A,B\na,b\nb\nx-y\n1\n04\n15\n4\n6\nx=007\n", run(t, src))
 	})
 
 	t.Run("pass is a no-op", func(t *testing.T) {
@@ -1826,6 +1854,13 @@ func TestCompileFString(t *testing.T) {
 			{"x: int = 42\nprint(f\"{x:<6}|\")", "42    |\n"},
 			{"x: int = 42\nprint(f\"{x:^6}|\")", "  42  |\n"},
 			{"x: int = 255\nprint(f\"{x:x}\")", "ff\n"},
+			{"x: int = 10\nprint(f\"{x:b} {x:o}\")", "1010 12\n"},
+			{"x: int = 255\nprint(f\"{x:X}\")", "FF\n"},
+			{"x: int = 65\nprint(f\"{x:c}\")", "A\n"},
+			{"x: int = 42\nprint(f\"{x:+06d}\")", "+00042\n"},
+			{"x: float = 12.5\nprint(f\"{x:e} {x:E} {x:g} {x:G}\")", "1.250000e+01 1.250000E+01 12.5 12.5\n"},
+			{"x: float = 0.125\nprint(f\"{x:.1%}\")", "12.5%\n"},
+			{"s: str = \"x\"\nprint(f\"{s:*^6}\")", "**x***\n"},
 			{"x: float = 1.5\nprint(f\"{x:+.2f}\")", "+1.50\n"},
 			{"x: int = 5\nprint(f\"{{literal}} {x}\")", "{literal} 5\n"},
 		}
@@ -2056,12 +2091,12 @@ func TestCompileErrors(t *testing.T) {
 		"chr()\n":             token.ArityMismatch,
 		// bytes: immutability and typing rejections
 		"b: bytes = b\"ab\"\nb[0] = 1\n":                token.NotIndexable,
-		"b: bytes = b\"ab\"\nb[0:1] = b\"x\"\n":          token.NotIndexable,
-		"b: bytes = b\"ab\"\ndel b[0]\n":                 token.UnsupportedFeature,
-		"b: bytes = b\"ab\"\nprint(str(b < b\"cd\"))\n":  token.NotComparable,
-		"b: bytes = b\"ab\"\nprint(str(b + \"x\"))\n":    token.TypeMismatch,
-		"b: bytes = b\"ab\"\nprint(str(\"x\" in b))\n":   token.NotIterable,
-		"b: bytes = b\"ab\"\nprint(str(b[\"x\"]))\n":     token.TypeMismatch,
+		"b: bytes = b\"ab\"\nb[0:1] = b\"x\"\n":         token.NotIndexable,
+		"b: bytes = b\"ab\"\ndel b[0]\n":                token.UnsupportedFeature,
+		"b: bytes = b\"ab\"\nprint(str(b < b\"cd\"))\n": token.NotComparable,
+		"b: bytes = b\"ab\"\nprint(str(b + \"x\"))\n":   token.TypeMismatch,
+		"b: bytes = b\"ab\"\nprint(str(\"x\" in b))\n":  token.NotIterable,
+		"b: bytes = b\"ab\"\nprint(str(b[\"x\"]))\n":    token.TypeMismatch,
 	}
 	for src, want := range cases {
 		_, err := Compile(strings.NewReader(src), WithOutput(&bytes.Buffer{}))

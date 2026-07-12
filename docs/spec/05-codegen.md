@@ -16,7 +16,7 @@ For checker rules that must reject invalid forms before lowering, read
 | Concern | Source |
 |---|---|
 | compile pipeline | `compiler/compiler.go` |
-| checker metadata consumed by lowering | `compiler/check.go` |
+| checker metadata consumed by lowering | `compiler/check*.go` |
 | minivm builder usage | `compiler/` |
 | native symbol emitters | `builtins/`, `operator/` |
 | host ABI helpers | `hostabi/` |
@@ -60,6 +60,7 @@ Compile options:
 - `WithOptimizationLevel(optimize.Level)` selects the minivm optimizer level
 - `WithModules(fs.FS)` adds a module search root
 - `WithModulePath(fs.FS, dirs...)` adds ordered search roots inside an `fs.FS`
+- `WithNativeModules(module.Module...)` adds native modules to the default registry
 
 ## Modules and Imports
 
@@ -69,7 +70,9 @@ from a `module.Registry`. The default registry includes `builtins` and `operator
 Imported source modules are checked before lowering. During lowering, imported
 module bodies are emitted before their imported symbols are used. Native modules
 are not emitted as source bytecode; their symbols lower through their registered
-emit callbacks and host values.
+emit callbacks and optional host values. Host ABI loaders return errors for an
+invalid boxed kind, null reference, stale heap reference, or incompatible heap
+value; native functions propagate those errors instead of substituting defaults.
 
 Module/class/native-function objects are compile-time names, not first-class
 runtime values.
@@ -109,9 +112,10 @@ Tuple/starred unpacking lowers by reading the source tuple/list fields or list
 positions and storing each target. Starred rest targets build a list of the
 remaining homogeneous elements.
 
-Subscript assignment supports list and dict item writes. Slice assignment is not
-lowered; bytes item/slice assignment is rejected by the checker before reaching
-the lowerer (bytes is immutable). Attribute assignment lowers to struct field writes. When the receiver is
+Subscript assignment supports list and dict item writes. List slice assignment
+replaces an equal-length selected range and raises `ValueError` on a length
+mismatch. Bytes item/slice assignment is rejected by the checker before reaching
+the lowerer because bytes is immutable. Attribute assignment lowers to struct field writes. When the receiver is
 a class instance with `__setitem__`, `obj[i] = v` lowers to a direct
 `obj.__setitem__(i, v)` method call and drops the returned `None`.
 

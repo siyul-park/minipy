@@ -14,10 +14,10 @@ forms, read `04-static-semantics.md`.
 
 | Concern | Source |
 |---|---|
-| parser implementation | `parser/parser.go` |
+| parser implementation | `parser/*.go` |
 | AST node shapes | `ast/ast.go` |
 | token spelling | `token/token.go`, `docs/spec/01-lexical.md` |
-| checker restrictions | `compiler/check.go`, `docs/spec/04-static-semantics.md` |
+| checker restrictions | `compiler/check*.go`, `docs/spec/04-static-semantics.md` |
 
 ## Notation
 

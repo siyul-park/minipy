@@ -93,7 +93,7 @@ const (
 	PIPE          // |
 	CARET         // ^
 	TILDE         // ~
-	AT            // @ (lexed, rejected at parse)
+	AT            // @
 	LT            // <
 	GT            // >
 	LE            // <=
@@ -113,7 +113,7 @@ const (
 	LSHIFTEQ      // <<=
 	RSHIFTEQ      // >>=
 	DOUBLESTAREQ  // **=
-	WALRUS        // := (lexed, rejected at parse)
+	WALRUS        // :=
 	ARROW         // ->
 	LPAREN        // (
 	RPAREN        // )

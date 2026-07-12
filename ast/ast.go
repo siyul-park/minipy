@@ -117,25 +117,22 @@ type Param struct {
 // Function is `def Name(Params) -> Returns: Body`.
 type Function struct {
 	Base
-	Name           *Name
-	Params         []*Param
-	Returns        Expr
-	Decorators     []*Name
-	DecoratorExprs []Expr
-	Body           []Stmt
-	Async          bool
+	Name       *Name
+	Params     []*Param
+	Returns    Expr
+	Decorators []Expr
+	Body       []Stmt
+	Async      bool
 }
 
 // Class is `class Name[(Base)]: Body`.
 type Class struct {
 	Base
-	Name           *Name
-	BaseClass      *Name
-	Bases          []Expr
-	Keywords       []*Keyword
-	Decorators     []*Name
-	DecoratorExprs []Expr
-	Body           []Stmt
+	Name       *Name
+	Bases      []Expr
+	Keywords   []*Keyword
+	Decorators []Expr
+	Body       []Stmt
 }
 
 // Keyword is a keyword argument in a call or class header. Name is empty for

@@ -17,8 +17,8 @@ read `05-codegen.md`.
 | Concern | Source |
 |---|---|
 | source type definitions | `types/types.go` |
-| annotation parsing | `parser/parser.go` |
-| type resolution and inference | `compiler/check.go` |
+| annotation parsing | `parser/*.go` |
+| type resolution and inference | `compiler/check*.go` |
 | runtime mapping | `compiler/compiler.go`, `docs/spec/05-codegen.md` |
 | builtin/operator type rules | `builtins/`, `operator/`, `docs/spec/06-builtins.md` |
 

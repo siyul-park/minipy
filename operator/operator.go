@@ -19,74 +19,55 @@ import (
 // Name is the module's registered name.
 const Name = "operator"
 
-var binaryOps = map[string]token.Type{
-	"add":      token.PLUS,
-	"sub":      token.MINUS,
-	"mul":      token.STAR,
-	"truediv":  token.SLASH,
-	"floordiv": token.DOUBLESLASH,
-	"mod":      token.PERCENT,
-	"pow":      token.DOUBLESTAR,
-	"and_":     token.AMP,
-	"or_":      token.PIPE,
-	"xor":      token.CARET,
-	"lshift":   token.LSHIFT,
-	"rshift":   token.RSHIFT,
+type namedOp struct {
+	name string
+	op   token.Type
 }
 
-var compareOps = map[string]token.Type{
-	"eq": token.EQ,
-	"ne": token.NE,
-	"lt": token.LT,
-	"le": token.LE,
-	"gt": token.GT,
-	"ge": token.GE,
+var binaryOps = []namedOp{
+	{"add", token.PLUS},
+	{"sub", token.MINUS},
+	{"mul", token.STAR},
+	{"truediv", token.SLASH},
+	{"floordiv", token.DOUBLESLASH},
+	{"mod", token.PERCENT},
+	{"pow", token.DOUBLESTAR},
+	{"and_", token.AMP},
+	{"or_", token.PIPE},
+	{"xor", token.CARET},
+	{"lshift", token.LSHIFT},
+	{"rshift", token.RSHIFT},
 }
 
-var unaryOps = map[string]token.Type{
-	"neg":    token.MINUS,
-	"pos":    token.PLUS,
-	"invert": token.TILDE,
+var compareOps = []namedOp{
+	{"eq", token.EQ},
+	{"ne", token.NE},
+	{"lt", token.LT},
+	{"le", token.LE},
+	{"gt", token.GT},
+	{"ge", token.GE},
+}
+
+var unaryOps = []namedOp{
+	{"neg", token.MINUS},
+	{"pos", token.PLUS},
+	{"invert", token.TILDE},
 }
 
 // New builds the operator native module.
 func New() module.Module {
 	var symbols []module.Symbol
-	for name, op := range binaryOps {
-		symbols = append(symbols, binarySymbol(name, op))
+	for _, op := range binaryOps {
+		symbols = append(symbols, binarySymbol(op.name, op.op))
 	}
-	for name, op := range compareOps {
-		symbols = append(symbols, compareSymbol(name, op))
+	for _, op := range compareOps {
+		symbols = append(symbols, compareSymbol(op.name, op.op))
 	}
-	for name, op := range unaryOps {
-		symbols = append(symbols, unarySymbol(name, op))
+	for _, op := range unaryOps {
+		symbols = append(symbols, unarySymbol(op.name, op.op))
 	}
 	symbols = append(symbols, containsSymbol(), notSymbol(), absSymbol(), truthSymbol())
 	return module.NewNative(Name, symbols...)
-}
-
-// BinaryName maps a binary operator token to its operator-module symbol name.
-func BinaryName(op token.Type) (string, bool) { return lookup(binaryOps, op) }
-
-// CompareName maps a comparison operator token to its symbol name.
-func CompareName(op token.Type) (string, bool) { return lookup(compareOps, op) }
-
-// UnaryName maps a unary operator token to its symbol name.
-func UnaryName(op token.Type) (string, bool) { return lookup(unaryOps, op) }
-
-// ContainsName is the symbol name for membership testing.
-func ContainsName() string { return "contains" }
-
-// NotName is the symbol name for logical negation.
-func NotName() string { return "not_" }
-
-func lookup(m map[string]token.Type, op token.Type) (string, bool) {
-	for name, o := range m {
-		if o == op {
-			return name, true
-		}
-	}
-	return "", false
 }
 
 func arity(c module.Checker, name string, want, got int, pos token.Pos, args []ast.Expr) {
@@ -97,7 +78,7 @@ func arity(c module.Checker, name string, want, got int, pos token.Pos, args []a
 }
 
 func binarySymbol(name string, op token.Type) module.Symbol {
-	return module.NewSymbol(Name, name,
+	return module.NewSymbol(name,
 		func(c module.Checker, args []ast.Expr, pos token.Pos) types.Type {
 			if len(args) != 2 {
 				arity(c, name, 2, len(args), pos, args)
@@ -115,7 +96,7 @@ func binarySymbol(name string, op token.Type) module.Symbol {
 }
 
 func compareSymbol(name string, op token.Type) module.Symbol {
-	return module.NewSymbol(Name, name,
+	return module.NewSymbol(name,
 		func(c module.Checker, args []ast.Expr, pos token.Pos) types.Type {
 			if len(args) != 2 {
 				arity(c, name, 2, len(args), pos, args)
@@ -134,7 +115,7 @@ func compareSymbol(name string, op token.Type) module.Symbol {
 }
 
 func unarySymbol(name string, op token.Type) module.Symbol {
-	return module.NewSymbol(Name, name,
+	return module.NewSymbol(name,
 		func(c module.Checker, args []ast.Expr, pos token.Pos) types.Type {
 			if len(args) != 1 {
 				arity(c, name, 1, len(args), pos, args)
@@ -148,7 +129,7 @@ func unarySymbol(name string, op token.Type) module.Symbol {
 }
 
 func containsSymbol() module.Symbol {
-	return module.NewSymbol(Name, "contains",
+	return module.NewSymbol("contains",
 		func(c module.Checker, args []ast.Expr, pos token.Pos) types.Type {
 			if len(args) != 2 {
 				arity(c, "contains", 2, len(args), pos, args)
@@ -169,7 +150,7 @@ func containsSymbol() module.Symbol {
 }
 
 func notSymbol() module.Symbol {
-	return module.NewSymbol(Name, "not_",
+	return module.NewSymbol("not_",
 		func(c module.Checker, args []ast.Expr, pos token.Pos) types.Type {
 			if len(args) != 1 {
 				arity(c, "not_", 1, len(args), pos, args)
@@ -188,7 +169,7 @@ func notSymbol() module.Symbol {
 }
 
 func absSymbol() module.Symbol {
-	return module.NewSymbol(Name, "abs",
+	return module.NewSymbol("abs",
 		func(c module.Checker, args []ast.Expr, pos token.Pos) types.Type {
 			if len(args) != 1 {
 				arity(c, "abs", 1, len(args), pos, args)
@@ -209,7 +190,7 @@ func absSymbol() module.Symbol {
 }
 
 func truthSymbol() module.Symbol {
-	return module.NewSymbol(Name, "truth",
+	return module.NewSymbol("truth",
 		func(c module.Checker, args []ast.Expr, pos token.Pos) types.Type {
 			if len(args) != 1 {
 				arity(c, "truth", 1, len(args), pos, args)

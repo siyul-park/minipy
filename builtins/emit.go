@@ -4,6 +4,7 @@ import (
 	"math"
 
 	"github.com/siyul-park/minipy/ast"
+	"github.com/siyul-park/minipy/hostabi"
 	"github.com/siyul-park/minipy/module"
 	"github.com/siyul-park/minipy/types"
 
@@ -11,14 +12,16 @@ import (
 )
 
 func emitPrint(e module.Emitter, args []ast.Expr) {
-	e.Expr(args[0])
-	e.CallHostVoid(e.Host(Name, "print"))
+	arg := args[0]
+	e.Expr(arg)
+	e.CallHostVoid(hostabi.PrintFunction(e.Runtime().Out(), e.Type(arg)))
 }
 
 func emitStr(e module.Emitter, args []ast.Expr) {
-	e.Expr(args[0])
-	if e.Type(args[0]) != types.Str {
-		e.CallHost(e.Host(Name, "str"))
+	arg := args[0]
+	e.Expr(arg)
+	if e.Type(arg) != types.Str {
+		e.CallHost(hostabi.StringFunction(e.Type(arg)))
 	}
 }
 

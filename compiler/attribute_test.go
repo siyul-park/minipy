@@ -60,11 +60,11 @@ func TestCompileAttributeBuiltins(t *testing.T) {
 
 func TestCheckAttributeBuiltins(t *testing.T) {
 	cases := map[string]token.Code{
-		"@dataclass\nclass C:\n    x: int\nc: C = C(1)\ngetattr(c)\n":                                  token.ArityMismatch,
+		"@dataclass\nclass C:\n    x: int\nc: C = C(1)\ngetattr(c)\n":                          token.ArityMismatch,
 		"@dataclass\nclass C:\n    x: int\nc: C = C(1)\nname: str = \"x\"\ngetattr(c, name)\n": token.UnsupportedFeature,
-		"getattr(1, \"x\")\n":                                                                     token.UnsupportedFeature,
-		"@dataclass\nclass C:\n    x: int\nc: C = C(1)\ngetattr(c, \"missing\")\n":              token.UndefinedName,
-		"class C:\n    def f(self) -> int:\n        return 1\nc: C = C()\ngetattr(c, \"f\")\n":      token.UndefinedName,
+		"getattr(1, \"x\")\n": token.UnsupportedFeature,
+		"@dataclass\nclass C:\n    x: int\nc: C = C(1)\ngetattr(c, \"missing\")\n":             token.UndefinedName,
+		"class C:\n    def f(self) -> int:\n        return 1\nc: C = C()\ngetattr(c, \"f\")\n": token.UndefinedName,
 		"hasattr(ValueError(\"x\"), \"__classid\")\n":                                          token.UnsupportedFeature,
 	}
 	for src, want := range cases {

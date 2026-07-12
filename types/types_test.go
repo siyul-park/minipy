@@ -118,6 +118,9 @@ func TestPrintable(t *testing.T) {
 	require.False(t, Printable(Invalid))
 	require.False(t, Printable(NewClass("Point", nil)))
 	require.False(t, Printable(NewUnion(Int, NewClass("Point", nil))))
+	require.False(t, Printable(NewList(NewClass("Point", nil))))
+	require.False(t, Printable(NewDict(Str, NewClass("Point", nil))))
+	require.False(t, Printable(NewTuple(Int, NewClass("Point", nil))))
 }
 
 func TestBytes(t *testing.T) {
@@ -178,13 +181,6 @@ func TestNewUnion(t *testing.T) {
 	})
 }
 
-func TestOptional(t *testing.T) {
-	opt := NewUnion(Int, None)
-	require.True(t, isOptional(opt))
-	require.False(t, isOptional(NewUnion(Int, Str)))
-	require.Equal(t, Int, Without(opt, None)) // unwrap Optional[int] -> int
-}
-
 func TestJoin(t *testing.T) {
 	require.Equal(t, Int, Join(Int, Int))
 	require.Equal(t, Int, Join(Invalid, Int)) // Invalid is bottom
@@ -209,21 +205,4 @@ func TestAssignable_Union(t *testing.T) {
 	require.False(t, AssignableTo(Any, Int)) // Any needs a cast
 	require.True(t, Printable(u))
 	require.True(t, Printable(Any))
-}
-
-func TestTypeVar(t *testing.T) {
-	a := newTypeVar(1)
-	b := newTypeVar(1)
-	c := newTypeVar(2)
-	require.True(t, a.Equal(b)) // same id
-	require.False(t, a.Equal(c))
-	require.False(t, a.Equal(nil))
-	require.Equal(t, "?", a.String())
-	require.False(t, a.IsNumeric())
-	a.Bound = Int
-	require.Equal(t, "int", a.String())
-	require.True(t, a.IsNumeric())
-	require.Equal(t, "<invalid>", (*TypeVar)(nil).String())
-	require.False(t, (*TypeVar)(nil).IsNumeric())
-	require.Nil(t, a.VM()) // must be resolved before codegen
 }

@@ -3,7 +3,7 @@ module github.com/siyul-park/minipy
 go 1.26.2
 
 require (
-	github.com/siyul-park/minivm v0.0.0-20260709111810-8ca10c3b9f34
+	github.com/siyul-park/minivm v0.0.0-20260712021405-75648984eabc
 	github.com/spf13/cobra v1.10.2
 	github.com/stretchr/testify v1.11.1
 )

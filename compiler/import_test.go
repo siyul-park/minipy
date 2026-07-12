@@ -7,7 +7,11 @@ import (
 	"testing"
 	"testing/fstest"
 
+	"github.com/siyul-park/minipy/ast"
+	"github.com/siyul-park/minipy/module"
 	"github.com/siyul-park/minipy/token"
+	"github.com/siyul-park/minipy/types"
+	"github.com/siyul-park/minivm/instr"
 	"github.com/siyul-park/minivm/interp"
 	"github.com/stretchr/testify/require"
 )
@@ -26,6 +30,23 @@ func runFS(t *testing.T, src string, fsys fstest.MapFS, opts ...Option) string {
 }
 
 func TestCompileImports(t *testing.T) {
+	t.Run("custom native module", func(t *testing.T) {
+		answer := module.NewSymbol("answer",
+			func(c module.Checker, args []ast.Expr, pos token.Pos) types.Type {
+				if len(args) != 0 {
+					c.Error(pos, token.ArityMismatch, "answer() takes no arguments")
+					return types.Invalid
+				}
+				return types.Int
+			},
+			func(e module.Emitter, _ []ast.Expr) { e.Emit(instr.I64_CONST, 42) },
+			nil,
+		)
+		native := module.NewNative("custom", answer)
+		src := "from custom import answer\nprint(str(answer()))\n"
+		require.Equal(t, "42\n", runFS(t, src, fstest.MapFS{}, WithNativeModules(native)))
+	})
+
 	t.Run("import runs module once and exposes globals and functions", func(t *testing.T) {
 		fsys := fstest.MapFS{
 			"a.py": {Data: []byte("print(\"load a\")\nx: int = 2\ndef f() -> None:\n    print(\"call f\")\n")},

@@ -33,7 +33,7 @@ func New() module.Module {
 }
 
 func annotationSymbol(name string) module.Symbol {
-	return module.NewSymbol(Name, name,
+	return module.NewSymbol(name,
 		func(c module.Checker, args []ast.Expr, pos token.Pos) types.Type {
 			for _, arg := range args {
 				c.Check(arg)

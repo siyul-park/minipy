@@ -1,6 +1,7 @@
 package module
 
 import (
+	"fmt"
 	"strings"
 
 	vmtypes "github.com/siyul-park/minivm/types"
@@ -29,10 +30,20 @@ func NewRegistry(modules []Module, opts ...RegistryOption) *Registry {
 		byName:  make(map[string]Module, len(modules)),
 	}
 	for _, m := range modules {
-		r.byName[m.Name()] = m
+		if m == nil {
+			panic("module: nil module")
+		}
+		name := m.Name()
+		if _, exists := r.byName[name]; exists {
+			panic(fmt.Sprintf("module: duplicate module %s", name))
+		}
+		r.byName[name] = m
 	}
 	for _, opt := range opts {
 		opt(r)
+	}
+	if r.fallback != "" && !r.Has(r.fallback) {
+		panic(fmt.Sprintf("module: fallback module %s is not registered", r.fallback))
 	}
 	return r
 }
@@ -92,16 +103,24 @@ func (r *Registry) SymbolByKey(key string) (Symbol, bool) {
 	return r.Symbol(moduleName, name)
 }
 
-// Values materializes every module's runtime symbol values against a runtime,
-// keyed by module then symbol name.
+// Values materializes runtime-backed symbol values against a runtime, keyed by
+// module then symbol name. Inline-only symbols are omitted.
 func (r *Registry) Values(rt Runtime) map[string]map[string]vmtypes.Value {
 	out := make(map[string]map[string]vmtypes.Value, len(r.modules))
 	for _, m := range r.modules {
 		names := m.Names()
 		symbols := make(map[string]vmtypes.Value, len(names))
 		for _, name := range names {
-			if s, ok := m.Symbol(name); ok {
-				symbols[name] = s.Value(rt)
+			symbol, ok := m.Symbol(name)
+			if !ok {
+				continue
+			}
+			runtime, ok := symbol.(RuntimeSymbol)
+			if !ok {
+				continue
+			}
+			if value := runtime.Value(rt); value != nil {
+				symbols[name] = value
 			}
 		}
 		out[m.Name()] = symbols

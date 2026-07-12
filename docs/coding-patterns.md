@@ -561,7 +561,7 @@ Keep dependency direction simple:
 - `token` must not depend on syntax, type, or compiler packages.
 - `lexer` must not depend on `ast`, `parser`, `types`, or `compiler`.
 - `ast` may depend on `token` for positions only.
-- `parser` builds AST nodes and should not perform semantic checks that belong in `compiler/check.go`.
+- `parser` builds AST nodes and should not perform semantic checks that belong in `compiler/check*.go`.
 - `types` may map to minivm runtime types but must not depend on checker or lowerer state.
 - `builtins` and `operator` depend on `module`, `types`, and syntax interfaces; they should not depend on each other.
 - `compiler` is the integration layer and may depend on syntax, types, modules, native modules, host ABI helpers, and minivm.

@@ -332,34 +332,24 @@ func (p *Parser) parseWith() ast.Stmt {
 	return &ast.With{Base: ast.Base{Position: pos}, Items: items, Body: body}
 }
 
-// parseDecorated parses one or more bare-name decorators followed by a function
-// or class definition. Decorator expressions beyond bare names are deferred.
+// parseDecorated parses one or more decorators followed by a function or class
+// definition. The checker decides which decorator expressions are supported.
 func (p *Parser) parseDecorated() ast.Stmt {
-	var decorators []*ast.Name
-	var decoratorExprs []ast.Expr
+	var decorators []ast.Expr
 	for p.at(token.AT) {
 		p.advance()
-		expr := p.parseExpression()
-		decoratorExprs = append(decoratorExprs, expr)
-		if name, ok := expr.(*ast.Name); ok {
-			decorators = append(decorators, name)
-		}
+		decorators = append(decorators, p.parseExpression())
 		p.expectLineEnd()
 	}
 	switch p.cur().Type {
 	case token.DEF:
-		fn := p.parseFunction(decorators).(*ast.Function)
-		fn.DecoratorExprs = decoratorExprs
-		return fn
+		return p.parseFunction(decorators)
 	case token.CLASS:
-		cls := p.parseClass(decorators).(*ast.Class)
-		cls.DecoratorExprs = decoratorExprs
-		return cls
+		return p.parseClass(decorators)
 	case token.ASYNC:
 		stmt := p.parseAsyncStatement()
 		if fn, ok := stmt.(*ast.Function); ok {
 			fn.Decorators = decorators
-			fn.DecoratorExprs = decoratorExprs
 		}
 		return stmt
 	default:
@@ -371,7 +361,7 @@ func (p *Parser) parseDecorated() ast.Stmt {
 }
 
 // parseFunction parses `def NAME(params) [-> type]: block`.
-func (p *Parser) parseFunction(decorators []*ast.Name) ast.Stmt {
+func (p *Parser) parseFunction(decorators []ast.Expr) ast.Stmt {
 	pos := p.cur().Pos
 	p.advance() // def
 	nameTok := p.expect(token.NAME)
@@ -476,12 +466,11 @@ func (p *Parser) parseParam(kind ast.ParamKind) *ast.Param {
 }
 
 // parseClass parses `class NAME[(Base)]: class_block`.
-func (p *Parser) parseClass(decorators []*ast.Name) ast.Stmt {
+func (p *Parser) parseClass(decorators []ast.Expr) ast.Stmt {
 	pos := p.cur().Pos
 	p.advance() // class
 	nameTok := p.expect(token.NAME)
 	name := &ast.Name{Base: ast.Base{Position: nameTok.Pos}, Name: nameTok.Literal}
-	var base *ast.Name
 	var bases []ast.Expr
 	var keywords []*ast.Keyword
 	if p.at(token.LPAREN) {
@@ -497,13 +486,7 @@ func (p *Parser) parseClass(decorators []*ast.Name) ast.Stmt {
 				p.advance()
 				keywords = append(keywords, &ast.Keyword{Base: ast.Base{Position: key.Pos}, Value: p.parseExpression()})
 			} else {
-				expr := p.parseExpression()
-				bases = append(bases, expr)
-				if base == nil {
-					if name, ok := expr.(*ast.Name); ok {
-						base = name
-					}
-				}
+				bases = append(bases, p.parseExpression())
 			}
 			if !p.at(token.COMMA) {
 				break
@@ -513,7 +496,7 @@ func (p *Parser) parseClass(decorators []*ast.Name) ast.Stmt {
 		p.expect(token.RPAREN)
 	}
 	body := p.parseClassBlock()
-	return &ast.Class{Base: ast.Base{Position: pos}, Name: name, BaseClass: base, Bases: bases, Keywords: keywords, Decorators: decorators, Body: body}
+	return &ast.Class{Base: ast.Base{Position: pos}, Name: name, Bases: bases, Keywords: keywords, Decorators: decorators, Body: body}
 }
 
 func (p *Parser) parseClassBlock() []ast.Stmt {
@@ -1809,164 +1792,6 @@ func (p *Parser) parseComprehensionClauses() []*ast.Comprehension {
 	return clauses
 }
 
-func (p *Parser) parseFStringParts(s string, pos token.Pos) []ast.FStringPart {
-	var parts []ast.FStringPart
-	var text strings.Builder
-	flush := func() {
-		if text.Len() > 0 {
-			parts = append(parts, &ast.FStringText{Base: ast.Base{Position: pos}, Value: text.String()})
-			text.Reset()
-		}
-	}
-	for i := 0; i < len(s); i++ {
-		switch s[i] {
-		case '{':
-			if i+1 < len(s) && s[i+1] == '{' {
-				text.WriteByte('{')
-				i++
-				continue
-			}
-			flush()
-			body, end, ok := fstringField(s, i+1)
-			if !ok {
-				p.errs.Add(pos, token.SyntaxError, "unterminated f-string replacement field")
-				return parts
-			}
-			parts = append(parts, p.parseFStringField(body, pos))
-			i = end
-		case '}':
-			if i+1 < len(s) && s[i+1] == '}' {
-				text.WriteByte('}')
-				i++
-				continue
-			}
-			p.errs.Add(pos, token.SyntaxError, "single '}' is not allowed in f-string")
-		default:
-			text.WriteByte(s[i])
-		}
-	}
-	flush()
-	return parts
-}
-
-func fstringField(s string, start int) (string, int, bool) {
-	depth := 0
-	for i := start; i < len(s); i++ {
-		switch s[i] {
-		case '{':
-			depth++
-		case '}':
-			if depth == 0 {
-				return s[start:i], i, true
-			}
-			depth--
-		}
-	}
-	return "", len(s), false
-}
-
-func (p *Parser) parseFStringField(body string, pos token.Pos) ast.FStringPart {
-	exprSrc, debug, conv, format := splitFStringField(body)
-	expr, err := parseFStringExpr(exprSrc)
-	if err != nil {
-		p.errs.Add(pos, token.SyntaxError, "invalid f-string expression")
-		expr = &ast.NoneLit{Base: ast.Base{Position: pos}}
-	}
-	var formatParts []ast.FStringPart
-	if format != "" {
-		formatParts = p.parseFStringParts(format, pos)
-	}
-	return &ast.FStringExpr{Base: ast.Base{Position: pos}, Expr: expr, Debug: debug, Conversion: conv, Format: formatParts}
-}
-
-// splitFStringField splits a replacement field body into its expression source,
-// optional debug prefix (`expr=`), conversion rune (s/r/a), and format spec.
-// The scan tracks bracket depth so operators and colons inside the expression
-// (subscripts, walrus, calls) are not mistaken for field separators, and it
-// distinguishes the debug `=` from comparison operators (==, !=, <=, >=, :=).
-func splitFStringField(body string) (expr, debug string, conv rune, format string) {
-	colon, bang, eq := -1, -1, -1
-	depth := 0
-	for i := 0; i < len(body); i++ {
-		switch body[i] {
-		case '(', '[', '{':
-			depth++
-		case ')', ']', '}':
-			depth--
-		case ':':
-			if depth == 0 && colon == -1 && (i+1 >= len(body) || body[i+1] != '=') {
-				colon = i
-			}
-		case '!':
-			if depth == 0 && colon == -1 && i+1 < len(body) && body[i+1] != '=' {
-				bang = i
-			}
-		case '=':
-			if depth == 0 && colon == -1 && bang == -1 && !comparisonEq(body, i) {
-				eq = i
-			}
-		}
-	}
-
-	// The expression ends at the first field separator that follows it.
-	exprEnd := len(body)
-	for _, p := range []int{eq, bang, colon} {
-		if p >= 0 && p < exprEnd {
-			exprEnd = p
-		}
-	}
-	expr = strings.TrimSpace(body[:exprEnd])
-
-	if eq >= 0 {
-		// Debug text is the verbatim source up to the conversion or format
-		// boundary, preserving whitespace around `=` exactly (f"{x = }").
-		debugEnd := len(body)
-		if bang >= 0 {
-			debugEnd = bang
-		} else if colon >= 0 {
-			debugEnd = colon
-		}
-		debug = body[:debugEnd]
-	}
-	if bang >= 0 && bang+1 < len(body) {
-		conv = rune(body[bang+1])
-	}
-	if colon >= 0 {
-		format = body[colon+1:]
-	}
-	return expr, debug, conv, format
-}
-
-// comparisonEq reports whether the `=` at index i is part of a comparison or
-// assignment operator (==, !=, <=, >=, :=) rather than a debug `=`.
-func comparisonEq(body string, i int) bool {
-	if i+1 < len(body) && body[i+1] == '=' {
-		return true
-	}
-	if i > 0 {
-		switch body[i-1] {
-		case '=', '!', '<', '>', ':':
-			return true
-		}
-	}
-	return false
-}
-
-func parseFStringExpr(src string) (ast.Expr, error) {
-	mod, err := Parse(strings.NewReader(src + "\n"))
-	if err != nil {
-		return nil, err
-	}
-	if len(mod.Body) != 1 {
-		return nil, token.ErrorList{}
-	}
-	stmt, ok := mod.Body[0].(*ast.ExprStmt)
-	if !ok {
-		return nil, token.ErrorList{}
-	}
-	return stmt.X, nil
-}
-
 func (p *Parser) requireTarget(target ast.Expr) {
 	switch target.(type) {
 	case *ast.Name, *ast.Subscript, *ast.TupleLit, *ast.Attribute:
@@ -1994,13 +1819,6 @@ func (p *Parser) expectLineEnd() {
 	default:
 		p.errs.Add(p.cur().Pos, token.SyntaxError, "expected end of line, got %s", p.cur().Type)
 		p.skipLine()
-	}
-}
-
-// skipToStmtEnd advances to the next `;`, NEWLINE, or EOF without consuming it.
-func (p *Parser) skipToStmtEnd() {
-	for !p.at(token.SEMICOLON) && !p.at(token.NEWLINE) && !p.at(token.EOF) {
-		p.advance()
 	}
 }
 

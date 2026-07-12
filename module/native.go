@@ -1,6 +1,8 @@
 package module
 
 import (
+	"fmt"
+
 	"github.com/siyul-park/minipy/ast"
 	"github.com/siyul-park/minipy/token"
 	"github.com/siyul-park/minipy/types"
@@ -8,32 +10,32 @@ import (
 	vmtypes "github.com/siyul-park/minivm/types"
 )
 
-// Intrinsic is the runtime value of a native symbol that has no first-class
-// representation: it is inline-lowered or called directly, never used as a
-// value. Its String form is diagnostic only.
-type Intrinsic struct {
-	Name string
-}
-
 // CheckFunc type-checks a native call given its argument expressions.
 type CheckFunc func(c Checker, args []ast.Expr, pos token.Pos) types.Type
 
 // EmitFunc lowers a native call given its argument expressions.
 type EmitFunc func(e Emitter, args []ast.Expr)
 
-// ValueFunc produces the runtime value of a native symbol.
+// ValueFunc produces the optional runtime value of a native symbol.
 type ValueFunc func(r Runtime) vmtypes.Value
 
-// funcSymbol is a Symbol assembled from closures. Native-module packages may use
-// it directly or provide their own Symbol implementations.
+// funcSymbol is a Symbol assembled from type-check and emit callbacks.
 type funcSymbol struct {
 	name  string
 	check CheckFunc
 	emit  EmitFunc
+}
+
+// valueSymbol adds a runtime value to a funcSymbol.
+type valueSymbol struct {
+	*funcSymbol
 	value ValueFunc
 }
 
-var _ Symbol = (*funcSymbol)(nil)
+var (
+	_ Symbol        = (*funcSymbol)(nil)
+	_ RuntimeSymbol = (*valueSymbol)(nil)
+)
 
 // nativeModule is a Module backed by an in-memory symbol table.
 type nativeModule struct {
@@ -44,37 +46,50 @@ type nativeModule struct {
 
 var _ Module = (*nativeModule)(nil)
 
-// NewSymbol builds a Symbol from its type-check, emit, and value behaviors. A nil
-// value defaults to an Intrinsic marker keyed by the qualified symbol name.
-func NewSymbol(module, name string, check CheckFunc, emit EmitFunc, value ValueFunc) Symbol {
-	if value == nil {
-		full := module + "." + name
-		value = func(Runtime) vmtypes.Value { return Intrinsic{Name: full} }
+// NewSymbol builds a Symbol from its type-check, emit, and optional runtime
+// value behaviors.
+func NewSymbol(name string, check CheckFunc, emit EmitFunc, value ValueFunc) Symbol {
+	if name == "" {
+		panic("module: empty symbol name")
 	}
-	return &funcSymbol{name: name, check: check, emit: emit, value: value}
+	if check == nil {
+		panic("module: nil check function for " + name)
+	}
+	if emit == nil {
+		panic("module: nil emit function for " + name)
+	}
+	symbol := &funcSymbol{name: name, check: check, emit: emit}
+	if value == nil {
+		return symbol
+	}
+	return &valueSymbol{funcSymbol: symbol, value: value}
 }
 
-// NewNative builds a native Module from its symbols, preserving their order for
-// deterministic iteration.
+// NewNative builds a native Module from its symbols, preserving registration
+// order. Duplicate names panic because silently replacing extension behavior is
+// a configuration error.
 func NewNative(name string, symbols ...Symbol) Module {
+	if name == "" {
+		panic("module: empty module name")
+	}
 	m := &nativeModule{
 		name:    name,
 		symbols: make(map[string]Symbol, len(symbols)),
 		names:   make([]string, 0, len(symbols)),
 	}
-	for _, s := range symbols {
-		nm := s.Name()
-		if _, ok := m.symbols[nm]; !ok {
-			m.names = append(m.names, nm)
+	for _, symbol := range symbols {
+		if symbol == nil {
+			panic("module: nil symbol in " + name)
 		}
-		m.symbols[nm] = s
+		symbolName := symbol.Name()
+		if _, exists := m.symbols[symbolName]; exists {
+			panic(fmt.Sprintf("module: duplicate symbol %s.%s", name, symbolName))
+		}
+		m.symbols[symbolName] = symbol
+		m.names = append(m.names, symbolName)
 	}
 	return m
 }
-
-func (v Intrinsic) Kind() vmtypes.Kind { return vmtypes.KindRef }
-func (v Intrinsic) Type() vmtypes.Type { return vmtypes.TypeRef }
-func (v Intrinsic) String() string     { return "<native " + v.Name + ">" }
 
 func (s *funcSymbol) Name() string { return s.name }
 
@@ -84,7 +99,7 @@ func (s *funcSymbol) Check(c Checker, args []ast.Expr, pos token.Pos) types.Type
 
 func (s *funcSymbol) Emit(e Emitter, args []ast.Expr) { s.emit(e, args) }
 
-func (s *funcSymbol) Value(r Runtime) vmtypes.Value { return s.value(r) }
+func (s *valueSymbol) Value(r Runtime) vmtypes.Value { return s.value(r) }
 
 func (m *nativeModule) Name() string { return m.name }
 

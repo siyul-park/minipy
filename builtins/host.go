@@ -3,7 +3,6 @@ package builtins
 import (
 	"errors"
 	"fmt"
-	"io"
 	"strconv"
 	"strings"
 
@@ -67,30 +66,14 @@ func (it *rangeIterator) Next() bool {
 	return true
 }
 
-func printHost(out io.Writer) *interp.HostFunction {
-	return interp.NewHostFunction(
-		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeRef}, Returns: nil},
-		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
-			fmt.Fprintln(out, hostabi.FormatScalar(i, params[0]))
-			return nil, nil
-		},
-	)
-}
-
-func strHost() *interp.HostFunction {
-	return interp.NewHostFunction(
-		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeRef}, Returns: []vmtypes.Type{vmtypes.TypeString}},
-		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
-			return hostabi.AllocString(i, hostabi.FormatScalar(i, params[0]))
-		},
-	)
-}
-
 func intParseHost() *interp.HostFunction {
 	return interp.NewHostFunction(
 		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeString}, Returns: []vmtypes.Type{vmtypes.TypeI64}},
 		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
-			s := hostabi.LoadStr(i, params[0])
+			s, err := hostabi.LoadStr(i, params[0])
+			if err != nil {
+				return nil, err
+			}
 			n, err := strconv.ParseInt(strings.TrimSpace(s), 10, 64)
 			if err != nil {
 				return nil, fmt.Errorf("invalid literal for int() with base 10: %q", s)
@@ -104,7 +87,10 @@ func floatParseHost() *interp.HostFunction {
 	return interp.NewHostFunction(
 		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeString}, Returns: []vmtypes.Type{vmtypes.TypeF64}},
 		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
-			s := hostabi.LoadStr(i, params[0])
+			s, err := hostabi.LoadStr(i, params[0])
+			if err != nil {
+				return nil, err
+			}
 			f, err := strconv.ParseFloat(strings.TrimSpace(s), 64)
 			if err != nil {
 				return nil, fmt.Errorf("could not convert string to float: %q", s)
@@ -118,11 +104,22 @@ func rangeIterHost() *interp.HostFunction {
 	return interp.NewHostFunction(
 		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeI64, vmtypes.TypeI64, vmtypes.TypeI64}, Returns: []vmtypes.Type{vmtypes.TypeRef}},
 		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
-			step := hostabi.LoadI64(i, params[2])
+			start, err := hostabi.LoadI64(i, params[0])
+			if err != nil {
+				return nil, err
+			}
+			stop, err := hostabi.LoadI64(i, params[1])
+			if err != nil {
+				return nil, err
+			}
+			step, err := hostabi.LoadI64(i, params[2])
+			if err != nil {
+				return nil, err
+			}
 			if step == 0 {
 				return nil, fmt.Errorf("range() step must not be zero")
 			}
-			addr, err := i.Alloc(newRangeIterator(hostabi.LoadI64(i, params[0]), hostabi.LoadI64(i, params[1]), step))
+			addr, err := i.Alloc(newRangeIterator(start, stop, step))
 			if err != nil {
 				return nil, err
 			}
@@ -137,7 +134,10 @@ func enumerateHost(result types.Type) *interp.HostFunction {
 	return interp.NewHostFunction(
 		&vmtypes.FunctionType{Params: []vmtypes.Type{types.NewList(list.Elem.(*types.Tuple).Elems[1]).VM()}, Returns: []vmtypes.Type{result.VM()}},
 		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
-			_, elems := hostabi.ArrayElems(i, params[0])
+			_, elems, err := hostabi.ArrayElems(i, params[0])
+			if err != nil {
+				return nil, err
+			}
 			out := make([]vmtypes.Boxed, 0, len(elems))
 			for idx, elem := range elems {
 				addr, err := i.Alloc(vmtypes.NewStruct(tupleType, vmtypes.BoxI64(int64(idx)), elem))
@@ -158,8 +158,14 @@ func zipHost(result types.Type) *interp.HostFunction {
 	return interp.NewHostFunction(
 		&vmtypes.FunctionType{Params: []vmtypes.Type{types.NewList(tuple.Elems[0]).VM(), types.NewList(tuple.Elems[1]).VM()}, Returns: []vmtypes.Type{result.VM()}},
 		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
-			_, a := hostabi.ArrayElems(i, params[0])
-			_, b := hostabi.ArrayElems(i, params[1])
+			_, a, err := hostabi.ArrayElems(i, params[0])
+			if err != nil {
+				return nil, err
+			}
+			_, b, err := hostabi.ArrayElems(i, params[1])
+			if err != nil {
+				return nil, err
+			}
 			n := len(a)
 			if len(b) < n {
 				n = len(b)
@@ -181,7 +187,10 @@ func listIter(arg types.Type) *interp.HostFunction {
 	return interp.NewHostFunction(
 		&vmtypes.FunctionType{Params: []vmtypes.Type{arg.VM()}, Returns: []vmtypes.Type{vmtypes.TypeRef}},
 		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
-			_, elems := hostabi.ArrayElems(i, params[0])
+			_, elems, err := hostabi.ArrayElems(i, params[0])
+			if err != nil {
+				return nil, err
+			}
 			addr, err := i.Alloc(hostabi.NewIterator("list.iterator", elems))
 			if err != nil {
 				return nil, err
@@ -195,7 +204,11 @@ func ordHost() *interp.HostFunction {
 	return interp.NewHostFunction(
 		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeString}, Returns: []vmtypes.Type{vmtypes.TypeI64}},
 		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
-			runes := []rune(hostabi.LoadStr(i, params[0]))
+			s, err := hostabi.LoadStr(i, params[0])
+			if err != nil {
+				return nil, err
+			}
+			runes := []rune(s)
 			if len(runes) != 1 {
 				return nil, fmt.Errorf("%w: %q has %d codepoints", ErrOrdValue, string(runes), len(runes))
 			}
@@ -208,7 +221,10 @@ func chrHost() *interp.HostFunction {
 	return interp.NewHostFunction(
 		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeI64}, Returns: []vmtypes.Type{vmtypes.TypeString}},
 		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
-			n := hostabi.LoadI64(i, params[0])
+			n, err := hostabi.LoadI64(i, params[0])
+			if err != nil {
+				return nil, err
+			}
 			if n < 0 || n > 0x10FFFF || (n >= 0xD800 && n <= 0xDFFF) {
 				return nil, fmt.Errorf("%w: %d not a Unicode scalar value", ErrChrValue, n)
 			}
@@ -221,7 +237,10 @@ func strIter() *interp.HostFunction {
 	return interp.NewHostFunction(
 		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeString}, Returns: []vmtypes.Type{vmtypes.TypeRef}},
 		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
-			s := hostabi.LoadStr(i, params[0])
+			s, err := hostabi.LoadStr(i, params[0])
+			if err != nil {
+				return nil, err
+			}
 			values := make([]vmtypes.Boxed, 0, len([]rune(s)))
 			for _, r := range s {
 				addr, err := i.Alloc(vmtypes.String(string(r)))
@@ -246,7 +265,10 @@ func bytesIter() *interp.HostFunction {
 	return interp.NewHostFunction(
 		&vmtypes.FunctionType{Params: []vmtypes.Type{types.Bytes.VM()}, Returns: []vmtypes.Type{vmtypes.TypeRef}},
 		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
-			_, elems := hostabi.ArrayElems(i, params[0])
+			_, elems, err := hostabi.ArrayElems(i, params[0])
+			if err != nil {
+				return nil, err
+			}
 			values := make([]vmtypes.Boxed, len(elems))
 			for idx, e := range elems {
 				values[idx] = vmtypes.BoxI64(int64(uint8(e.I32())))

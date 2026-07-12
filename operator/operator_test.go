@@ -1,9 +1,11 @@
 package operator_test
 
 import (
+	"io"
 	"testing"
 
 	"github.com/siyul-park/minipy/ast"
+	"github.com/siyul-park/minipy/module"
 	"github.com/siyul-park/minipy/operator"
 	"github.com/siyul-park/minipy/token"
 	"github.com/siyul-park/minipy/types"
@@ -17,7 +19,6 @@ import (
 type stubChecker struct{ errs int }
 
 func (c *stubChecker) Check(ast.Expr) types.Type       { return types.Invalid }
-func (c *stubChecker) Type(ast.Expr) types.Type        { return types.Invalid }
 func (c *stubChecker) SetType(ast.Expr, types.Type)    {}
 func (c *stubChecker) ResolveType(ast.Expr) types.Type { return types.Invalid }
 func (c *stubChecker) Error(token.Pos, token.Code, string, ...any) {
@@ -26,6 +27,10 @@ func (c *stubChecker) Error(token.Pos, token.Code, string, ...any) {
 
 type stubEmitter struct{ ops []instr.Opcode }
 
+type stubRuntime struct{}
+
+func (stubRuntime) Out() io.Writer { return io.Discard }
+
 func (e *stubEmitter) Emit(op instr.Opcode, _ ...uint64)      { e.ops = append(e.ops, op) }
 func (*stubEmitter) Expr(ast.Expr)                            {}
 func (*stubEmitter) Type(ast.Expr) types.Type                 { return types.Invalid }
@@ -33,6 +38,7 @@ func (*stubEmitter) TypeIndex(types.Type) uint64              { return 0 }
 func (*stubEmitter) CallHost(*interp.HostFunction)            {}
 func (*stubEmitter) CallHostVoid(*interp.HostFunction)        {}
 func (*stubEmitter) Host(string, string) *interp.HostFunction { return nil }
+func (*stubEmitter) Runtime() module.Runtime                  { return stubRuntime{} }
 func (*stubEmitter) Label() instr.Label                       { return 0 }
 func (*stubEmitter) Bind(instr.Label)                         {}
 func (*stubEmitter) Br(instr.Label)                           {}
@@ -130,26 +136,6 @@ func TestContainsType(t *testing.T) {
 	require.False(t, operator.ContainsType(types.Str, types.Bytes))
 }
 
-func TestOperatorNames(t *testing.T) {
-	name, ok := operator.BinaryName(token.PLUS)
-	require.True(t, ok)
-	require.Equal(t, "add", name)
-
-	name, ok = operator.CompareName(token.EQ)
-	require.True(t, ok)
-	require.Equal(t, "eq", name)
-
-	name, ok = operator.UnaryName(token.MINUS)
-	require.True(t, ok)
-	require.Equal(t, "neg", name)
-
-	require.Equal(t, "contains", operator.ContainsName())
-	require.Equal(t, "not_", operator.NotName())
-
-	_, ok = operator.BinaryName(token.EQ)
-	require.False(t, ok)
-}
-
 func TestNewModuleSymbols(t *testing.T) {
 	m := operator.New()
 	require.Equal(t, "operator", m.Name())
@@ -157,8 +143,5 @@ func TestNewModuleSymbols(t *testing.T) {
 		"and_", "or_", "xor", "lshift", "rshift",
 		"eq", "ne", "lt", "le", "gt", "ge",
 		"neg", "pos", "invert", "contains", "not_", "abs", "truth"}
-	for _, name := range want {
-		_, ok := m.Symbol(name)
-		require.Truef(t, ok, "missing symbol %q", name)
-	}
+	require.Equal(t, want, m.Names())
 }

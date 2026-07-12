@@ -17,7 +17,7 @@ that still tokenizes successfully, read `04-static-semantics.md`.
 |---|---|
 | token kinds and spelling | `token/token.go` |
 | scanner behavior | `lexer/lexer.go` |
-| parser use of tokens | `parser/parser.go` |
+| parser use of tokens | `parser/*.go` |
 | grammar built from tokens | `docs/spec/03-grammar.md` |
 | diagnostics | `token/error.go` |
 
