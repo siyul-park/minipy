@@ -38,6 +38,7 @@ before lowering to minivm types.
 | `bool` | truth value, distinct from `int` | `i1`/integer boolean |
 | `str` | immutable string value | minivm string |
 | `bytes` | immutable sequence of bytes (0..255) | minivm `array[i8]` |
+| `EllipsisType` | type of the `...` / `Ellipsis` singleton | zero-field minivm struct |
 | `None` | absence of value | ref/null-like value |
 | `Any` | dynamic fallback top type | dynamic ref |
 | `list[T]` | homogeneous mutable sequence | minivm array of `T` |
@@ -70,11 +71,13 @@ o: int | None
 ref: "Node | None"
 lit: Literal[1, "ready"]
 ann: Annotated[int, "meta"]
+ellipsis: EllipsisType = ...
 ```
 
-`None` is accepted as an annotation atom. `A | B` is normalized into a closed
-union; duplicate members collapse, nested unions flatten, and a single member
-collapses to that member.
+`None` is accepted as an annotation atom. `EllipsisType` names the single
+immutable Ellipsis value and cannot be called or directly constructed. `A | B`
+is normalized into a closed union; duplicate members collapse, nested unions
+flatten, and a single member collapses to that member.
 
 String annotations are parsed as type expressions, not full modules, and then
 resolved through the same annotation resolver. They support forward references
@@ -233,9 +236,10 @@ optional runtime type.
 ## Printable Types
 
 `print`, `str`, and f-string replacement fields accept printable types. Printable
-values include primitives, `None`, homogeneous containers/tuples, printable closed
-unions, and `Any`. User class instances are not generally printable unless
-converted through an implemented path.
+values include `int`, `float`, `bool`, `str`, `None`, homogeneous
+containers/tuples, printable closed unions, and `Any`. `bytes` and
+`EllipsisType` are not printable. User class instances are not generally
+printable unless converted through an implemented path.
 
 ## Related Docs
 

@@ -112,7 +112,13 @@ func Comparable(c module.Checker, op token.Type, left, right types.Type, pos tok
 	if left == types.Invalid || right == types.Invalid {
 		return
 	}
+	leftEllipsis := types.Equal(left, types.Ellipsis)
+	rightEllipsis := types.Equal(right, types.Ellipsis)
 	if op == token.IS || op == token.ISNOT {
+		if leftEllipsis != rightEllipsis {
+			c.Error(pos, token.TypeMismatch, "'%s' requires matching Ellipsis operands, got %s and %s", op, left, right)
+			return
+		}
 		if !identityComparable(left) || !identityComparable(right) {
 			c.Error(pos, token.TypeMismatch, "'%s' requires reference operands, got %s and %s", op, left, right)
 		}
@@ -121,6 +127,12 @@ func Comparable(c module.Checker, op token.Type, left, right types.Type, pos tok
 	if op == token.IN || op == token.NOTIN {
 		if !ContainsType(left, right) {
 			c.Error(pos, token.NotIterable, "'%s' requires container RHS, got %s in %s", op, left, right)
+		}
+		return
+	}
+	if leftEllipsis || rightEllipsis {
+		if leftEllipsis != rightEllipsis || op != token.EQ && op != token.NE {
+			c.Error(pos, token.NotComparable, "'%s' not supported between instances of %s and %s", op, left, right)
 		}
 		return
 	}
@@ -138,7 +150,7 @@ func Comparable(c module.Checker, op token.Type, left, right types.Type, pos tok
 }
 
 func identityComparable(t types.Type) bool {
-	if types.Equal(t, types.None) || types.Equal(t, types.Str) || types.IsAny(t) {
+	if types.Equal(t, types.None) || types.Equal(t, types.Ellipsis) || types.Equal(t, types.Str) || types.IsAny(t) {
 		return true
 	}
 	switch t.(type) {

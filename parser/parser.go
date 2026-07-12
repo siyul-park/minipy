@@ -1609,6 +1609,9 @@ func (p *Parser) parseAtom() ast.Expr {
 	case token.NONE:
 		p.advance()
 		return &ast.NoneLit{Base: ast.Base{Position: t.Pos}}
+	case token.ELLIPSIS:
+		p.advance()
+		return &ast.EllipsisLit{Base: ast.Base{Position: t.Pos}}
 	case token.INT:
 		p.advance()
 		v, _ := strconv.ParseInt(t.Literal, 0, 64)

@@ -240,8 +240,12 @@ subscript       ::= expression | [expression] ':' [expression] [':' [expression]
 atom            ::= NAME | literal | list_display | dict_or_set_display
                   | '(' [expression_or_tuple_or_generator] ')'
 
-literal         ::= INT | FLOAT | STRING | FSTRING | 'True' | 'False' | 'None'
+literal         ::= INT | FLOAT | STRING | FSTRING | 'True' | 'False' | 'None' | '...'
 ```
+
+`...` is represented by `EllipsisLit`. Because subscript contents use the
+ordinary expression grammar, `a[...]` preserves that node for the checker to
+reject with the targeted unsupported-feature diagnostic.
 
 Known minipy function calls support positional arguments, keyword arguments,
 defaults, `*tuple` expansion, `*args`, and `**kwargs` parameters. Dynamic `**expr`

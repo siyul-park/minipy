@@ -116,6 +116,28 @@ func TestLex(t *testing.T) {
 		}, got)
 	})
 
+	t.Run("ellipsis uses longest match", func(t *testing.T) {
+		tests := []struct {
+			src  string
+			want []token.Type
+		}{
+			{"...", []token.Type{token.ELLIPSIS, token.NEWLINE, token.EOF}},
+			{"....", []token.Type{token.ELLIPSIS, token.DOT, token.NEWLINE, token.EOF}},
+			{".", []token.Type{token.DOT, token.NEWLINE, token.EOF}},
+			{".5", []token.Type{token.FLOAT, token.NEWLINE, token.EOF}},
+			{"a.b", []token.Type{token.NAME, token.DOT, token.NAME, token.NEWLINE, token.EOF}},
+		}
+		for _, tt := range tests {
+			tokens, err := lex(tt.src)
+			require.NoErrorf(t, err, "src=%q", tt.src)
+			got := make([]token.Type, len(tokens))
+			for i, next := range tokens {
+				got[i] = next.Type
+			}
+			require.Equalf(t, tt.want, got, "src=%q", tt.src)
+		}
+	})
+
 	t.Run("indentation emits INDENT and DEDENT", func(t *testing.T) {
 		tokens, err := lex("if x:\n    pass\ny\n")
 		require.NoError(t, err)

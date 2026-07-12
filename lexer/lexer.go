@@ -671,7 +671,11 @@ func (l *Lexer) scanOperator() {
 	case ',':
 		emit(token.COMMA, 1)
 	case '.':
-		emit(token.DOT, 1)
+		if la(1) == '.' && la(2) == '.' {
+			emit(token.ELLIPSIS, 3)
+		} else {
+			emit(token.DOT, 1)
+		}
 	case ';':
 		emit(token.SEMICOLON, 1)
 	default:

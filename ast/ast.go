@@ -407,6 +407,11 @@ type NoneLit struct {
 	Base
 }
 
+// EllipsisLit is `...`.
+type EllipsisLit struct {
+	Base
+}
+
 // UnaryExpr is a prefix operation: `+x`, `-x`, `~x`, or `not x`.
 type UnaryExpr struct {
 	Base
@@ -638,6 +643,7 @@ func (*StrLit) exprNode()       {}
 func (*BytesLit) exprNode()     {}
 func (*BoolLit) exprNode()      {}
 func (*NoneLit) exprNode()      {}
+func (*EllipsisLit) exprNode()  {}
 func (*UnaryExpr) exprNode()    {}
 func (*BinaryExpr) exprNode()   {}
 func (*BoolOp) exprNode()       {}

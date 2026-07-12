@@ -12,6 +12,7 @@ func TestType_String(t *testing.T) {
 	require.Equal(t, "float", Float.String())
 	require.Equal(t, "bool", Bool.String())
 	require.Equal(t, "str", Str.String())
+	require.Equal(t, "EllipsisType", Ellipsis.String())
 	require.Equal(t, "None", None.String())
 	require.Equal(t, "list[int]", NewList(Int).String())
 	require.Equal(t, "dict[str, int]", NewDict(Str, Int).String())
@@ -40,6 +41,7 @@ func TestType_IsNumeric(t *testing.T) {
 	require.True(t, Float.IsNumeric())
 	require.False(t, Bool.IsNumeric())
 	require.False(t, Str.IsNumeric())
+	require.False(t, Ellipsis.IsNumeric())
 	require.False(t, NewList(Int).IsNumeric())
 	require.False(t, NewDict(Str, Int).IsNumeric())
 	require.False(t, NewSet(Int).IsNumeric())
@@ -56,6 +58,7 @@ func TestType_VM(t *testing.T) {
 	require.Equal(t, vmtypes.TypeF64, Float.VM())
 	require.Equal(t, vmtypes.TypeI1, Bool.VM())
 	require.Equal(t, vmtypes.TypeString, Str.VM())
+	require.Equal(t, vmtypes.NewStructType(), Ellipsis.VM())
 	require.Equal(t, vmtypes.TypeRef, None.VM())
 	require.IsType(t, &vmtypes.ArrayType{}, NewList(Int).VM())
 	require.IsType(t, &vmtypes.MapType{}, NewDict(Str, Int).VM())
@@ -88,6 +91,8 @@ func TestAssignable(t *testing.T) {
 	require.True(t, AssignableTo(NewClass("Point", nil), NewClass("Point", []Field{{Name: "x", Type: Int}})))
 	require.False(t, AssignableTo(Bool, Int))  // bool is not int
 	require.False(t, AssignableTo(Int, Float)) // no implicit widening
+	require.True(t, AssignableTo(Ellipsis, Ellipsis))
+	require.False(t, AssignableTo(Ellipsis, None))
 	require.False(t, AssignableTo(NewList(Int), NewList(Str)))
 	require.False(t, AssignableTo(NewDict(Str, Int), NewDict(Str, Str)))
 	require.False(t, AssignableTo(NewSet(Int), NewSet(Str)))
@@ -137,7 +142,7 @@ func TestBytes(t *testing.T) {
 
 func TestResolve(t *testing.T) {
 	for name, want := range map[string]Type{
-		"int": Int, "float": Float, "bool": Bool, "str": Str, "bytes": Bytes, "None": None, "Any": Any,
+		"int": Int, "float": Float, "bool": Bool, "str": Str, "bytes": Bytes, "EllipsisType": Ellipsis, "None": None, "Any": Any,
 	} {
 		got, ok := Resolve(name)
 		require.Truef(t, ok, "name=%s", name)

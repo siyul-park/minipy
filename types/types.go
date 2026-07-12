@@ -104,13 +104,14 @@ type primitive struct {
 }
 
 var (
-	Invalid Type = primitive{name: "<invalid>"}
-	Int     Type = primitive{name: "int", vm: vmtypes.TypeI64, num: true}
-	Float   Type = primitive{name: "float", vm: vmtypes.TypeF64, num: true}
-	Bool    Type = primitive{name: "bool", vm: vmtypes.TypeI1}
-	Str     Type = primitive{name: "str", vm: vmtypes.TypeString}
-	Bytes   Type = primitive{name: "bytes", vm: vmtypes.NewArrayType(vmtypes.TypeI8)}
-	None    Type = primitive{name: "None", vm: vmtypes.TypeRef}
+	Invalid  Type = primitive{name: "<invalid>"}
+	Int      Type = primitive{name: "int", vm: vmtypes.TypeI64, num: true}
+	Float    Type = primitive{name: "float", vm: vmtypes.TypeF64, num: true}
+	Bool     Type = primitive{name: "bool", vm: vmtypes.TypeI1}
+	Str      Type = primitive{name: "str", vm: vmtypes.TypeString}
+	Bytes    Type = primitive{name: "bytes", vm: vmtypes.NewArrayType(vmtypes.TypeI8)}
+	Ellipsis Type = primitive{name: "EllipsisType", vm: vmtypes.NewStructType()}
+	None     Type = primitive{name: "None", vm: vmtypes.TypeRef}
 	// Any is the open top of the lattice (⊤) — the gradual fallback used only
 	// when no bounded union fits. It is backed by minivm's dynamic ref type.
 	Any       Type = primitive{name: "Any", vm: vmtypes.TypeRef}
@@ -449,6 +450,8 @@ func Resolve(name string) (Type, bool) {
 		return Str, true
 	case "bytes":
 		return Bytes, true
+	case "EllipsisType":
+		return Ellipsis, true
 	case "None":
 		return None, true
 	case "Any":

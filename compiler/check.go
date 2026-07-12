@@ -3281,6 +3281,8 @@ func (c *checker) typeOf(e ast.Expr, hint types.Type) types.Type {
 		return types.Bytes
 	case *ast.NoneLit:
 		return types.None
+	case *ast.EllipsisLit:
+		return types.Ellipsis
 	case *ast.Name:
 		return c.nameType(n)
 	case *ast.UnaryExpr:
@@ -3468,6 +3470,10 @@ func hashableKey(t types.Type) bool {
 }
 
 func (c *checker) indexResultType(n *ast.Subscript, receiver, index types.Type) types.Type {
+	if types.Equal(index, types.Ellipsis) {
+		c.errs.Add(n.Index.Pos(), token.UnsupportedFeature, "ellipsis subscript is not supported")
+		return types.Invalid
+	}
 	switch t := receiver.(type) {
 	case *types.List:
 		if index != types.Invalid && !types.Equal(index, types.Int) {
@@ -3706,6 +3712,9 @@ func (c *checker) global(n *ast.Name) types.Type {
 	}
 	g, ok := c.globals[res.key]
 	if !ok {
+		if n.Name == "Ellipsis" {
+			return types.Ellipsis
+		}
 		c.errs.Add(n.Pos(), token.UndefinedName, "name %q is not defined", n.Name)
 		return types.Invalid
 	}

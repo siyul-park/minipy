@@ -124,6 +124,7 @@ const (
 	COMMA         // ,
 	COLON         // :
 	DOT           // .
+	ELLIPSIS      // ...
 	SEMICOLON     // ;
 )
 
@@ -222,6 +223,7 @@ var names = map[Type]string{
 	COMMA:         ",",
 	COLON:         ":",
 	DOT:           ".",
+	ELLIPSIS:      "...",
 	SEMICOLON:     ";",
 }
 

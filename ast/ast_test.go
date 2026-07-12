@@ -17,6 +17,7 @@ func TestNodePos(t *testing.T) {
 		&StrLit{Base: Base{Position: pos}},
 		&BoolLit{Base: Base{Position: pos}},
 		&NoneLit{Base: Base{Position: pos}},
+		&EllipsisLit{Base: Base{Position: pos}},
 		&UnaryExpr{Base: Base{Position: pos}},
 		&BinaryExpr{Base: Base{Position: pos}},
 		&BoolOp{Base: Base{Position: pos}},

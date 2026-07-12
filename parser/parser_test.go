@@ -215,6 +215,16 @@ func TestParse(t *testing.T) {
 		require.Equal(t, "ab", mod.Body[0].(*ast.ExprStmt).X.(*ast.BytesLit).Value)
 	})
 
+	t.Run("ellipsis expressions", func(t *testing.T) {
+		mod, err := parse("...\nx = ...\nf(...)\na[...]\n")
+		require.NoError(t, err)
+
+		require.IsType(t, &ast.EllipsisLit{}, mod.Body[0].(*ast.ExprStmt).X)
+		require.IsType(t, &ast.EllipsisLit{}, mod.Body[1].(*ast.Assign).Value)
+		require.IsType(t, &ast.EllipsisLit{}, mod.Body[2].(*ast.ExprStmt).X.(*ast.CallExpr).Args[0])
+		require.IsType(t, &ast.EllipsisLit{}, mod.Body[3].(*ast.ExprStmt).X.(*ast.Subscript).Index)
+	})
+
 	t.Run("semicolon separated statements", func(t *testing.T) {
 		mod, err := parse("a = 1; b = 2\n")
 		require.NoError(t, err)

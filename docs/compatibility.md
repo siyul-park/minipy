@@ -53,6 +53,7 @@ full CPython compatibility.
 | Bytes literals | ◐ | `b`/`B`/`br`/`rb` (case variants), single/double/triple quotes, adjacent-literal concatenation, ASCII-only direct characters, `\xNN` decoded, `\u`/`\U` not decoded, raw backslash preservation; no `bytes()` constructor or `bytearray`. |
 | f-strings | ◐ | Single token plus parser-split parts; conversions `!s`, `!r`, `!a`; one nested format level. |
 | Named Unicode escapes | ❌ | `\N{...}` is not implemented. |
+| Ellipsis token `...` | ✅ | Longest-match delimiter token; `.`, `.5`, and attribute dots are unchanged. |
 
 ## Statements
 
@@ -147,12 +148,14 @@ full CPython compatibility.
 | Async comprehensions | ⏳ | Parsed, rejected. |
 | Await expressions | ⏳ | Parsed, rejected. |
 | F-strings | ◐ | Printable replacement fields, limited conversions/format nesting. |
+| Ellipsis literal/name | ◐ | `...` and unshadowed `Ellipsis` share one singleton; `is`, `is not`, `==`, and `!=` are supported, while ellipsis subscripts are rejected. |
 
 ## Types
 
 | Feature | Status | Notes |
 |---|---:|---|
 | `int`, `float`, `bool`, `str`, `None` | ✅ | Source-level primitive types. |
+| `EllipsisType` | ◐ | Annotation for the Ellipsis singleton; direct construction and `Literal[Ellipsis]` are unsupported. |
 | `Any` | ✅ | Dynamic fallback top type. |
 | `list[T]`, `dict[K, V]`, `set[T]` | ✅ | Homogeneous containers. |
 | `tuple[...]` | ✅ | Fixed heterogeneous tuple. |
@@ -184,6 +187,7 @@ full CPython compatibility.
 | Builtin exceptions | ✅ | Seeded class hierarchy. |
 | `operator` module | ✅ | Native functions for syntax operator semantics. |
 | `typing` module | ◐ | Annotation-only native symbols; no runtime typing objects. |
+| `Ellipsis` fallback | ◐ | Bare fallback name with normal shadowing; not exported as a native `builtins` symbol. |
 | First-class native functions | ❌ | Native symbols are callable names only. |
 | First-class modules/classes | ❌ | Compile-time receiver names only. |
 | Standard library compatibility | ❌ | Only registered native/source modules are available. |

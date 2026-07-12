@@ -8,6 +8,8 @@ import (
 	"github.com/siyul-park/minipy/token"
 	"github.com/siyul-park/minipy/types"
 
+	"github.com/siyul-park/minivm/instr"
+	"github.com/siyul-park/minivm/interp"
 	"github.com/stretchr/testify/require"
 )
 
@@ -21,6 +23,21 @@ func (c *stubChecker) ResolveType(ast.Expr) types.Type { return types.Invalid }
 func (c *stubChecker) Error(token.Pos, token.Code, string, ...any) {
 	c.errs++
 }
+
+type stubEmitter struct{ ops []instr.Opcode }
+
+func (e *stubEmitter) Emit(op instr.Opcode, _ ...uint64)      { e.ops = append(e.ops, op) }
+func (*stubEmitter) Expr(ast.Expr)                            {}
+func (*stubEmitter) Type(ast.Expr) types.Type                 { return types.Invalid }
+func (*stubEmitter) TypeIndex(types.Type) uint64              { return 0 }
+func (*stubEmitter) CallHost(*interp.HostFunction)            {}
+func (*stubEmitter) CallHostVoid(*interp.HostFunction)        {}
+func (*stubEmitter) Host(string, string) *interp.HostFunction { return nil }
+func (*stubEmitter) Label() instr.Label                       { return 0 }
+func (*stubEmitter) Bind(instr.Label)                         {}
+func (*stubEmitter) Br(instr.Label)                           {}
+func (*stubEmitter) BrIf(instr.Label)                         {}
+func (*stubEmitter) Tmp() int                                 { return 0 }
 
 func TestBinaryType(t *testing.T) {
 	tests := []struct {
@@ -69,12 +86,39 @@ func TestComparable(t *testing.T) {
 		{"bytes le rejected", token.LE, types.Bytes, types.Bytes, true},
 		{"bytes in bytes needle wrong type", token.IN, types.Str, types.Bytes, true},
 		{"int in bytes", token.IN, types.Int, types.Bytes, false},
+		{"ellipsis is", token.IS, types.Ellipsis, types.Ellipsis, false},
+		{"ellipsis is not", token.ISNOT, types.Ellipsis, types.Ellipsis, false},
+		{"ellipsis eq", token.EQ, types.Ellipsis, types.Ellipsis, false},
+		{"ellipsis ne", token.NE, types.Ellipsis, types.Ellipsis, false},
+		{"ellipsis ordering rejected", token.LT, types.Ellipsis, types.Ellipsis, true},
+		{"ellipsis cross-type equality rejected", token.EQ, types.Ellipsis, types.Int, true},
+		{"ellipsis cross-type identity rejected", token.IS, types.Ellipsis, types.Int, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			c := &stubChecker{}
 			operator.Comparable(c, tt.op, tt.left, tt.right, token.Pos{})
 			require.Equal(t, tt.wantErr, c.errs > 0)
+		})
+	}
+}
+
+func TestEmitCompareStack(t *testing.T) {
+	tests := []struct {
+		name string
+		op   token.Type
+		want []instr.Opcode
+	}{
+		{"is", token.IS, []instr.Opcode{instr.REF_EQ}},
+		{"is not", token.ISNOT, []instr.Opcode{instr.REF_EQ, instr.I32_EQZ}},
+		{"equal", token.EQ, []instr.Opcode{instr.REF_EQ}},
+		{"not equal", token.NE, []instr.Opcode{instr.REF_EQ, instr.I32_EQZ}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			e := &stubEmitter{}
+			operator.EmitCompareStack(e, tt.op, types.Ellipsis, types.Ellipsis)
+			require.Equal(t, tt.want, e.ops)
 		})
 	}
 }

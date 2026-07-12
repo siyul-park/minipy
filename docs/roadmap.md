@@ -39,7 +39,8 @@ owned by `docs/spec/`; compatibility status is summarized in
 
 ### Static type system ✅
 
-- Primitive source types: `int`, `float`, `bool`, `str`, `bytes`, `None`, `Any`.
+- Primitive source types: `int`, `float`, `bool`, `str`, `bytes`,
+  `EllipsisType`, `None`, `Any`.
 - Containers: `list[T]`, `dict[K, V]`, `set[T]`, fixed tuples.
 - Classes, single inheritance, methods, `@dataclass` construction, builtin
   exception classes.
@@ -66,7 +67,8 @@ owned by `docs/spec/`; compatibility status is summarized in
 - Pattern matching with sequence, mapping, class, value, wildcard, capture, or/as
   patterns and guards.
 - List/dict/set/tuple displays, comprehensions, generator expressions, slicing,
-  f-strings, named expressions, and common operators.
+  f-strings, named expressions, Ellipsis singleton expressions, and common
+  operators.
 
 ### Native modules ✅
 
@@ -89,6 +91,9 @@ These are implemented with deliberate limits, not undocumented bugs.
 - Empty list/dict/set displays need an annotation or expected context.
 - Dict keys and set elements are limited to scalar hashable source types.
 - Tuple indexing needs a constant integer index.
+- Ellipsis is a literal/bare-name singleton with identity/equality support;
+  ellipsis subscripts, `Literal[Ellipsis]`, construction, and builtins-module
+  import are not supported.
 - Lambdas need an expected `Callable` type.
 - Native functions, module objects, and class objects are not first-class runtime
   values.

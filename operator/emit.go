@@ -82,6 +82,13 @@ func EmitCompareStack(e module.Emitter, op token.Type, left, right types.Type) {
 		}
 		return
 	}
+	if types.Equal(left, types.Ellipsis) && types.Equal(right, types.Ellipsis) {
+		e.Emit(instr.REF_EQ)
+		if op == token.NE {
+			e.Emit(instr.I32_EQZ)
+		}
+		return
+	}
 	if left == types.Bytes || right == types.Bytes {
 		// The checker restricts bytes comparisons to == and != (docs/spec/04),
 		// so op is guaranteed to be one of those here. != is == negated

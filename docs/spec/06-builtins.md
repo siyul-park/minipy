@@ -80,6 +80,14 @@ length is negative. Built-in containers keep their inline lowering.
 `range(..., 0)` is diagnosed statically when the zero step is a constant integer
 literal, including a unary sign.
 
+### `Ellipsis` fallback
+
+The bare name `Ellipsis` resolves to the immutable singleton only after ordinary
+temporary, local, capture, module, global, function, class, and imported bindings
+have failed to resolve, so normal shadowing is preserved. It is a compiler
+fallback rather than a registered callable native symbol; `EllipsisType()` and
+`from builtins import Ellipsis` are not supported.
+
 ## Static Attribute Builtins
 
 `getattr` and `hasattr` expose only the part of attribute introspection that can

@@ -57,6 +57,7 @@ type formatSpec struct {
 const omittedSliceBound = math.MinInt64
 
 var (
+	ellipsisValue      = vmtypes.NewStruct(types.Ellipsis.VM().(*vmtypes.StructType))
 	errListIndexValue  = errors.New("list.index value not found")
 	errListSliceLength = errors.New("list slice assignment length mismatch")
 )
@@ -1802,13 +1803,19 @@ func (c *lowerer) expr(n ast.Expr) {
 		c.emitBool(x.Value)
 	case *ast.NoneLit:
 		c.emit(instr.REF_NULL)
+	case *ast.EllipsisLit:
+		c.constGet(ellipsisValue)
 	case *ast.StrLit:
 		c.constGet(vmtypes.String(x.Value))
 	case *ast.BytesLit:
 		c.bytesLit(x)
 	case *ast.Name:
-		c.get(x.Name)
-		c.narrowCast(x)
+		if x.Name == "Ellipsis" && types.Equal(c.types[x], types.Ellipsis) {
+			c.constGet(ellipsisValue)
+		} else {
+			c.get(x.Name)
+			c.narrowCast(x)
+		}
 	case *ast.UnaryExpr:
 		c.unary(x)
 	case *ast.BinaryExpr:

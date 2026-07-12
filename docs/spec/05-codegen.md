@@ -83,6 +83,7 @@ runtime values.
 | `bool` | minivm boolean integer path |
 | `str` | minivm string |
 | `bytes` | minivm `array[i8]` |
+| `EllipsisType` | one shared zero-field minivm struct constant |
 | `None`, `Any`, unions, iterators | reference values |
 | `list[T]` | minivm array |
 | `dict[K, V]` | minivm map |
@@ -179,7 +180,9 @@ which lets each clone lower branches, operators, and calls with concrete types.
 All operator syntax lowers through the `operator` package so syntax and
 `operator.*` calls share one set of rules. Integer/float arithmetic uses minivm
 numeric opcodes where possible; operations that need runtime helpers use native
-host functions registered by the operator module.
+host functions registered by the operator module. The `...` literal and the
+unshadowed `Ellipsis` fallback both load the same constant-pool value. Ellipsis
+identity and equality use `REF_EQ`; `is not` and `!=` append `I32_EQZ`.
 
 ### Containers, Strings, and Bytes
 

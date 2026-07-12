@@ -86,7 +86,7 @@ The lexer recognizes:
 ```text
 + - * ** / // % << >> & | ^ ~ @
 < > <= >= == != = += -= *= /= //= %= &= |= ^= <<= >>= **=
-:= -> ( ) [ ] { } , : . ;
+:= -> ( ) [ ] { } , : . ... ;
 ```
 
 Support is phase-specific:
@@ -95,6 +95,8 @@ Support is phase-specific:
 - `@` is tokenized and can appear in expression syntax, but matrix-multiply
   semantics are not implemented by the checker/operator layer.
 - `->` is accepted only in function return annotations.
+- `...` is emitted as one `ELLIPSIS` token by longest-match scanning. A single
+  `.` remains `DOT`, and `.5` remains a `FLOAT` literal.
 
 ## Numeric Literals
 

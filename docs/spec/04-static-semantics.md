@@ -96,7 +96,7 @@ Annotations resolve through primitive names, aliases, classes, imported module
 attributes, and generic forms:
 
 ```text
-int float bool str bytes None Any
+int float bool str bytes EllipsisType None Any
 list[T] dict[K, V] set[T] tuple[...] Iterator[T] Callable[[...], R]
 A | B
 typing.Optional[T] typing.Union[...] typing.Annotated[T, ...]
@@ -173,6 +173,8 @@ lowerer prunes the impossible branch.
 
 ### Literals and Displays
 
+- `...` and the unshadowed fallback name `Ellipsis` have type
+  `EllipsisType`; normal bindings named `Ellipsis` take precedence.
 - Empty list/dict/set displays require an expected type from an annotation or
   context.
 - Non-empty lists and sets must be homogeneous.
@@ -190,6 +192,9 @@ lowerer prunes the impossible branch.
 - Strings require `int` indexes and return `str`.
 - Bytes require `int` indexes and return `int` (unsigned `0..255`).
 - Tuples require a constant integer index and return the corresponding field type.
+- An `EllipsisType` index is rejected for every supported receiver with
+  `UnsupportedFeature: ellipsis subscript is not supported`; multidimensional
+  or protocol-driven ellipsis expansion is not implemented.
 - Slicing is supported for lists, strings, and bytes (returning `bytes`); bounds
   must be `int` when present.
 - Slice assignment is not supported. For bytes specifically, item assignment,
@@ -201,6 +206,9 @@ lowerer prunes the impossible branch.
 Operator type rules are centralized in the `operator` package. Syntax operators
 and `operator.*` native calls share the same rules. `and`/`or` require `bool`
 operands and return `bool`; `not` is unary bool negation.
+
+Ellipsis values support `is`, `is not`, `==`, and `!=` only with another
+`EllipsisType` value. Ordering and cross-type equality/identity are rejected.
 
 `bytes + bytes` concatenates to `bytes`. `bytes` supports only `==`/`!=`
 comparisons (ordering operators are `NotComparable`) and `in`/`not in` against

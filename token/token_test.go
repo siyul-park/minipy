@@ -31,6 +31,7 @@ func TestType_String(t *testing.T) {
 	require.Equal(t, "+", PLUS.String())
 	require.Equal(t, "and", AND.String())
 	require.Equal(t, "->", ARROW.String())
+	require.Equal(t, "...", ELLIPSIS.String())
 }
 
 func TestPos_String(t *testing.T) {
