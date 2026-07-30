@@ -297,7 +297,9 @@ func Join(a, b Type) Type {
 		return Any
 	}
 	// Numeric promotion: int and float join to float (Python widens int to float).
-	if (Equal(a, Int) && Equal(b, Float)) || (Equal(a, Float) && Equal(b, Int)) {
+	// Erase literal refinements so Literal[1, 2] joins with float correctly.
+	ea, eb := Erase(a), Erase(b)
+	if (Equal(ea, Int) && Equal(eb, Float)) || (Equal(ea, Float) && Equal(eb, Int)) {
 		return Float
 	}
 	return NewUnion(a, b)

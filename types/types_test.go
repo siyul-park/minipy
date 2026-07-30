@@ -190,6 +190,9 @@ func TestJoin(t *testing.T) {
 	require.Equal(t, Float, Join(Int, Float))   // numeric promotion
 	require.Equal(t, Float, Join(Float, Int))   // numeric promotion (reverse)
 	require.Equal(t, Float, Join(Float, Float)) // same type
+	// Literal erasure: Literal[int] joins with float to produce float.
+	require.Equal(t, Float, Join(NewLiteral(IntLiteral(1)), Float))
+	require.Equal(t, Float, Join(Float, NewLiteral(IntLiteral(1), IntLiteral(2))))
 }
 
 func TestNarrowWithout(t *testing.T) {

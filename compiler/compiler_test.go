@@ -573,6 +573,11 @@ func TestCompile(t *testing.T) {
 		require.Equal(t, "2.0\n", run(t, "x: float = 1 if False else 2.0\nprint(str(x))\n"))
 	})
 
+	t.Run("conditional expression with literal and float promotion", func(t *testing.T) {
+		src := "from typing import Literal\nx: Literal[1, 2] = 1\ny: float = x if True else 2.0\nprint(str(y))\n"
+		require.Equal(t, "1.0\n", run(t, src))
+	})
+
 	t.Run("bitwise and shift", func(t *testing.T) {
 		require.Equal(t, "6\n", run(t, "print(str(2 | 4))\n"))
 		require.Equal(t, "8\n", run(t, "print(str(1 << 3))\n"))
