@@ -2,7 +2,7 @@
   "id": "FEAT-004",
   "type": "feat",
   "description": "Implement the `random` native module providing pseudo-random number generation functions: random() -> float, randint(a, b) -> int, randrange(stop) -> int, randrange(start, stop) -> int, uniform(a, b) -> float, choice(xs) -> T for list[T] (or Any for dynamic lists), shuffle(xs) -> None for list[T], seed(n) -> None. Static types preferred but Any/dynamic accepted where applicable.",
-  "status": "in_progress",
+  "status": "completed",
   "steps": [
     "Create directory random/ (Go package name `random`) with random.go containing const Name = \"random\" and func New() *module.NativeModule.",
     "Implement random() - takes 0 args, returns float. Host function uses Go's math/rand/v2.",
@@ -28,5 +28,5 @@
     "go test ./random ./compiler"
   ],
   "blocked_reason": null,
-  "findings": ""
+  "findings": "TypedArray[T] (not *Array) is used for primitive element lists at runtime. Shuffle in-place requires type-switching on all TypedArray variants. Host function Params must use the exact list VM type (ArrayType) for the VM call to succeed. CallHostVoid pushes REF_NULL (None) onto the stack after the call."
 }
