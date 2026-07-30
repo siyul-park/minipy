@@ -202,6 +202,7 @@ full CPython compatibility.
 | `typing` module | ◐ | Annotation-only native symbols; no runtime typing objects. |
 | `math` module | ◐ | Constants (`pi`, `e`, `tau`, `inf`, `nan`) and subset of CPython math functions; `int` args promoted to `float`. |
 | `string` module | ◐ | String constants only (`ascii_lowercase`, `ascii_uppercase`, `ascii_letters`, `digits`, `hexdigits`, `octdigits`, `punctuation`, `whitespace`, `printable`); no `Formatter`, `Template`, or helper functions. |
+| `functools` module | ◐ | `reduce` only; no `partial`, `lru_cache`, `wraps`, or other functools utilities. Static types preferred; dynamic/Any inputs return Any. |
 | `Ellipsis` fallback | ◐ | Bare fallback name with normal shadowing; not exported as a native `builtins` symbol. |
 | First-class native functions | ❌ | Native symbols are callable names only. |
 | First-class modules/classes | ❌ | Compile-time receiver names only. |

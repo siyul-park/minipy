@@ -88,6 +88,9 @@ owned by `docs/spec/`; compatibility status is summarized in
 - `string`: constants (`ascii_lowercase`, `ascii_uppercase`, `ascii_letters`,
   `digits`, `hexdigits`, `octdigits`, `punctuation`, `whitespace`, `printable`).
   Constants are `ConstantSymbol` values that emit inline via the constant pool.
+- `functools`: higher-order function utilities (`reduce`). Inline-emitted
+  iteration loop with lambda type inference for the accumulator function.
+  Supports static types and dynamic/Any fallback.
 
 ## Current Explicit Restrictions
 

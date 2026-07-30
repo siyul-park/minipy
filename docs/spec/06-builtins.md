@@ -415,10 +415,12 @@ import operator
 import typing
 import math
 import string
+import functools
 from builtins import len
 from typing import Literal
 from math import pi, sqrt
 from string import ascii_lowercase
+from functools import reduce
 ```
 
 The imported module object is still compile-time-only; it may be used as an
@@ -504,6 +506,32 @@ constant pool.
 
 Constants can be accessed as values (`x: str = string.digits`) or via
 `from string import ascii_lowercase`. They are not callable.
+
+## `functools`
+
+The `functools` module provides higher-order functions that act on or return
+other callables. Currently it exposes the `reduce` function.
+
+### Functions
+
+| Function | Arity | Accepted argument types | Result |
+|---|---:|---|---|
+| `reduce(fn, xs)` | 2 | `Callable[[T, T], T]`, `list[T]` | `T` |
+| `reduce(fn, xs, initial)` | 3 | `Callable[[T, T], T]`, `list[T]`, `T` | `T` |
+
+`reduce` applies `fn` of two arguments cumulatively to the items of `xs`, from
+left to right, so as to reduce the iterable to a single value. With the 2-arg
+form, the first element of `xs` is used as the initial accumulator; if `xs` is
+empty, a `TypeError` is raised at runtime. With the 3-arg form, `initial` is
+placed before the items of the iterable in the reduction, and serves as a default
+when the iterable is empty.
+
+The function argument benefits from lambda type inference: when `xs` has element
+type `T`, the hint `Callable[[T, T], T]` is provided so inline lambdas can infer
+their parameter types without explicit annotation.
+
+When any argument has type `Any` or is dynamic, the result type is `Any` and
+runtime dispatch is used.
 
 ## Related Docs
 
