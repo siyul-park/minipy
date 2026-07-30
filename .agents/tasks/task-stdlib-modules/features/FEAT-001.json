@@ -2,7 +2,7 @@
   "id": "FEAT-001",
   "type": "feat",
   "description": "Add ConstantSymbol support to the module system and implement the `math` native module providing mathematical constants (pi, e, tau, inf, nan) and functions (ceil, floor, sqrt, log, log2, log10, exp, sin, cos, tan, asin, acos, atan, atan2, fabs, fmod, copysign, isnan, isinf, isfinite, trunc, degrees, radians, gcd, factorial). This requires extending the native module contract to support constant (non-callable) symbols.",
-  "status": "in_progress",
+  "status": "completed",
   "steps": [
     "Step 1: Add ConstantSymbol interface to module/module.go - add interface `ConstantSymbol interface { Symbol; ConstantType() types.Type }`. This marks symbols that can be accessed as values rather than only being callable. The ConstantType() method returns the static type of the constant.",
     "Step 2: Add a NewConstant constructor in module/native.go - `func NewConstant(name string, typ types.Type, emit EmitFunc) *NativeConstant` that creates a symbol satisfying both Symbol and ConstantSymbol. Its Check function should error with 'not callable' if called directly (constants are not functions). Its Emit function emits the inline constant value.",
@@ -34,5 +34,5 @@
     "go test ./math ./module ./compiler"
   ],
   "blocked_reason": null,
-  "findings": ""
+  "findings": "1. The VM uses NaN-boxing or similar type discrimination that prevents NaN float values from being passed correctly to str()/print() host functions (type mismatch at runtime). This is a pre-existing VM limitation - math.isnan(math.nan) works correctly since the predicate host function handles NaN, but str(nan) fails. Tests use isnan verification instead of direct string formatting for the nan constant. 2. The ConstantSymbol pattern required changes in three separate checker/lowerer paths: Attribute access (math.pi), Name access (from math import pi), and both corresponding lowerer dispatch points. A nameNative map was added alongside attrNative. 3. Removed the pre-existing error test cases that expected 'import math' and 'from math import sqrt' to fail with ModuleNotFound since math is now a registered native module."
 }
