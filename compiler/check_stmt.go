@@ -1091,6 +1091,7 @@ func (c *checker) augAssign(n *ast.AugAssign) {
 		}
 		receiver := c.expr(attr.X)
 		field := c.fieldType(attr, receiver)
+		c.types[attr] = field
 		value := c.expr(n.Value)
 		result := c.binaryType(field, n.Op, value, n.Pos())
 		if result != types.Invalid && field != types.Invalid && !types.AssignableTo(result, field) {

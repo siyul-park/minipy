@@ -18,56 +18,56 @@ func EmitBinary(e module.Emitter, op token.Type, left, right types.Type, pushLef
 	switch op {
 	case token.SLASH:
 		pushLeft()
-		if types.Equal(left, types.Int) {
+		if types.Equal(types.Erase(left), types.Int) {
 			e.Emit(instr.I64_TO_F64_S)
 		}
 		pushRight()
-		if types.Equal(right, types.Int) {
+		if types.Equal(types.Erase(right), types.Int) {
 			e.Emit(instr.I64_TO_F64_S)
 		}
 		e.Emit(instr.F64_DIV)
 	case token.DOUBLESLASH:
-		if types.Equal(left, types.Int) && types.Equal(right, types.Int) {
+		if types.Equal(types.Erase(left), types.Int) && types.Equal(types.Erase(right), types.Int) {
 			emitIntDivMod(e, pushLeft, pushRight, true)
 			return
 		}
 		// Mixed or float: promote int operand and use float floor division.
 		pushLeft()
-		if types.Equal(left, types.Int) {
+		if types.Equal(types.Erase(left), types.Int) {
 			e.Emit(instr.I64_TO_F64_S)
 		}
 		pushRight()
-		if types.Equal(right, types.Int) {
+		if types.Equal(types.Erase(right), types.Int) {
 			e.Emit(instr.I64_TO_F64_S)
 		}
 		e.Emit(instr.F64_DIV)
 		e.Emit(instr.F64_FLOOR)
 	case token.PERCENT:
-		if types.Equal(left, types.Int) && types.Equal(right, types.Int) {
+		if types.Equal(types.Erase(left), types.Int) && types.Equal(types.Erase(right), types.Int) {
 			emitIntDivMod(e, pushLeft, pushRight, false)
 			return
 		}
 		// Mixed or float: promote int operand and use float modulo.
 		pushLeft()
-		if types.Equal(left, types.Int) {
+		if types.Equal(types.Erase(left), types.Int) {
 			e.Emit(instr.I64_TO_F64_S)
 		}
 		pushRight()
-		if types.Equal(right, types.Int) {
+		if types.Equal(types.Erase(right), types.Int) {
 			e.Emit(instr.I64_TO_F64_S)
 		}
 		e.Emit(instr.F64_MOD)
 	case token.DOUBLESTAR:
 		pushLeft()
-		if types.Equal(left, types.Int) && types.Equal(right, types.Int) {
+		if types.Equal(types.Erase(left), types.Int) && types.Equal(types.Erase(right), types.Int) {
 			pushRight()
 			e.CallHost(powInt())
 		} else {
-			if types.Equal(left, types.Int) {
+			if types.Equal(types.Erase(left), types.Int) {
 				e.Emit(instr.I64_TO_F64_S)
 			}
 			pushRight()
-			if types.Equal(right, types.Int) {
+			if types.Equal(types.Erase(right), types.Int) {
 				e.Emit(instr.I64_TO_F64_S)
 			}
 			e.CallHost(powFloat())
@@ -75,41 +75,43 @@ func EmitBinary(e module.Emitter, op token.Type, left, right types.Type, pushLef
 	case token.PLUS:
 		pushLeft()
 		pushRight()
-		switch left.(type) {
+		el := types.Erase(left)
+		switch el.(type) {
 		case *types.List:
-			emitListConcat(e, left)
+			emitListConcat(e, el)
 		default:
 			switch {
-			case types.Equal(left, types.Str):
+			case types.Equal(el, types.Str):
 				e.Emit(instr.STRING_CONCAT)
-			case types.Equal(left, types.Bytes):
+			case types.Equal(el, types.Bytes):
 				e.CallHost(bytesConcat())
 			default:
 				// For mixed int/float, promote the int operand.
 				if isMixedNumeric(left, right) {
 					emitMixedArith(e, op, left, right)
 				} else {
-					e.Emit(simpleBinOp(op, left))
+					e.Emit(simpleBinOp(op, el))
 				}
 			}
 		}
 	case token.STAR:
 		pushLeft()
 		pushRight()
-		if _, ok := left.(*types.List); ok {
-			e.CallHost(listRepeat(left))
-		} else if _, ok := right.(*types.List); ok {
+		el, er := types.Erase(left), types.Erase(right)
+		if _, ok := el.(*types.List); ok {
+			e.CallHost(listRepeat(el))
+		} else if _, ok := er.(*types.List); ok {
 			e.Emit(instr.SWAP)
-			e.CallHost(listRepeat(right))
-		} else if types.Equal(left, types.Str) {
+			e.CallHost(listRepeat(er))
+		} else if types.Equal(el, types.Str) {
 			e.Emit(instr.SWAP)
 			e.CallHost(stringRepeat())
-		} else if types.Equal(right, types.Str) {
+		} else if types.Equal(er, types.Str) {
 			e.CallHost(stringRepeat())
 		} else if isMixedNumeric(left, right) {
 			emitMixedArith(e, op, left, right)
 		} else {
-			e.Emit(simpleBinOp(op, left))
+			e.Emit(simpleBinOp(op, el))
 		}
 	case token.MINUS:
 		pushLeft()
@@ -117,12 +119,12 @@ func EmitBinary(e module.Emitter, op token.Type, left, right types.Type, pushLef
 		if isMixedNumeric(left, right) {
 			emitMixedArith(e, op, left, right)
 		} else {
-			e.Emit(simpleBinOp(op, left))
+			e.Emit(simpleBinOp(op, types.Erase(left)))
 		}
 	default:
 		pushLeft()
 		pushRight()
-		e.Emit(simpleBinOp(op, left))
+		e.Emit(simpleBinOp(op, types.Erase(left)))
 	}
 }
 
@@ -160,7 +162,7 @@ func EmitCompareStack(e module.Emitter, op token.Type, left, right types.Type) {
 	}
 	// Mixed int/float comparisons: promote the int operand to f64.
 	if isMixedNumeric(left, right) {
-		if types.Equal(left, types.Int) {
+		if types.Equal(types.Erase(left), types.Int) {
 			// Stack: [int, float] -- promote int (second from top).
 			e.Emit(instr.SWAP)
 			e.Emit(instr.I64_TO_F64_S)
@@ -172,7 +174,7 @@ func EmitCompareStack(e module.Emitter, op token.Type, left, right types.Type) {
 		e.Emit(CmpOpcode(op, types.Float))
 		return
 	}
-	e.Emit(CmpOpcode(op, left))
+	e.Emit(CmpOpcode(op, types.Erase(left)))
 }
 
 // EmitUnary lowers a checked unary operation on arg.
@@ -184,7 +186,7 @@ func EmitUnary(e module.Emitter, op token.Type, arg ast.Expr) {
 	case token.PLUS:
 		e.Expr(arg)
 	case token.MINUS:
-		if types.Equal(e.Type(arg), types.Float) {
+		if types.Equal(types.Erase(e.Type(arg)), types.Float) {
 			e.Expr(arg)
 			e.Emit(instr.F64_NEG)
 		} else {
@@ -344,16 +346,19 @@ func emitListAppend(e module.Emitter, resultSlot, sourceSlot int) {
 }
 
 // isMixedNumeric reports whether one operand is int and the other is float.
+// Literal wrappers are erased so that a Literal[1,2]-typed operand is still
+// recognized as int for promotion purposes.
 func isMixedNumeric(left, right types.Type) bool {
-	return (types.Equal(left, types.Int) && types.Equal(right, types.Float)) ||
-		(types.Equal(left, types.Float) && types.Equal(right, types.Int))
+	l, r := types.Erase(left), types.Erase(right)
+	return (types.Equal(l, types.Int) && types.Equal(r, types.Float)) ||
+		(types.Equal(l, types.Float) && types.Equal(r, types.Int))
 }
 
 // emitMixedArith handles PLUS, MINUS, STAR for mixed int/float operands.
 // The operands are already on the stack (left then right). The int operand is
 // promoted in-place, then the float operation is emitted.
 func emitMixedArith(e module.Emitter, op token.Type, left, right types.Type) {
-	if types.Equal(left, types.Int) {
+	if types.Equal(types.Erase(left), types.Int) {
 		// Stack: [int, float] -- need to promote the int (second from top).
 		e.Emit(instr.SWAP)
 		e.Emit(instr.I64_TO_F64_S)

@@ -1417,6 +1417,20 @@ print(str(p.y))
 		require.Equal(t, "5.0\n2.0\n", run(t, src))
 	})
 
+	t.Run("augmented attribute assignment int to float field", func(t *testing.T) {
+		src := `class Pt:
+    x: float
+    y: float
+    def __init__(self, x: float, y: float) -> None:
+        self.x = x
+        self.y = y
+p: Pt = Pt(1.0, 2.0)
+p.x += 1
+print(str(p.x))
+`
+		require.Equal(t, "2.0\n", run(t, src))
+	})
+
 	t.Run("del dict key and list item", func(t *testing.T) {
 		require.Equal(t, "1\n", run(t, "d: dict[str, int] = {\"a\": 1, \"b\": 2}\ndel d[\"a\"]\nprint(str(len(d)))\n"))
 		require.Equal(t, "2\n3\n", run(t, "xs: list[int] = [1, 2, 3]\ndel xs[1]\nprint(str(len(xs)))\nprint(str(xs[1]))\n"))
@@ -2054,6 +2068,7 @@ func requireFuncParam(t *testing.T, constants []vmtypes.Value, parameter vmtypes
 func TestCompileErrors(t *testing.T) {
 	cases := map[string]token.Code{
 		"x: int = 1.5\n":                      token.TypeMismatch,
+		"def f() -> int:\n    x: float = 1.0\n    return x\n": token.TypeMismatch,
 		"x: int = 99999999999999999999999\n":  token.IntOverflow,
 		"print(str(y))\n":                     token.UndefinedName,
 		"print()\n":                           token.ArityMismatch,
