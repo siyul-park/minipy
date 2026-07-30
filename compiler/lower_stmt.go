@@ -38,6 +38,8 @@ func (c *lowerer) stmt(s ast.Stmt) {
 				func() { c.get(name.Name) },
 				func() { c.expr(n.Value) })
 			c.set(name.Name)
+		} else if sub, ok := n.Target.(*ast.Subscript); ok {
+			c.augAssignSubscript(n, sub)
 		} else {
 			c.augAssignAttribute(n)
 		}
@@ -725,6 +727,52 @@ func (c *lowerer) assignTarget(target ast.Expr, value ast.Expr) {
 		c.emit(instr.STRUCT_SET)
 	default:
 		c.fail(fmt.Errorf("lower assignment target %T: unsupported", target))
+	}
+}
+
+func (c *lowerer) augAssignSubscript(n *ast.AugAssign, sub *ast.Subscript) {
+	// Save receiver in a temporary slot.
+	c.expr(sub.X)
+	recvSlot := c.tmp()
+	c.emit(instr.GLOBAL_SET, uint64(recvSlot))
+
+	// Save index/key in a temporary slot.
+	c.expr(sub.Index)
+	indexSlot := c.tmp()
+	c.emit(instr.GLOBAL_SET, uint64(indexSlot))
+
+	// Emit binary op: load old value, compute new value.
+	switch c.types[sub.X].(type) {
+	case *types.List:
+		c.emitBinary(n.Op, c.types[sub], c.types[n.Value],
+			func() {
+				c.emit(instr.GLOBAL_GET, uint64(recvSlot))
+				c.emit(instr.GLOBAL_GET, uint64(indexSlot))
+				c.emit(instr.I64_TO_I32)
+				c.emit(instr.ARRAY_GET)
+			},
+			func() { c.expr(n.Value) })
+		// Stack: [result]. Store back: need [receiver, i32_index, result].
+		c.emit(instr.GLOBAL_GET, uint64(recvSlot))
+		c.emit(instr.SWAP)
+		c.emit(instr.GLOBAL_GET, uint64(indexSlot))
+		c.emit(instr.I64_TO_I32)
+		c.emit(instr.SWAP)
+		c.emit(instr.ARRAY_SET)
+	case *types.Dict:
+		c.emitBinary(n.Op, c.types[sub], c.types[n.Value],
+			func() {
+				c.emit(instr.GLOBAL_GET, uint64(recvSlot))
+				c.emit(instr.GLOBAL_GET, uint64(indexSlot))
+				c.emit(instr.MAP_GET)
+			},
+			func() { c.expr(n.Value) })
+		// Stack: [result]. Store back: need [receiver, key, result].
+		c.emit(instr.GLOBAL_GET, uint64(recvSlot))
+		c.emit(instr.SWAP)
+		c.emit(instr.GLOBAL_GET, uint64(indexSlot))
+		c.emit(instr.SWAP)
+		c.emit(instr.MAP_SET)
 	}
 }
 

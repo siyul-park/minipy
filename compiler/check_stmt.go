@@ -1085,8 +1085,13 @@ func (c *checker) augAssign(n *ast.AugAssign) {
 	if !ok {
 		attr, ok := n.Target.(*ast.Attribute)
 		if !ok {
-			c.errs.Add(n.Pos(), token.UnsupportedFeature, "augmented assignment target is not supported")
-			c.expr(n.Value)
+			sub, ok := n.Target.(*ast.Subscript)
+			if !ok {
+				c.errs.Add(n.Pos(), token.UnsupportedFeature, "augmented assignment target is not supported")
+				c.expr(n.Value)
+				return
+			}
+			c.augAssignSubscript(n, sub)
 			return
 		}
 		receiver := c.expr(attr.X)
@@ -1153,6 +1158,18 @@ func (c *checker) augAssign(n *ast.AugAssign) {
 		c.errs.Add(n.Pos(), token.TypeMismatch, "result %s is not assignable to %s %q", result, g.typ, name.Name)
 	}
 	g.init = true
+}
+
+func (c *checker) augAssignSubscript(n *ast.AugAssign, sub *ast.Subscript) {
+	receiver := c.expr(sub.X)
+	index := c.expr(sub.Index)
+	elem := c.indexResultType(sub, receiver, index)
+	c.types[sub] = elem
+	value := c.expr(n.Value)
+	result := c.binaryType(elem, n.Op, value, n.Pos())
+	if result != types.Invalid && elem != types.Invalid && !types.AssignableTo(result, elem) {
+		c.errs.Add(n.Pos(), token.TypeMismatch, "result %s is not assignable to element %s", result, elem)
+	}
 }
 
 // declare registers a new global or returns the existing one, reporting a type

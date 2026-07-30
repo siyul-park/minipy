@@ -2107,7 +2107,6 @@ func TestCompileErrors(t *testing.T) {
 		"def f(x: int) -> int:\n    try:\n        if x == 0:\n            raise ValueError(\"bad\")\n        return 1\n    except ValueError:\n        pass\n": token.TypeMismatch,
 		// containers
 		"xs: list[int] = []\nprint(xs[\"0\"])\n":                        token.TypeMismatch,
-		"xs: list[int] = [1]\nxs[0] += 1\n":                             token.UnsupportedFeature,
 		"xs = []\n":                                                     token.UnsupportedType,
 		"xs: list[int] = [1, \"x\"]\n":                                  token.TypeMismatch,
 		"xs: list[int] = [1]\nprint(str(xs.index(\"x\")))\n":            token.TypeMismatch,

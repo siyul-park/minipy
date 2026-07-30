@@ -65,7 +65,7 @@ full CPython compatibility.
 | Unannotated assignment | ✅ | First assignment infers binding type. |
 | Tuple/starred unpack assignment | ✅ | Supports list/tuple sources and homogeneous starred rest. |
 | Chained assignment | ◐ | Parsed only into the current assignment representation; avoid relying on CPython multi-target semantics. |
-| Augmented assignment | ◐ | Names and attributes supported; other targets rejected. |
+| Augmented assignment | ✅ | Names, attributes, and subscripts (list elements, dict values) supported. |
 | `del` | ✅ | Names, list/dict items, and attributes; captured names rejected. |
 | `assert` | ✅ | Throws structured assertion error on false test. |
 | `if`/`elif`/`else` | ✅ | Includes narrowing and static truth pruning. |
