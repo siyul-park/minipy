@@ -2,7 +2,7 @@
   "id": "FEAT-007",
   "type": "fix",
   "description": "Address v2 code review issues: fix randint panic on inverted range, extract duplicated unbox helpers to hostabi, and pre-allocate host functions in random package.",
-  "status": "in_progress",
+  "status": "completed",
   "steps": [
     "Fix issue #1: Add guard in randintHost() and dynRandintHost() to return ErrEmptyRange when b < a",
     "Fix issue #1: Add integration test for randint(5, 3) to verify error propagation",
@@ -24,5 +24,5 @@
     "go test ./..."
   ],
   "blocked_reason": null,
-  "findings": null
+  "findings": "1. All three review issues resolved in a single commit. 2. The shared hostabi.UnboxFloat/UnboxInt/VMParamType functions are exported (capitalized) to be usable cross-package. 3. choice() and shuffle() host functions still allocate per-emit because they depend on the argument's compile-time type (list element type varies); this is acceptable and matches the math module pattern for type-dependent hosts. 4. The user's preference for static types with dynamic support is preserved: static paths use pre-allocated typed host functions, dynamic paths use TypeRef with runtime unboxing."
 }
