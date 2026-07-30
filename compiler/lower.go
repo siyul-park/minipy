@@ -368,6 +368,9 @@ func (c *lowerer) Type(e ast.Expr) types.Type { return c.types[e] }
 // TypeIndex interns a runtime type and returns its index.
 func (c *lowerer) TypeIndex(t types.Type) uint64 { return c.typeIndex(t) }
 
+// ConstGet emits a CONST_GET instruction for a constant pool value.
+func (c *lowerer) ConstGet(v vmtypes.Value) { c.constGet(v) }
+
 // CallHost emits a call to a value-returning host function.
 func (c *lowerer) CallHost(fn *interp.HostFunction) { c.callHost(fn) }
 

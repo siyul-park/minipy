@@ -85,6 +85,9 @@ owned by `docs/spec/`; compatibility status is summarized in
   `degrees`, `radians`, `isnan`, `isinf`, `isfinite`, `gcd`, `factorial`).
   Constants are `ConstantSymbol` values that emit inline; integer args are
   promoted to float where applicable.
+- `string`: constants (`ascii_lowercase`, `ascii_uppercase`, `ascii_letters`,
+  `digits`, `hexdigits`, `octdigits`, `punctuation`, `whitespace`, `printable`).
+  Constants are `ConstantSymbol` values that emit inline via the constant pool.
 
 ## Current Explicit Restrictions
 

@@ -77,6 +77,8 @@ type Emitter interface {
 	Type(ast.Expr) types.Type
 	// TypeIndex interns a runtime type and returns its index.
 	TypeIndex(t types.Type) uint64
+	// ConstGet emits a CONST_GET instruction for a constant pool value.
+	ConstGet(v vmtypes.Value)
 	// CallHost emits a call to a value-returning host function.
 	CallHost(fn *interp.HostFunction)
 	// CallHostVoid emits a call to a void host function.

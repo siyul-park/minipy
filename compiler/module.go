@@ -12,6 +12,7 @@ import (
 	"github.com/siyul-park/minipy/module"
 	"github.com/siyul-park/minipy/operator"
 	"github.com/siyul-park/minipy/parser"
+	"github.com/siyul-park/minipy/stringmod"
 	"github.com/siyul-park/minipy/token"
 	"github.com/siyul-park/minipy/typing"
 
@@ -426,10 +427,10 @@ func cleanDir(dir string) string {
 }
 
 // defaultRegistry is the built-in native module set: builtins (the fallback for
-// unqualified names), operator, typing, and math.
+// unqualified names), operator, typing, math, and string.
 func defaultRegistry() *module.Registry {
 	return module.NewRegistry(
-		[]module.Module{builtins.New(), operator.New(), typing.New(), mathmod.New()},
+		[]module.Module{builtins.New(), operator.New(), typing.New(), mathmod.New(), stringmod.New()},
 		module.WithFallback(builtins.Name),
 	)
 }

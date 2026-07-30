@@ -414,14 +414,16 @@ Native modules may be imported explicitly:
 import operator
 import typing
 import math
+import string
 from builtins import len
 from typing import Literal
 from math import pi, sqrt
+from string import ascii_lowercase
 ```
 
 The imported module object is still compile-time-only; it may be used as an
 attribute receiver (`operator.add(1, 2)`, `typing.Literal[1]` in an annotation,
-`math.sqrt(4.0)`) but not stored or passed as a runtime value.
+`math.sqrt(4.0)`, `string.digits`) but not stored or passed as a runtime value.
 
 ## `math`
 
@@ -479,6 +481,29 @@ for negative inputs at runtime.
 
 When any argument has type `Any`, the result type is `Any` and runtime dispatch
 is used.
+
+## `string`
+
+The `string` module provides string constants matching Python's `string` module.
+Constants are `ConstantSymbol` instances that emit their value inline via the
+constant pool.
+
+### Constants
+
+| Name | Value | Type |
+|---|---|---|
+| `ascii_lowercase` | `"abcdefghijklmnopqrstuvwxyz"` | `str` |
+| `ascii_uppercase` | `"ABCDEFGHIJKLMNOPQRSTUVWXYZ"` | `str` |
+| `ascii_letters` | `ascii_lowercase + ascii_uppercase` | `str` |
+| `digits` | `"0123456789"` | `str` |
+| `hexdigits` | `"0123456789abcdefABCDEF"` | `str` |
+| `octdigits` | `"01234567"` | `str` |
+| `punctuation` | `"!\"#$%&'()*+,-./:;<=>?@[\\]^_` `` ` `` `{|}~"` | `str` |
+| `whitespace` | `" \t\n\r\x0b\x0c"` | `str` |
+| `printable` | `digits + ascii_letters + punctuation + whitespace` | `str` |
+
+Constants can be accessed as values (`x: str = string.digits`) or via
+`from string import ascii_lowercase`. They are not callable.
 
 ## Related Docs
 
