@@ -1248,6 +1248,49 @@ func (c *checker) methodCallType(n *ast.CallExpr, attr *ast.Attribute) types.Typ
 				return types.Invalid
 			}
 			return types.None
+		case "sort":
+			if len(args) != 0 {
+				c.errs.Add(n.Pos(), token.ArityMismatch, "list.sort takes no arguments (%d given)", len(args))
+				return types.Invalid
+			}
+			elem := t.Elem
+			if !types.Equal(elem, types.Int) && !types.Equal(elem, types.Float) && !types.Equal(elem, types.Str) && !types.Equal(elem, types.Bool) {
+				c.errs.Add(n.Pos(), token.TypeMismatch, "list.sort requires comparable elements (int, float, str, bool), got %s", elem)
+				return types.Invalid
+			}
+			return types.None
+		case "copy":
+			if len(args) != 0 {
+				c.errs.Add(n.Pos(), token.ArityMismatch, "list.copy takes no arguments (%d given)", len(args))
+				return types.Invalid
+			}
+			return t
+		case "count":
+			if len(args) != 1 {
+				c.errs.Add(n.Pos(), token.ArityMismatch, "list.count takes exactly 1 argument (%d given)", len(args))
+				return types.Invalid
+			}
+			if !types.AssignableTo(args[0], t.Elem) {
+				c.errs.Add(n.Args[0].Pos(), token.TypeMismatch, "list.count expects %s, got %s", t.Elem, args[0])
+				return types.Invalid
+			}
+			return types.Int
+		case "clear":
+			if len(args) != 0 {
+				c.errs.Add(n.Pos(), token.ArityMismatch, "list.clear takes no arguments (%d given)", len(args))
+				return types.Invalid
+			}
+			return types.None
+		case "remove":
+			if len(args) != 1 {
+				c.errs.Add(n.Pos(), token.ArityMismatch, "list.remove takes exactly 1 argument (%d given)", len(args))
+				return types.Invalid
+			}
+			if !types.AssignableTo(args[0], t.Elem) {
+				c.errs.Add(n.Args[0].Pos(), token.TypeMismatch, "list.remove expects %s, got %s", t.Elem, args[0])
+				return types.Invalid
+			}
+			return types.None
 		}
 	case *types.Dict:
 		args := c.positionalMethodArgs(n)

@@ -923,6 +923,23 @@ func (c *lowerer) methodCall(x *ast.CallExpr, attr *ast.Attribute) {
 	case "reverse":
 		c.emitListReverse()
 		c.emit(instr.REF_NULL)
+	case "sort":
+		c.callHost(c.listSort(recvType))
+		c.emit(instr.REF_NULL)
+	case "copy":
+		c.callHost(c.listCopy(recvType))
+	case "count":
+		if _, ok := recvType.(*types.List); ok {
+			c.callHost(c.listCount(recvType))
+		} else {
+			c.callHost(c.strCount())
+		}
+	case "clear":
+		c.callHost(c.listClear(recvType))
+		c.emit(instr.REF_NULL)
+	case "remove":
+		c.callHost(c.listRemove(recvType))
+		c.emit(instr.REF_NULL)
 	case "upper":
 		c.callHost(c.strUpper())
 	case "lower":
@@ -963,8 +980,6 @@ func (c *lowerer) methodCall(x *ast.CallExpr, attr *ast.Attribute) {
 			c.emit(instr.I64_CONST, ^uint64(0))
 		}
 		c.callHost(c.strReplace())
-	case "count":
-		c.callHost(c.strCount())
 	case "isdigit":
 		c.callHost(c.strIsDigit())
 	case "isalpha":

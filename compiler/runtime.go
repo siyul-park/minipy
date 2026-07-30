@@ -3,6 +3,7 @@ package compiler
 import (
 	"errors"
 	"math"
+	"sort"
 	"strconv"
 	"strings"
 	"unicode"
@@ -297,6 +298,133 @@ func (c *lowerer) listExtend(receiver types.Type) *interp.HostFunction {
 			}
 			out := append(left, right...)
 			return hostabi.AllocArray(i, typ, out)
+		},
+	)
+}
+
+func (c *lowerer) listSort(receiver types.Type) *interp.HostFunction {
+	elem := receiver.(*types.List).Elem
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: []vmtypes.Type{receiver.VM()}},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			typ, elems, err := hostabi.ArrayElems(i, params[0])
+			if err != nil {
+				return nil, err
+			}
+			var sortErr error
+			sort.SliceStable(elems, func(a, b int) bool {
+				if sortErr != nil {
+					return false
+				}
+				switch {
+				case types.Equal(elem, types.Int):
+					return elems[a].I64() < elems[b].I64()
+				case types.Equal(elem, types.Float):
+					return elems[a].F64() < elems[b].F64()
+				case types.Equal(elem, types.Bool):
+					return !elems[a].Bool() && elems[b].Bool()
+				case types.Equal(elem, types.Str):
+					sa, e := hostabi.LoadStr(i, elems[a])
+					if e != nil {
+						sortErr = e
+						return false
+					}
+					sb, e := hostabi.LoadStr(i, elems[b])
+					if e != nil {
+						sortErr = e
+						return false
+					}
+					return sa < sb
+				}
+				return false
+			})
+			if sortErr != nil {
+				return nil, sortErr
+			}
+			if err := i.Store(params[0].Ref(), vmtypes.NewArray(typ, elems...)); err != nil {
+				return nil, err
+			}
+			return nil, nil
+		},
+	)
+}
+
+func (c *lowerer) listCopy(receiver types.Type) *interp.HostFunction {
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: []vmtypes.Type{receiver.VM()}, Returns: []vmtypes.Type{receiver.VM()}},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			typ, elems, err := hostabi.ArrayElems(i, params[0])
+			if err != nil {
+				return nil, err
+			}
+			return hostabi.AllocArray(i, typ, elems)
+		},
+	)
+}
+
+func (c *lowerer) listCount(receiver types.Type) *interp.HostFunction {
+	elem := receiver.(*types.List).Elem
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: []vmtypes.Type{receiver.VM(), elem.VM()}, Returns: []vmtypes.Type{vmtypes.TypeI64}},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			_, elems, err := hostabi.ArrayElems(i, params[0])
+			if err != nil {
+				return nil, err
+			}
+			count := int64(0)
+			for _, e := range elems {
+				equal, err := hostabi.BoxedEqual(i, e, params[1])
+				if err != nil {
+					return nil, err
+				}
+				if equal {
+					count++
+				}
+			}
+			return []vmtypes.Boxed{vmtypes.BoxI64(count)}, nil
+		},
+	)
+}
+
+func (c *lowerer) listClear(receiver types.Type) *interp.HostFunction {
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: []vmtypes.Type{receiver.VM()}},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			typ, _, err := hostabi.ArrayElems(i, params[0])
+			if err != nil {
+				return nil, err
+			}
+			if err := i.Store(params[0].Ref(), vmtypes.NewArray(typ)); err != nil {
+				return nil, err
+			}
+			return nil, nil
+		},
+	)
+}
+
+func (c *lowerer) listRemove(receiver types.Type) *interp.HostFunction {
+	elem := receiver.(*types.List).Elem
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: []vmtypes.Type{receiver.VM(), elem.VM()}},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			typ, elems, err := hostabi.ArrayElems(i, params[0])
+			if err != nil {
+				return nil, err
+			}
+			for idx, e := range elems {
+				equal, err := hostabi.BoxedEqual(i, e, params[1])
+				if err != nil {
+					return nil, err
+				}
+				if equal {
+					out := append(elems[:idx], elems[idx+1:]...)
+					if err := i.Store(params[0].Ref(), vmtypes.NewArray(typ, out...)); err != nil {
+						return nil, err
+					}
+					return nil, nil
+				}
+			}
+			return nil, errListRemoveValue
 		},
 	)
 }
@@ -1055,6 +1183,7 @@ func (c *lowerer) exc() *interp.HostFunction {
 						case errors.Is(exc.Unwrap(), interp.ErrTypeMismatch):
 							class = classID("TypeError")
 						case errors.Is(exc.Unwrap(), errListIndexValue),
+							errors.Is(exc.Unwrap(), errListRemoveValue),
 							errors.Is(exc.Unwrap(), errListSliceLength),
 							errors.Is(exc.Unwrap(), errExtendedSlice),
 							errors.Is(exc.Unwrap(), errSliceStep),

@@ -184,12 +184,21 @@ Supported homogeneous `list[T]` methods:
 | `insert(index, value)` | 2 | `int`, `T` | `None` |
 | `extend(values)` | 1 | `list[T]` | `None` |
 | `reverse()` | 0 | none | `None` |
+| `sort()` | 0 | none | `None` |
+| `copy()` | 0 | none | `list[T]` |
+| `count(value)` | 1 | `T` | `int` |
+| `clear()` | 0 | none | `None` |
+| `remove(value)` | 1 | `T` | `None` |
 
 `index` returns the first equal element position and raises `ValueError` when no
 element matches. `insert` normalizes negative indexes relative to the current
 length, clamps indexes below zero to `0`, and clamps indexes above the current
 length to `len(list)`. `extend` snapshots the source length before mutation, so
 `xs.extend(xs)` appends the original contents once. `reverse` mutates in place.
+`sort` sorts the list in place; element type must be comparable (`int`, `float`,
+`str`, or `bool`). `copy` returns a shallow copy. `count` returns the number of
+occurrences of a value. `clear` removes all elements. `remove` deletes the first
+occurrence of a value and raises `ValueError` if not found.
 
 ## String Methods
 
