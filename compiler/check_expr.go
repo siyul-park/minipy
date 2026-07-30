@@ -248,10 +248,23 @@ func hashableKey(t types.Type) bool {
 	return types.Equal(t, types.Int) || types.Equal(t, types.Float) || types.Equal(t, types.Bool) || types.Equal(t, types.Str)
 }
 
+// isDynamicType reports whether the checker should treat this type as dynamic
+// (requiring runtime dispatch). Equivalent to refDynamic in the lowerer.
+func isDynamicType(t types.Type) bool {
+	if _, ok := t.(*types.Union); ok {
+		return true
+	}
+	return types.IsAny(t)
+}
+
 func (c *checker) indexResultType(n *ast.Subscript, receiver, index types.Type) types.Type {
 	if types.Equal(index, types.Ellipsis) {
 		c.errs.Add(n.Index.Pos(), token.UnsupportedFeature, "ellipsis subscript is not supported")
 		return types.Invalid
+	}
+	// Dynamic receiver: accept any index, result is Any.
+	if isDynamicType(receiver) {
+		return types.Any
 	}
 	switch t := receiver.(type) {
 	case *types.List:
@@ -317,6 +330,9 @@ func (c *checker) classGetItemType(n *ast.Subscript, cls *types.Class, index typ
 
 func (c *checker) sliceResultType(n *ast.Slice, receiver types.Type) types.Type {
 	c.checkSliceBounds(n)
+	if isDynamicType(receiver) {
+		return types.Any
+	}
 	switch receiver.(type) {
 	case *types.List:
 		return receiver

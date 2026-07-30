@@ -261,6 +261,44 @@ func isUnion(t Type) (*Union, bool) {
 // IsAny reports whether t is the open top type.
 func IsAny(t Type) bool { return Equal(t, Any) }
 
+// IsDynamic reports whether t requires runtime dispatch (Any or Union).
+// This is the canonical definition; all packages use this predicate.
+func IsDynamic(t Type) bool {
+	if _, ok := t.(*Union); ok {
+		return true
+	}
+	return IsAny(t)
+}
+
+// IterableElem returns the element type yielded by iterating over t, or Invalid
+// if t is not iterable. This is the canonical definition used by both the
+// checker and builtins packages.
+func IterableElem(t Type) Type {
+	switch x := t.(type) {
+	case *List:
+		return x.Elem
+	case *Dict:
+		return x.Key
+	case *Set:
+		return x.Elem
+	case *Iterator:
+		return x.Elem
+	case *Union:
+		return Any
+	default:
+		if Equal(t, Str) {
+			return Str
+		}
+		if Equal(t, Bytes) {
+			return Int
+		}
+		if IsAny(t) {
+			return Any
+		}
+		return Invalid
+	}
+}
+
 // Erase returns the runtime-representable type for static-only refinements.
 func Erase(t Type) Type {
 	switch x := t.(type) {

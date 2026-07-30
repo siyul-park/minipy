@@ -407,6 +407,13 @@ func (c *lowerer) subscript(x *ast.Subscript) {
 		c.slice(x, slice)
 		return
 	}
+	// Dynamic receiver: use host function dispatch.
+	if refDynamic(c.types[x.X]) {
+		c.expr(x.X)
+		c.expr(x.Index)
+		c.callHost(operator.DynGetItem())
+		return
+	}
 	c.expr(x.X)
 	c.expr(x.Index)
 	switch c.types[x.X].(type) {

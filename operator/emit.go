@@ -15,6 +15,12 @@ import (
 // the operands exactly once; this package owns the complete opcode/host lowering
 // selected by the checker rules in BinaryType.
 func EmitBinary(e module.Emitter, op token.Type, left, right types.Type, pushLeft, pushRight func()) {
+	if isDynamicEmit(left) || isDynamicEmit(right) {
+		pushLeft()
+		pushRight()
+		e.CallHost(dynBinaryOp(op))
+		return
+	}
 	switch op {
 	case token.SLASH:
 		pushLeft()
@@ -132,6 +138,10 @@ func EmitBinary(e module.Emitter, op token.Type, left, right types.Type, pushLef
 // the stack, left then right.
 func EmitCompareStack(e module.Emitter, op token.Type, left, right types.Type) {
 	if op == token.IN || op == token.NOTIN {
+		if isDynamicEmit(right) {
+			e.CallHost(dynContains(op))
+			return
+		}
 		e.Emit(instr.SWAP)
 		emitContains(e, op, left, right)
 		return
@@ -141,6 +151,10 @@ func EmitCompareStack(e module.Emitter, op token.Type, left, right types.Type) {
 		if op == token.ISNOT {
 			e.Emit(instr.I32_EQZ)
 		}
+		return
+	}
+	if isDynamicEmit(left) || isDynamicEmit(right) {
+		e.CallHost(dynCompare(op))
 		return
 	}
 	if types.Equal(left, types.Ellipsis) && types.Equal(right, types.Ellipsis) {
@@ -179,6 +193,25 @@ func EmitCompareStack(e module.Emitter, op token.Type, left, right types.Type) {
 
 // EmitUnary lowers a checked unary operation on arg.
 func EmitUnary(e module.Emitter, op token.Type, arg ast.Expr) {
+	argType := types.Erase(e.Type(arg))
+	if isDynamicEmit(argType) {
+		switch op {
+		case token.NOT:
+			e.Expr(arg)
+			e.CallHost(DynBool())
+			e.Emit(instr.I32_EQZ)
+		case token.MINUS:
+			e.Expr(arg)
+			e.CallHost(dynUnaryNeg())
+		case token.PLUS:
+			e.Expr(arg)
+			e.CallHost(dynUnaryPos())
+		case token.TILDE:
+			e.Expr(arg)
+			e.CallHost(dynUnaryInvert())
+		}
+		return
+	}
 	switch op {
 	case token.NOT:
 		e.Expr(arg)
@@ -459,4 +492,9 @@ func simpleBinOp(op token.Type, typ types.Type) instr.Opcode {
 		}
 	}
 	panic(fmt.Sprintf("operator: no binary opcode for %s and %v", op, typ))
+}
+
+// isDynamicEmit reports whether a type requires dynamic dispatch in emission.
+func isDynamicEmit(t types.Type) bool {
+	return types.IsDynamic(types.Erase(t))
 }

@@ -24,7 +24,7 @@ func convert(result types.Type) resultFunc {
 }
 
 func boolResult(args []types.Type) (types.Type, bool) {
-	if len(args) == 1 && (convertible(args[0]) || isContainer(args[0])) {
+	if len(args) == 1 && (convertible(args[0]) || isContainer(args[0]) || isDynamic(args[0])) {
 		return types.Bool, true
 	}
 	return types.Invalid, false
@@ -40,6 +40,9 @@ func absResult(args []types.Type) (types.Type, bool) {
 func lenResult(args []types.Type) (types.Type, bool) {
 	if len(args) != 1 {
 		return types.Invalid, false
+	}
+	if isDynamic(args[0]) {
+		return types.Int, true
 	}
 	switch args[0].(type) {
 	case *types.List, *types.Dict, *types.Set, *types.Tuple:
@@ -222,23 +225,10 @@ func isContainer(t types.Type) bool {
 	}
 }
 
+func isDynamic(t types.Type) bool {
+	return types.IsDynamic(t)
+}
+
 func iterableElem(t types.Type) types.Type {
-	switch x := t.(type) {
-	case *types.List:
-		return x.Elem
-	case *types.Dict:
-		return x.Key
-	case *types.Set:
-		return x.Elem
-	case *types.Iterator:
-		return x.Elem
-	default:
-		if types.Equal(t, types.Str) {
-			return types.Str
-		}
-		if types.Equal(t, types.Bytes) {
-			return types.Int
-		}
-		return types.Invalid
-	}
+	return types.IterableElem(t)
 }

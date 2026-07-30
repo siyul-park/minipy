@@ -31,6 +31,9 @@ func BinaryType(c module.Checker, left types.Type, op token.Type, right types.Ty
 		if list, ok := left.(*types.List); ok && types.AssignableTo(right, left) {
 			return types.NewList(list.Elem)
 		}
+		if isDynamic(left) || isDynamic(right) {
+			return types.Any
+		}
 		return arith(c, left, op, right, pos)
 	case token.STAR:
 		if types.Equal(left, types.Str) && types.Equal(right, types.Int) ||
@@ -42,6 +45,9 @@ func BinaryType(c module.Checker, left types.Type, op token.Type, right types.Ty
 		}
 		if list, ok := right.(*types.List); ok && types.Equal(left, types.Int) {
 			return types.NewList(list.Elem)
+		}
+		if isDynamic(left) || isDynamic(right) {
+			return types.Any
 		}
 		return arith(c, left, op, right, pos)
 	case token.MINUS, token.DOUBLESLASH, token.PERCENT, token.DOUBLESTAR:
@@ -58,10 +64,16 @@ func BinaryType(c module.Checker, left types.Type, op token.Type, right types.Ty
 			(types.Equal(left, types.Float) && types.Equal(right, types.Int)) {
 			return types.Float
 		}
+		if isDynamic(left) || isDynamic(right) {
+			return types.Any
+		}
 		return mismatch(c, op, left, right, pos)
 	case token.AMP, token.PIPE, token.CARET, token.LSHIFT, token.RSHIFT:
 		if types.Equal(left, types.Int) && types.Equal(right, types.Int) {
 			return types.Int
+		}
+		if isDynamic(left) || isDynamic(right) {
+			return types.Any
 		}
 		return mismatch(c, op, left, right, pos)
 	default:
@@ -81,12 +93,20 @@ func arith(c module.Checker, left types.Type, op token.Type, right types.Type, p
 		(types.Equal(left, types.Float) && types.Equal(right, types.Int)) {
 		return types.Float
 	}
+	if isDynamic(left) || isDynamic(right) {
+		return types.Any
+	}
 	return mismatch(c, op, left, right, pos)
 }
 
 func mismatch(c module.Checker, op token.Type, left, right types.Type, pos token.Pos) types.Type {
 	c.Error(pos, token.TypeMismatch, "unsupported operand type(s) for %s: %s and %s", op, left, right)
 	return types.Invalid
+}
+
+// isDynamic reports whether a type requires runtime dispatch (Any or Union).
+func isDynamic(t types.Type) bool {
+	return types.IsDynamic(t)
 }
 
 // UnaryType applies the unary operator typing rules for the operand expression.
@@ -97,6 +117,9 @@ func UnaryType(c module.Checker, op token.Type, arg ast.Expr) types.Type {
 		if t.IsNumeric() {
 			return t
 		}
+		if isDynamic(t) {
+			return types.Any
+		}
 		if t != types.Invalid {
 			c.Error(arg.Pos(), token.TypeMismatch, "bad operand type for unary %s: %s", op, t)
 		}
@@ -105,11 +128,17 @@ func UnaryType(c module.Checker, op token.Type, arg ast.Expr) types.Type {
 		if types.Equal(t, types.Int) {
 			return types.Int
 		}
+		if isDynamic(t) {
+			return types.Any
+		}
 		if t != types.Invalid {
 			c.Error(arg.Pos(), token.TypeMismatch, "bad operand type for unary ~: %s", t)
 		}
 		return types.Invalid
 	case token.NOT:
+		if isDynamic(t) {
+			return types.Bool
+		}
 		if !types.Equal(t, types.Bool) && t != types.Invalid {
 			c.Error(arg.Pos(), token.TypeMismatch, "'not' requires bool, got %s", t)
 		}
@@ -140,6 +169,9 @@ func Comparable(c module.Checker, op token.Type, left, right types.Type, pos tok
 		return
 	}
 	if op == token.IN || op == token.NOTIN {
+		if isDynamic(right) {
+			return
+		}
 		if !ContainsType(left, right) {
 			c.Error(pos, token.NotIterable, "'%s' requires container RHS, got %s in %s", op, left, right)
 		}
@@ -149,6 +181,10 @@ func Comparable(c module.Checker, op token.Type, left, right types.Type, pos tok
 		if leftEllipsis != rightEllipsis || op != token.EQ && op != token.NE {
 			c.Error(pos, token.NotComparable, "'%s' not supported between instances of %s and %s", op, left, right)
 		}
+		return
+	}
+	// Dynamic types accept all comparisons at the checker level; dispatch at runtime.
+	if isDynamic(left) || isDynamic(right) {
 		return
 	}
 	if types.Equal(left, types.None) || types.Equal(right, types.None) {
@@ -184,6 +220,9 @@ func identityComparable(t types.Type) bool {
 // ContainsType reports whether a needle may be tested for membership in a
 // haystack container type.
 func ContainsType(needle, haystack types.Type) bool {
+	if isDynamic(haystack) {
+		return true
+	}
 	switch t := haystack.(type) {
 	case *types.List:
 		return types.AssignableTo(needle, t.Elem)

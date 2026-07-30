@@ -652,24 +652,7 @@ func (c *checker) forStmt(n *ast.For) {
 }
 
 func iterableElem(t types.Type) types.Type {
-	switch x := t.(type) {
-	case *types.List:
-		return x.Elem
-	case *types.Dict:
-		return x.Key
-	case *types.Set:
-		return x.Elem
-	case *types.Iterator:
-		return x.Elem
-	default:
-		if types.Equal(t, types.Str) {
-			return types.Str
-		}
-		if types.Equal(t, types.Bytes) {
-			return types.Int
-		}
-		return types.Invalid
-	}
+	return types.IterableElem(t)
 }
 
 func (c *checker) bindForTupleTarget(target *ast.TupleLit, elem types.Type) {

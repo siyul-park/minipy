@@ -1086,12 +1086,9 @@ func (c *lowerer) narrowCast(x *ast.Name) {
 }
 
 // refDynamic reports whether a type is represented as minivm's dynamic ref —
-// a union or Any — whose members are recovered with REF_TEST / REF_CAST.
+// a union or Any -- whose members are recovered with REF_TEST / REF_CAST.
 func refDynamic(t types.Type) bool {
-	if _, ok := t.(*types.Union); ok {
-		return true
-	}
-	return types.IsAny(t)
+	return types.IsDynamic(t)
 }
 
 func (c *lowerer) typ(name string) types.Type {
@@ -1169,6 +1166,13 @@ func (c *lowerer) emitWhile(n *ast.While) {
 // values with the minivm coroutine/iterator protocol. continue → increment or
 // resume, break → past the else block.
 func (c *lowerer) emitFor(n *ast.For) {
+	if refDynamic(c.types[n.Iter]) {
+		c.emitIteratorFor(n, func() {
+			c.expr(n.Iter)
+			c.callHost(operator.DynIter())
+		})
+		return
+	}
 	if c.iterates(c.types[n.Iter]) {
 		c.emitIteratorFor(n, func() {
 			c.iterate(n.Iter, c.types[n.Iter])
