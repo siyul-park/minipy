@@ -151,3 +151,26 @@ func TestRandomModuleErrors(t *testing.T) {
 		code(t, err, token.TypeMismatch)
 	})
 }
+
+func TestRandomModuleRuntimeErrors(t *testing.T) {
+	t.Run("randrange with zero stop", func(t *testing.T) {
+		src := "import random\nrandom.seed(42)\nx: int = random.randrange(0)\nprint(str(x))\n"
+		err := runError(t, src)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "empty range")
+	})
+
+	t.Run("randrange with inverted range", func(t *testing.T) {
+		src := "import random\nrandom.seed(42)\nx: int = random.randrange(5, 3)\nprint(str(x))\n"
+		err := runError(t, src)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "empty range")
+	})
+
+	t.Run("choice with empty list", func(t *testing.T) {
+		src := "import random\nrandom.seed(42)\nxs: list[int] = []\nx: int = random.choice(xs)\nprint(str(x))\n"
+		err := runError(t, src)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "empty sequence")
+	})
+}

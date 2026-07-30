@@ -3,6 +3,11 @@
 // functions (getrecursionlimit, exit). Constants are ConstantSymbol values that
 // emit inline. Static types are preferred; dynamic/Any arguments are supported
 // with runtime dispatch.
+//
+// Restriction: sys.exit() is a hard VM halt (UNREACHABLE instruction), not a
+// recoverable SystemExit exception as in CPython. The exit code argument is
+// evaluated for side effects but discarded; the VM terminates unconditionally
+// with no recovery path.
 package sysmod
 
 import (

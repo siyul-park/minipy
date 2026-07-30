@@ -1,0 +1,28 @@
+{
+  "id": "FEAT-006",
+  "type": "fix",
+  "description": "Address code review issues: fix dynamic-type emit gap in math/random modules, remove intBinarySymbol factory, add documentation comments, and add runtime error integration tests.",
+  "status": "in_progress",
+  "steps": [
+    "Fix issue #1: Add dynamic dispatch emit paths for math/random functions when argument type is Any (TypeRef at VM level)",
+    "Fix issue #2: Remove intBinarySymbol factory, inline two separate NewSymbol calls in New()",
+    "Fix issue #3: Add comment documenting that seed() is process-global",
+    "Fix issue #5: Add comment in math.go noting ceil/floor return float not int (deviation from CPython)",
+    "Fix issue #6: Add integration tests for runtime error paths: factorial(-1), reduce empty list, randrange(0), randrange(5,3), choice([])",
+    "Fix issue #7: Add comment documenting sys.exit behavior as hard halt"
+  ],
+  "acceptance_criteria": [
+    "go vet ./... passes",
+    "go test ./... passes",
+    "Dynamic-typed math/random inputs emit correct VM code with runtime type dispatch",
+    "intBinarySymbol factory is removed",
+    "Documentation comments are added for global RNG state, ceil/floor deviation, and sys.exit behavior",
+    "Runtime error path tests are present and passing"
+  ],
+  "verification": [
+    "go vet ./...",
+    "go test ./..."
+  ],
+  "blocked_reason": null,
+  "findings": null
+}

@@ -64,3 +64,12 @@ func TestFunctoolsModuleErrors(t *testing.T) {
 		code(t, err, token.ArityMismatch)
 	})
 }
+
+func TestFunctoolsModuleRuntimeErrors(t *testing.T) {
+	t.Run("reduce with empty list and no initial value", func(t *testing.T) {
+		src := "from functools import reduce\nxs: list[int] = []\nresult: int = reduce(lambda a, b: a + b, xs)\nprint(str(result))\n"
+		err := runError(t, src)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "reduce")
+	})
+}

@@ -132,3 +132,12 @@ func TestMathModuleErrors(t *testing.T) {
 		code(t, err, token.TypeMismatch)
 	})
 }
+
+func TestMathModuleRuntimeErrors(t *testing.T) {
+	t.Run("factorial of negative number", func(t *testing.T) {
+		src := "from math import factorial\nprint(str(factorial(-1)))\n"
+		err := runError(t, src)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "factorial")
+	})
+}
