@@ -2,26 +2,26 @@
 
 Repository contract for coding agents working on minipy.
 
-`docs/coding-patterns.md` is accepted RFC 0001 and the normative coding and
-compiler-architecture standard. This file routes work to that RFC and defines the
-required execution workflow. It MUST NOT duplicate detailed RFC rules.
+`docs/coding-patterns.md` is the normative coding and compiler-architecture
+standard. This file routes work to that document and defines the required
+execution workflow. It MUST NOT duplicate detailed standard rules.
 
 ## Instruction priority
 
 1. The user's latest explicit request.
 2. The closest applicable repository instruction.
 3. This repository contract.
-4. RFC 0001 (`docs/coding-patterns.md`).
+4. The coding standard (`docs/coding-patterns.md`).
 5. General Go convention.
 
-Nearby code overrides RFC 0001 only when it is more specific, internally
-consistent, and compliant. Mention unresolved instruction conflicts in the final
-summary.
+Nearby code overrides the coding standard only when it is more specific,
+internally consistent, and compliant. Mention unresolved instruction conflicts
+in the final summary.
 
 ## Required workflow
 
 1. Run `git status --short --branch`; never overwrite unrelated user changes.
-2. Read RFC 0001 §2 and the task sections from its §1.3 reading index.
+2. Read the coding standard SS2 and the task sections from its SS1.3 reading index.
 3. Read the owning specification from the Task Router before code or test edits.
 4. Establish a runnable baseline before changing behavior.
 5. For multi-package or uncertain work, map ownership and phase boundaries before
@@ -48,15 +48,15 @@ automated verification.
 
 | Task | Read | Usually edit | Narrow verification |
 |---|---|---|---|
-| tokens / lexing | RFC §3-§4, §6-§11; `docs/spec/01-lexical.md` | `token/`, `lexer/` | `go test ./token ./lexer` |
-| parsing / grammar | RFC §3-§8, §11; `docs/spec/03-grammar.md` | `ast/`, `parser/` | `go test ./ast ./parser` |
-| types / checker / diagnostics | RFC §5-§9, §11; `docs/spec/02-types.md`, `docs/spec/04-static-semantics.md` | `types/`, `compiler/check*.go`, `token/error.go` | `go test ./types ./compiler` |
-| lowering / program passes | RFC §6-§11; `docs/spec/05-codegen.md` | `compiler/lower*.go`, `compiler/compiler.go`, `hostabi/` | `go test ./compiler ./hostabi` |
-| builtins / operators / native modules | RFC §5-§9, §11; `docs/spec/06-builtins.md` | `builtins/`, `operator/`, `module/`, `typing/` | `go test ./builtins ./operator ./module ./typing ./compiler` |
-| module graph / imports | RFC §5-§10; `docs/spec/00-overview.md`, `docs/spec/04-static-semantics.md` | `compiler/`, `module/` | `go test ./compiler ./module` |
-| CLI / REPL | RFC §3-§5, §9-§11; `README.md`, `docs/spec/00-overview.md` | `cmd/minipy/` | `go test ./cmd/minipy ./compiler` |
-| coding standard | all of RFC 0001 | RFC, this file, tool overlays | docs review + `go test ./...` when code changes |
-| compatibility / status | RFC §12; `docs/README.md` | `docs/`, `README.md` | docs review + owning package tests |
+| tokens / lexing | SS3-SS4, SS6-SS11; `docs/spec/01-lexical.md` | `token/`, `lexer/` | `go test ./token ./lexer` |
+| parsing / grammar | SS3-SS8, SS11; `docs/spec/03-grammar.md` | `ast/`, `parser/` | `go test ./ast ./parser` |
+| types / checker / diagnostics | SS5-SS9, SS11; `docs/spec/02-types.md`, `docs/spec/04-static-semantics.md` | `types/`, `compiler/check*.go`, `token/error.go` | `go test ./types ./compiler` |
+| lowering / program passes | SS6-SS11; `docs/spec/05-codegen.md` | `compiler/lower*.go`, `compiler/compiler.go`, `hostabi/` | `go test ./compiler ./hostabi` |
+| builtins / operators / native modules | SS5-SS9, SS11; `docs/spec/06-builtins.md` | `builtins/`, `operator/`, `module/`, `typing/` | `go test ./builtins ./operator ./module ./typing ./compiler` |
+| module graph / imports | SS5-SS10; `docs/spec/00-overview.md`, `docs/spec/04-static-semantics.md` | `compiler/`, `module/` | `go test ./compiler ./module` |
+| CLI / REPL | SS3-SS5, SS9-SS11; `README.md`, `docs/spec/00-overview.md` | `cmd/minipy/` | `go test ./cmd/minipy ./compiler` |
+| coding standard | all of `docs/coding-patterns.md` | the standard, this file, tool overlays | docs review + `go test ./...` when code changes |
+| compatibility / status | SS12; `docs/README.md` | `docs/`, `README.md` | docs review + owning package tests |
 
 ## Project and ownership map
 
@@ -112,14 +112,14 @@ source -> tokens -> AST -> checked module graph -> lowered program
 | builtins and native modules | `docs/spec/06-builtins.md` |
 | compatibility | `docs/compatibility.md` |
 | completed and deferred work | `docs/roadmap.md` |
-| coding and architecture standard | `docs/coding-patterns.md` (RFC 0001) |
+| coding and architecture standard | `docs/coding-patterns.md` |
 
 ## Completion Gate
 
 Do not report completion, commit, push, or open a PR until all applicable items
 are true:
 
-1. Re-read every touched file against RFC 0001 §2 and its task sections.
+1. Re-read every touched file against the coding standard SS2 and its task sections.
 2. Confirm every touched symbol has a current owner and reason to exist.
 3. Remove obsolete wrappers, helpers, fields, parameters, results, and aliases.
 4. Confirm functions hold one abstraction level and callers precede callees.
@@ -130,13 +130,13 @@ are true:
 8. Confirm tests use public behavior or an explicitly protected returned program
    representation, never a private-state back door.
 9. Run narrow tests, `go vet ./...`, and `go test ./...`.
-10. Synchronize specs, compatibility, roadmap, workflow, and RFC documentation.
+10. Synchronize specs, compatibility, roadmap, workflow, and standard documentation.
 11. Review the complete diff for unrelated edits and breaking API impact.
 12. Perform a final simplification pass; record any deliberate deviation from a
     SHOULD rule or rejected simplification in the final summary.
 
 ## Git and publication
 
-Use focused Conventional Commits as defined by RFC 0001 §12.2. Public API breaks
+Use focused Conventional Commits as defined by the coding standard SS12.2. Public API breaks
 MUST use `!` and a `BREAKING CHANGE:` body. Push only a non-default branch and
 include tests, docs, migration impact, and known limitations in the PR body.

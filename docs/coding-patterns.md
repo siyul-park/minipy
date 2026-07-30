@@ -1,15 +1,6 @@
-# RFC 0001: Coding and Compiler Architecture Standard
+# Coding and Compiler Architecture Standard
 
-| Field | Value |
-|---|---|
-| Status | Accepted |
-| Scope | All Go code, tests, and contributor-facing documentation in minipy |
-| Owner | minipy maintainers |
-| Last updated | 2026-07-30 |
-
-## 1. Abstract
-
-This RFC is the normative coding and compiler-architecture specification for
+This document is the normative coding and compiler-architecture specification for
 minipy. It defines function shape, naming, APIs, domain ownership, declaration
 order, diagnostics, compilation state, concurrency, tests, and documentation.
 
@@ -17,17 +8,19 @@ A violation in a changed file is a blocking defect, not a style preference.
 Unchanged code is migrated when it is touched or when a repository-wide
 conformance change explicitly includes it.
 
+## 1. Precedence and requirement levels
+
 ### 1.1 Precedence
 
 Apply the first rule that resolves the question:
 
 1. A nearby pattern that is more specific, internally consistent, and compliant
-   with this RFC.
-2. This RFC.
+   with this standard.
+2. This document.
 3. General Go convention.
 
-Existing code does not override this RFC merely because it is nearby. A local
-exception MUST state the invariant that requires it.
+Existing code does not override this standard merely because it is nearby. A
+local exception MUST state the invariant that requires it.
 
 ### 1.2 Requirement levels
 
@@ -39,7 +32,7 @@ exception MUST state the invariant that requires it.
 
 ### 1.3 Reading index
 
-Read §2 for every change, then only the sections the change touches.
+Read SS2 for every change, then only the sections the change touches.
 
 | Change | Sections |
 |---|---|
@@ -381,7 +374,7 @@ failures unless that fallback is an explicit public contract.
 
 ### 8.1 Declaration groups
 
-Use this order unless §8.2 defines a domain-order exception:
+Use this order unless SS8.2 defines a domain-order exception:
 
 1. public types;
 2. private types;
@@ -575,8 +568,9 @@ Before completing a change, verify:
 
 ## 13. Design references
 
-This RFC adapts architecture principles from the following production compiler
-documentation while retaining minipy's own language and minivm contracts:
+This document adapts architecture principles from the following production
+compiler documentation while retaining minipy's own language and minivm
+contracts:
 
 - [CPython internals](https://devguide.python.org/internals/)
 - [PEP 339: Design of the CPython Compiler](https://peps.python.org/pep-0339/)
@@ -591,9 +585,9 @@ licensing restrictions.
 
 ## 14. Amendment process
 
-Changes to this RFC require a focused documentation change that states the
+Changes to this document require a focused documentation change that states the
 problem, the invariant being changed, migration impact, and rejected
 alternatives. A code change MUST NOT silently establish a conflicting convention.
 
-`AGENTS.md` routes work to this RFC and enforces completion. Tool-specific files
-MUST remain overlays and MUST NOT duplicate the normative rules.
+`AGENTS.md` routes work to this standard and enforces completion. Tool-specific
+files MUST remain overlays and MUST NOT duplicate the normative rules.
