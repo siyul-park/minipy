@@ -1293,6 +1293,45 @@ func (c *checker) methodCallType(n *ast.CallExpr, attr *ast.Attribute) types.Typ
 				if len(args) == 1 && types.Equal(args[0], types.Str) {
 					return types.Int
 				}
+			case "strip", "lstrip", "rstrip":
+				if len(args) == 0 || (len(args) == 1 && types.Equal(args[0], types.Str)) {
+					return types.Str
+				}
+			case "startswith", "endswith":
+				if len(args) == 1 && types.Equal(args[0], types.Str) {
+					return types.Bool
+				}
+			case "replace":
+				if (len(args) == 2 || len(args) == 3) &&
+					types.Equal(args[0], types.Str) && types.Equal(args[1], types.Str) &&
+					(len(args) == 2 || types.Equal(args[2], types.Int)) {
+					return types.Str
+				}
+			case "count":
+				if len(args) == 1 && types.Equal(args[0], types.Str) {
+					return types.Int
+				}
+			case "isdigit", "isalpha", "isalnum", "isspace":
+				if len(args) == 0 {
+					return types.Bool
+				}
+			case "capitalize", "title", "swapcase":
+				if len(args) == 0 {
+					return types.Str
+				}
+			case "center", "ljust", "rjust":
+				if (len(args) == 1 && types.Equal(args[0], types.Int)) ||
+					(len(args) == 2 && types.Equal(args[0], types.Int) && types.Equal(args[1], types.Str)) {
+					return types.Str
+				}
+			case "zfill":
+				if len(args) == 1 && types.Equal(args[0], types.Int) {
+					return types.Str
+				}
+			case "encode":
+				if len(args) == 0 {
+					return types.Bytes
+				}
 			}
 		}
 	}

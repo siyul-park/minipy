@@ -191,6 +191,57 @@ length, clamps indexes below zero to `0`, and clamps indexes above the current
 length to `len(list)`. `extend` snapshots the source length before mutation, so
 `xs.extend(xs)` appends the original contents once. `reverse` mutates in place.
 
+## String Methods
+
+Supported `str` methods:
+
+| Method | Arity | Accepted argument types | Result |
+|---|---:|---|---|
+| `upper()` | 0 | none | `str` |
+| `lower()` | 0 | none | `str` |
+| `split()` | 0 | none | `list[str]` |
+| `split(sep)` | 1 | `str` | `list[str]` |
+| `join(parts)` | 1 | `list[str]` | `str` |
+| `find(sub)` | 1 | `str` | `int` |
+| `strip()` | 0 | none | `str` |
+| `strip(chars)` | 1 | `str` | `str` |
+| `lstrip()` | 0 | none | `str` |
+| `lstrip(chars)` | 1 | `str` | `str` |
+| `rstrip()` | 0 | none | `str` |
+| `rstrip(chars)` | 1 | `str` | `str` |
+| `startswith(prefix)` | 1 | `str` | `bool` |
+| `endswith(suffix)` | 1 | `str` | `bool` |
+| `replace(old, new)` | 2 | `str`, `str` | `str` |
+| `replace(old, new, count)` | 3 | `str`, `str`, `int` | `str` |
+| `count(sub)` | 1 | `str` | `int` |
+| `isdigit()` | 0 | none | `bool` |
+| `isalpha()` | 0 | none | `bool` |
+| `isalnum()` | 0 | none | `bool` |
+| `isspace()` | 0 | none | `bool` |
+| `capitalize()` | 0 | none | `str` |
+| `title()` | 0 | none | `str` |
+| `swapcase()` | 0 | none | `str` |
+| `center(width)` | 1 | `int` | `str` |
+| `center(width, fill)` | 2 | `int`, `str` | `str` |
+| `ljust(width)` | 1 | `int` | `str` |
+| `ljust(width, fill)` | 2 | `int`, `str` | `str` |
+| `rjust(width)` | 1 | `int` | `str` |
+| `rjust(width, fill)` | 2 | `int`, `str` | `str` |
+| `zfill(width)` | 1 | `int` | `str` |
+| `encode()` | 0 | none | `bytes` |
+
+`strip`/`lstrip`/`rstrip` without arguments strip whitespace; with a `chars`
+argument they strip any character present in that string. `startswith`/`endswith`
+test for a fixed prefix/suffix. `replace` replaces all occurrences by default;
+with the optional `count` argument it replaces at most that many. `count` returns
+the number of non-overlapping occurrences of the substring. The `is*` predicates
+return `False` for empty strings. `capitalize` uppercases the first character and
+lowercases the rest. `title` uppercases the first letter of each word. `swapcase`
+swaps upper/lower case. `center`/`ljust`/`rjust` pad to the given width with a
+fill character (default space). `zfill` pads with leading zeros, preserving a
+leading sign character. `encode` returns the UTF-8 byte representation as
+`bytes`.
+
 ## Exceptions
 
 `builtins` also provides the builtin exception hierarchy used by the checker and

@@ -138,6 +138,7 @@ full CPython compatibility.
 | Slice assignment/deletion | ◐ | `list[T]` contiguous slices only; omitted step or literal `1`; replacement length must match. |
 | List literals | ✅ | Homogeneous; empty needs hint. |
 | List methods | ◐ | `append`, `pop`, `index`, `insert`, `extend`, and `reverse`; statically typed homogeneous lists only. |
+| String methods | ◐ | `upper`, `lower`, `split`, `join`, `find`, `strip`, `lstrip`, `rstrip`, `startswith`, `endswith`, `replace`, `count`, `isdigit`, `isalpha`, `isalnum`, `isspace`, `capitalize`, `title`, `swapcase`, `center`, `ljust`, `rjust`, `zfill`, `encode`; statically typed. |
 | Dict literals | ✅ | Homogeneous; empty needs hint; scalar hashable keys. |
 | Set literals | ✅ | Homogeneous; empty needs hint; scalar hashable elements. |
 | Tuple literals | ✅ | Fixed arity, heterogeneous. |

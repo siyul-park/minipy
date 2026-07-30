@@ -936,6 +936,68 @@ func (c *lowerer) methodCall(x *ast.CallExpr, attr *ast.Attribute) {
 		c.callHost(c.strJoin())
 	case "find":
 		c.callHost(c.strFind())
+	case "strip":
+		if len(x.Args) == 0 {
+			c.callHost(c.strStripNoArg())
+		} else {
+			c.callHost(c.strStripChars())
+		}
+	case "lstrip":
+		if len(x.Args) == 0 {
+			c.callHost(c.strLStripNoArg())
+		} else {
+			c.callHost(c.strLStripChars())
+		}
+	case "rstrip":
+		if len(x.Args) == 0 {
+			c.callHost(c.strRStripNoArg())
+		} else {
+			c.callHost(c.strRStripChars())
+		}
+	case "startswith":
+		c.callHost(c.strStartsWith())
+	case "endswith":
+		c.callHost(c.strEndsWith())
+	case "replace":
+		if len(x.Args) == 2 {
+			c.emit(instr.I64_CONST, ^uint64(0))
+		}
+		c.callHost(c.strReplace())
+	case "count":
+		c.callHost(c.strCount())
+	case "isdigit":
+		c.callHost(c.strIsDigit())
+	case "isalpha":
+		c.callHost(c.strIsAlpha())
+	case "isalnum":
+		c.callHost(c.strIsAlnum())
+	case "isspace":
+		c.callHost(c.strIsSpace())
+	case "capitalize":
+		c.callHost(c.strCapitalize())
+	case "title":
+		c.callHost(c.strTitle())
+	case "swapcase":
+		c.callHost(c.strSwapCase())
+	case "center":
+		if len(x.Args) == 1 {
+			c.constGet(vmtypes.String(" "))
+		}
+		c.callHost(c.strCenter())
+	case "ljust":
+		if len(x.Args) == 1 {
+			c.constGet(vmtypes.String(" "))
+		}
+		c.callHost(c.strLJust())
+	case "rjust":
+		if len(x.Args) == 1 {
+			c.constGet(vmtypes.String(" "))
+		}
+		c.callHost(c.strRJust())
+	case "zfill":
+		c.callHost(c.strZFill())
+	case "encode":
+		c.callHost(c.strEncode())
 	default:
 		c.fail(fmt.Errorf("lower method %s on %T: unsupported", attr.Name, recvType))
 	}
