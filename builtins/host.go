@@ -3,6 +3,8 @@ package builtins
 import (
 	"errors"
 	"fmt"
+	"math"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -16,11 +18,13 @@ import (
 // Runtime ValueError cases exposed by builtin host functions. The compiler
 // boundary can classify these by identity without matching message text.
 var (
-	ErrIntValue   = errors.New("invalid literal for int() with base 10")
-	ErrFloatValue = errors.New("could not convert string to float")
-	ErrRangeStep  = errors.New("range() step must not be zero")
-	ErrOrdValue   = errors.New("ord() expected a single Unicode character")
-	ErrChrValue   = errors.New("chr() argument out of range")
+	ErrIntValue      = errors.New("invalid literal for int() with base 10")
+	ErrFloatValue    = errors.New("could not convert string to float")
+	ErrRangeStep     = errors.New("range() step must not be zero")
+	ErrOrdValue      = errors.New("ord() expected a single Unicode character")
+	ErrChrValue      = errors.New("chr() argument out of range")
+	ErrMinMaxEmpty   = errors.New("min()/max() arg is an empty sequence")
+	ErrDivisionByZero = errors.New("division by zero")
 )
 
 type rangeIterator struct {
@@ -283,4 +287,420 @@ func bytesIter() *interp.HostFunction {
 			return []vmtypes.Boxed{vmtypes.BoxRef(addr)}, nil
 		},
 	)
+}
+
+func sortedHost(arg types.Type) *interp.HostFunction {
+	list := arg.(*types.List)
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: []vmtypes.Type{arg.VM()}, Returns: []vmtypes.Type{arg.VM()}},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			typ, elems, err := hostabi.ArrayElems(i, params[0])
+			if err != nil {
+				return nil, err
+			}
+			copied := append([]vmtypes.Boxed(nil), elems...)
+			var sortErr error
+			sort.SliceStable(copied, func(a, b int) bool {
+				if sortErr != nil {
+					return false
+				}
+				return boxedLess(i, copied[a], copied[b], list.Elem, &sortErr)
+			})
+			if sortErr != nil {
+				return nil, sortErr
+			}
+			return hostabi.AllocArray(i, typ, copied)
+		},
+	)
+}
+
+func reversedHost(arg types.Type) *interp.HostFunction {
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: []vmtypes.Type{arg.VM()}, Returns: []vmtypes.Type{arg.VM()}},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			typ, elems, err := hostabi.ArrayElems(i, params[0])
+			if err != nil {
+				return nil, err
+			}
+			copied := make([]vmtypes.Boxed, len(elems))
+			for idx, e := range elems {
+				copied[len(elems)-1-idx] = e
+			}
+			return hostabi.AllocArray(i, typ, copied)
+		},
+	)
+}
+
+func minListHost(arg types.Type) *interp.HostFunction {
+	list := arg.(*types.List)
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: []vmtypes.Type{arg.VM()}, Returns: []vmtypes.Type{list.Elem.VM()}},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			_, elems, err := hostabi.ArrayElems(i, params[0])
+			if err != nil {
+				return nil, err
+			}
+			if len(elems) == 0 {
+				return nil, ErrMinMaxEmpty
+			}
+			result := elems[0]
+			for _, e := range elems[1:] {
+				if boxedLess(i, e, result, list.Elem, &err) {
+					result = e
+				}
+				if err != nil {
+					return nil, err
+				}
+			}
+			return []vmtypes.Boxed{result}, nil
+		},
+	)
+}
+
+func maxListHost(arg types.Type) *interp.HostFunction {
+	list := arg.(*types.List)
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: []vmtypes.Type{arg.VM()}, Returns: []vmtypes.Type{list.Elem.VM()}},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			_, elems, err := hostabi.ArrayElems(i, params[0])
+			if err != nil {
+				return nil, err
+			}
+			if len(elems) == 0 {
+				return nil, ErrMinMaxEmpty
+			}
+			result := elems[0]
+			for _, e := range elems[1:] {
+				if boxedLess(i, result, e, list.Elem, &err) {
+					result = e
+				}
+				if err != nil {
+					return nil, err
+				}
+			}
+			return []vmtypes.Boxed{result}, nil
+		},
+	)
+}
+
+func minArgsHost(elem types.Type, n int) *interp.HostFunction {
+	params := make([]vmtypes.Type, n)
+	for idx := range params {
+		params[idx] = elem.VM()
+	}
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: params, Returns: []vmtypes.Type{elem.VM()}},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			result := params[0]
+			for _, p := range params[1:] {
+				var err error
+				if boxedLess(i, p, result, elem, &err) {
+					result = p
+				}
+				if err != nil {
+					return nil, err
+				}
+			}
+			return []vmtypes.Boxed{result}, nil
+		},
+	)
+}
+
+func maxArgsHost(elem types.Type, n int) *interp.HostFunction {
+	params := make([]vmtypes.Type, n)
+	for idx := range params {
+		params[idx] = elem.VM()
+	}
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: params, Returns: []vmtypes.Type{elem.VM()}},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			result := params[0]
+			for _, p := range params[1:] {
+				var err error
+				if boxedLess(i, result, p, elem, &err) {
+					result = p
+				}
+				if err != nil {
+					return nil, err
+				}
+			}
+			return []vmtypes.Boxed{result}, nil
+		},
+	)
+}
+
+func sumHost(arg types.Type) *interp.HostFunction {
+	list := arg.(*types.List)
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: []vmtypes.Type{arg.VM()}, Returns: []vmtypes.Type{list.Elem.VM()}},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			_, elems, err := hostabi.ArrayElems(i, params[0])
+			if err != nil {
+				return nil, err
+			}
+			if types.Equal(list.Elem, types.Int) {
+				var total int64
+				for _, e := range elems {
+					total += e.I64()
+				}
+				return []vmtypes.Boxed{vmtypes.BoxI64(total)}, nil
+			}
+			var total float64
+			for _, e := range elems {
+				total += e.F64()
+			}
+			return []vmtypes.Boxed{vmtypes.BoxF64(total)}, nil
+		},
+	)
+}
+
+func anyHost() *interp.HostFunction {
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: []vmtypes.Type{types.NewList(types.Bool).VM()}, Returns: []vmtypes.Type{vmtypes.TypeI1}},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			_, elems, err := hostabi.ArrayElems(i, params[0])
+			if err != nil {
+				return nil, err
+			}
+			for _, e := range elems {
+				if e.Bool() {
+					return []vmtypes.Boxed{vmtypes.BoxI1(true)}, nil
+				}
+			}
+			return []vmtypes.Boxed{vmtypes.BoxI1(false)}, nil
+		},
+	)
+}
+
+func allHost() *interp.HostFunction {
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: []vmtypes.Type{types.NewList(types.Bool).VM()}, Returns: []vmtypes.Type{vmtypes.TypeI1}},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			_, elems, err := hostabi.ArrayElems(i, params[0])
+			if err != nil {
+				return nil, err
+			}
+			for _, e := range elems {
+				if !e.Bool() {
+					return []vmtypes.Boxed{vmtypes.BoxI1(false)}, nil
+				}
+			}
+			return []vmtypes.Boxed{vmtypes.BoxI1(true)}, nil
+		},
+	)
+}
+
+func roundHost() *interp.HostFunction {
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeF64}, Returns: []vmtypes.Type{vmtypes.TypeI64}},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			f := params[0].F64()
+			return []vmtypes.Boxed{vmtypes.BoxI64(int64(math.RoundToEven(f)))}, nil
+		},
+	)
+}
+
+func roundDigitsHost() *interp.HostFunction {
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeF64, vmtypes.TypeI64}, Returns: []vmtypes.Type{vmtypes.TypeF64}},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			f := params[0].F64()
+			n := params[1].I64()
+			shift := math.Pow(10, float64(n))
+			rounded := math.RoundToEven(f*shift) / shift
+			return []vmtypes.Boxed{vmtypes.BoxF64(rounded)}, nil
+		},
+	)
+}
+
+func divmodHost(elem types.Type) *interp.HostFunction {
+	if types.Equal(elem, types.Int) {
+		tupleType := types.NewTuple(types.Int, types.Int).VM().(*vmtypes.StructType)
+		return interp.NewHostFunction(
+			&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeI64, vmtypes.TypeI64}, Returns: []vmtypes.Type{vmtypes.TypeRef}},
+			func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+				a := params[0].I64()
+				b := params[1].I64()
+				if b == 0 {
+					return nil, ErrDivisionByZero
+				}
+				q := a / b
+				r := a % b
+				if (r != 0) && ((r ^ b) < 0) {
+					q--
+					r += b
+				}
+				addr, err := i.Alloc(vmtypes.NewStruct(tupleType, vmtypes.BoxI64(q), vmtypes.BoxI64(r)))
+				if err != nil {
+					return nil, err
+				}
+				return []vmtypes.Boxed{vmtypes.BoxRef(addr)}, nil
+			},
+		)
+	}
+	tupleType := types.NewTuple(types.Float, types.Float).VM().(*vmtypes.StructType)
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeF64, vmtypes.TypeF64}, Returns: []vmtypes.Type{vmtypes.TypeRef}},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			a := params[0].F64()
+			b := params[1].F64()
+			if b == 0 {
+				return nil, ErrDivisionByZero
+			}
+			q := math.Floor(a / b)
+			r := a - q*b
+			addr, err := i.Alloc(vmtypes.NewStruct(tupleType, vmtypes.BoxF64(q), vmtypes.BoxF64(r)))
+			if err != nil {
+				return nil, err
+			}
+			return []vmtypes.Boxed{vmtypes.BoxRef(addr)}, nil
+		},
+	)
+}
+
+func powHost(base, exp types.Type) *interp.HostFunction {
+	if types.Equal(base, types.Int) && types.Equal(exp, types.Int) {
+		return interp.NewHostFunction(
+			&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeI64, vmtypes.TypeI64}, Returns: []vmtypes.Type{vmtypes.TypeI64}},
+			func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+				b := params[0].I64()
+				e := params[1].I64()
+				result := intPow(b, e)
+				return []vmtypes.Boxed{vmtypes.BoxI64(result)}, nil
+			},
+		)
+	}
+	paramTypes := make([]vmtypes.Type, 2)
+	if types.Equal(base, types.Int) {
+		paramTypes[0] = vmtypes.TypeI64
+	} else {
+		paramTypes[0] = vmtypes.TypeF64
+	}
+	if types.Equal(exp, types.Int) {
+		paramTypes[1] = vmtypes.TypeI64
+	} else {
+		paramTypes[1] = vmtypes.TypeF64
+	}
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: paramTypes, Returns: []vmtypes.Type{vmtypes.TypeF64}},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			var bf, ef float64
+			if types.Equal(base, types.Int) {
+				bf = float64(params[0].I64())
+			} else {
+				bf = params[0].F64()
+			}
+			if types.Equal(exp, types.Int) {
+				ef = float64(params[1].I64())
+			} else {
+				ef = params[1].F64()
+			}
+			return []vmtypes.Boxed{vmtypes.BoxF64(math.Pow(bf, ef))}, nil
+		},
+	)
+}
+
+func hexHost() *interp.HostFunction {
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeI64}, Returns: []vmtypes.Type{vmtypes.TypeString}},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			n := params[0].I64()
+			var s string
+			if n < 0 {
+				s = fmt.Sprintf("-0x%x", -n)
+			} else {
+				s = fmt.Sprintf("0x%x", n)
+			}
+			return hostabi.AllocString(i, s)
+		},
+	)
+}
+
+func octHost() *interp.HostFunction {
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeI64}, Returns: []vmtypes.Type{vmtypes.TypeString}},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			n := params[0].I64()
+			var s string
+			if n < 0 {
+				s = fmt.Sprintf("-0o%o", -n)
+			} else {
+				s = fmt.Sprintf("0o%o", n)
+			}
+			return hostabi.AllocString(i, s)
+		},
+	)
+}
+
+func binHost() *interp.HostFunction {
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeI64}, Returns: []vmtypes.Type{vmtypes.TypeString}},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			n := params[0].I64()
+			var s string
+			if n < 0 {
+				s = "-0b" + strconv.FormatInt(-n, 2)
+			} else {
+				s = "0b" + strconv.FormatInt(n, 2)
+			}
+			return hostabi.AllocString(i, s)
+		},
+	)
+}
+
+func reprHost(t types.Type) *interp.HostFunction {
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: []vmtypes.Type{t.VM()}, Returns: []vmtypes.Type{vmtypes.TypeString}},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			if params[0].Kind() == vmtypes.KindRef && params[0].Ref() != 0 {
+				val, err := i.Load(params[0].Ref())
+				if err != nil {
+					return nil, err
+				}
+				if s, ok := val.(vmtypes.String); ok {
+					return hostabi.AllocString(i, hostabi.ReprString(string(s), false))
+				}
+			}
+			return hostabi.AllocString(i, hostabi.FormatScalar(i, params[0]))
+		},
+	)
+}
+
+func boxedLess(i *interp.Interpreter, a, b vmtypes.Boxed, elem types.Type, errp *error) bool {
+	switch {
+	case types.Equal(elem, types.Int):
+		return a.I64() < b.I64()
+	case types.Equal(elem, types.Float):
+		return a.F64() < b.F64()
+	case types.Equal(elem, types.Bool):
+		return !a.Bool() && b.Bool()
+	case types.Equal(elem, types.Str):
+		sa, e := hostabi.LoadStr(i, a)
+		if e != nil {
+			*errp = e
+			return false
+		}
+		sb, e := hostabi.LoadStr(i, b)
+		if e != nil {
+			*errp = e
+			return false
+		}
+		return sa < sb
+	}
+	return false
+}
+
+func intPow(base, exp int64) int64 {
+	if exp < 0 {
+		return 0
+	}
+	result := int64(1)
+	for exp > 0 {
+		if exp&1 == 1 {
+			result *= base
+		}
+		base *= base
+		exp >>= 1
+	}
+	return result
 }

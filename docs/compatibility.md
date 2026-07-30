@@ -185,6 +185,15 @@ full CPython compatibility.
 | `ord`, `chr` | ✅ | Unicode codepoint conversion; static `str->int` / `int->str`; `ValueError` for invalid inputs. `chr` rejects surrogate codepoints (`0xD800..0xDFFF`), diverging from CPython. |
 | `range`, `iter`, `next` | ✅ | Iterator paths. |
 | `enumerate`, `zip` | ✅ | List-based eager helpers. |
+| `sorted`, `reversed` | ✅ | Return new lists; `sorted` requires comparable element types. |
+| `min`, `max` | ✅ | Variadic (2+ same-type args) or single list of comparable elements. |
+| `sum` | ✅ | Accepts `list[int]` or `list[float]`. |
+| `any`, `all` | ✅ | Accept `list[bool]`; short-circuit evaluation. |
+| `round` | ✅ | 1-arg: `float -> int` (banker's rounding); 2-arg: `float, int -> float`. |
+| `divmod` | ✅ | Accepts same numeric type pair; returns tuple. Floor division semantics. |
+| `pow` | ✅ | `int,int -> int`; mixed/float yields `float`. |
+| `hex`, `oct`, `bin` | ✅ | `int -> str` formatting. |
+| `repr` | ✅ | Printable values to `str` with quotes for strings. |
 | `getattr`, `hasattr` | ◐ | Concrete class instances and literal declared field names only; no methods, dynamic strings, defaults, or runtime lookup. |
 | `isinstance` | ✅ | Type/class checks and narrowing support. |
 | Builtin exceptions | ✅ | Seeded class hierarchy. |

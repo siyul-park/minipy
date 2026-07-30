@@ -76,6 +76,23 @@ Implemented builtin functions:
 | `isinstance(x, T)` | 2 | value plus supported type/class expression | `bool` |
 | `ord(s)` | 1 | `str` (exactly one codepoint) | `int` |
 | `chr(n)` | 1 | `int` (`0 <= n <= 0x10FFFF`) | `str` |
+| `sorted(xs)` | 1 | `list[T]` where T is comparable (`int`, `float`, `str`, `bool`) | `list[T]` |
+| `reversed(xs)` | 1 | `list[T]` | `list[T]` |
+| `min(a, b, ...)` | 2+ | same comparable type (`int`, `float`, `str`, `bool`) | `T` |
+| `min(xs)` | 1 | `list[T]` where T is comparable | `T` |
+| `max(a, b, ...)` | 2+ | same comparable type (`int`, `float`, `str`, `bool`) | `T` |
+| `max(xs)` | 1 | `list[T]` where T is comparable | `T` |
+| `sum(xs)` | 1 | `list[int]` or `list[float]` | element type |
+| `any(xs)` | 1 | `list[bool]` | `bool` |
+| `all(xs)` | 1 | `list[bool]` | `bool` |
+| `round(x)` | 1 | `float` | `int` |
+| `round(x, n)` | 2 | `float`, `int` | `float` |
+| `divmod(a, b)` | 2 | `int`, `int` or `float`, `float` | `tuple[T, T]` |
+| `pow(base, exp)` | 2 | `int`/`float` combinations | `int` (both int) or `float` |
+| `hex(n)` | 1 | `int` | `str` |
+| `oct(n)` | 1 | `int` | `str` |
+| `bin(n)` | 1 | `int` | `str` |
+| `repr(x)` | 1 | printable values | `str` |
 
 `print` and `str` render supported lists, tuples, dictionaries, and sets recursively using Python-style delimiters and quoted nested strings.
 
