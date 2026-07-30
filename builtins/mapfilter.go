@@ -106,7 +106,6 @@ func emitMap(e module.Emitter, args []ast.Expr) {
 
 	top := e.Label()
 	end := e.Label()
-	cont := e.Label()
 	e.Bind(top)
 
 	// if i >= len(list): break
@@ -140,7 +139,6 @@ func emitMap(e module.Emitter, args []ast.Expr) {
 	e.Emit(instr.DROP)
 
 	// i++
-	e.Bind(cont)
 	e.Emit(instr.GLOBAL_GET, uint64(idxSlot))
 	e.Emit(instr.I64_CONST, 1)
 	e.Emit(instr.I64_ADD)

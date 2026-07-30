@@ -833,6 +833,8 @@ func (c *lowerer) augAssignSubscript(n *ast.AugAssign, sub *ast.Subscript) {
 		c.emit(instr.GLOBAL_GET, uint64(indexSlot))
 		c.emit(instr.SWAP)
 		c.emit(instr.MAP_SET)
+	default:
+		c.fail(fmt.Errorf("augmented subscript assignment for %T not supported", c.types[sub.X]))
 	}
 }
 

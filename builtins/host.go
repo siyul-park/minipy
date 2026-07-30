@@ -24,7 +24,8 @@ var (
 	ErrOrdValue      = errors.New("ord() expected a single Unicode character")
 	ErrChrValue      = errors.New("chr() argument out of range")
 	ErrMinMaxEmpty   = errors.New("min()/max() arg is an empty sequence")
-	ErrDivisionByZero = errors.New("division by zero")
+	ErrDivisionByZero    = errors.New("division by zero")
+	ErrNegativeExponent  = errors.New("negative exponent not supported for integer pow")
 )
 
 type rangeIterator struct {
@@ -565,7 +566,10 @@ func powHost(base, exp types.Type) *interp.HostFunction {
 			func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
 				b := params[0].I64()
 				e := params[1].I64()
-				result := intPow(b, e)
+				result, err := intPow(b, e)
+				if err != nil {
+					return nil, err
+				}
 				return []vmtypes.Boxed{vmtypes.BoxI64(result)}, nil
 			},
 		)
@@ -690,9 +694,9 @@ func boxedLess(i *interp.Interpreter, a, b vmtypes.Boxed, elem types.Type, errp 
 	return false
 }
 
-func intPow(base, exp int64) int64 {
+func intPow(base, exp int64) (int64, error) {
 	if exp < 0 {
-		return 0
+		return 0, ErrNegativeExponent
 	}
 	result := int64(1)
 	for exp > 0 {
@@ -702,5 +706,5 @@ func intPow(base, exp int64) int64 {
 		base *= base
 		exp >>= 1
 	}
-	return result
+	return result, nil
 }

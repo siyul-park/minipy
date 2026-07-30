@@ -593,7 +593,9 @@ func (c *lowerer) listRemove(receiver types.Type) *interp.HostFunction {
 					return nil, err
 				}
 				if equal {
-					out := append(elems[:idx], elems[idx+1:]...)
+					out := make([]vmtypes.Boxed, 0, len(elems)-1)
+					out = append(out, elems[:idx]...)
+					out = append(out, elems[idx+1:]...)
 					if err := i.Store(params[0].Ref(), vmtypes.NewArray(typ, out...)); err != nil {
 						return nil, err
 					}
