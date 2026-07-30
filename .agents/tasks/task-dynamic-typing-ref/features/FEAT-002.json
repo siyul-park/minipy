@@ -2,7 +2,7 @@
   "id": "FEAT-002",
   "type": "feat",
   "description": "Enable dynamic operations on Any-typed and union-typed values by adding runtime type dispatch through host functions. When the checker sees an operation on Any/Union (arithmetic, comparison, str/print, bool/truthiness, len, iteration), instead of rejecting it, accept the operation and lower it through host-based runtime dispatch that uses REF_TEST/REF_CAST to unbox, perform the concrete operation, and rebox. When types are statically known (through narrowing, specialization, or inference), the existing static paths are used for maximum performance -- this is the hybrid static/dynamic approach.",
-  "status": "in_progress",
+  "status": "completed",
   "steps": [
     "Step 1 - Dynamic arithmetic on Any/Union: In operator/types.go BinaryType(), when left or right (or both) is Any or Union, instead of returning TypeMismatch, return the appropriate result type. For Any op Any -> Any, for Union members that share a common result (e.g. int|float + int -> float), return the joined result. Add a new function DynamicBinaryResult(left, op, right) that computes what the result type would be for dynamic dispatch. For now support +, -, *, /, //, %, ** where at least one operand is Any or a union containing numeric types.",
     "Step 2 - Dynamic arithmetic lowering: In operator/emit.go EmitBinary(), when left or right is Any/Union, emit a call to a host function (dynBinaryOp) that receives both operands as ref values, the operation token, and returns a ref result. The host function uses Boxed.Kind()/Boxed.Type() to determine runtime types, performs the concrete operation, and returns the result. Create dynAdd, dynSub, dynMul, dynTrueDiv, dynFloorDiv, dynMod, dynPow host functions in a new file compiler/runtime_dynamic.go.",
@@ -32,5 +32,5 @@
     "go test -run TestCompileUnions ./compiler"
   ],
   "blocked_reason": null,
-  "findings": ""
+  "findings": "Implementation complete. Key finding: minivm stores list[int] as TypedArray[int64] (not *Array), so all dynamic host functions must use hostabi.ArrayElems() rather than direct type assertion on *vmtypes.Array. The verifier does not type-check CALL parameters (only counts them), so host functions with TypeRef params accept any Boxed value at runtime. The Boxed NaN-boxing makes all values self-describing via Kind(), enabling efficient runtime dispatch without separate boxing instructions."
 }
