@@ -275,6 +275,34 @@ from the argument dict into the receiver, overwriting existing keys. `setdefault
 returns the value for key if present; otherwise inserts key with the default value
 and returns it. `clear` removes all entries. `copy` returns a shallow copy.
 
+## Set Methods
+
+Supported homogeneous `set[T]` methods:
+
+| Method | Arity | Accepted argument types | Result |
+|---|---:|---|---|
+| `add(elem)` | 1 | `T` | `None` |
+| `remove(elem)` | 1 | `T` | `None` |
+| `discard(elem)` | 1 | `T` | `None` |
+| `pop()` | 0 | none | `T` |
+| `clear()` | 0 | none | `None` |
+| `union(other)` | 1 | `set[T]` | `set[T]` |
+| `intersection(other)` | 1 | `set[T]` | `set[T]` |
+| `difference(other)` | 1 | `set[T]` | `set[T]` |
+| `issubset(other)` | 1 | `set[T]` | `bool` |
+| `issuperset(other)` | 1 | `set[T]` | `bool` |
+| `copy()` | 0 | none | `set[T]` |
+
+`add` inserts an element; duplicates are silently ignored. `remove` deletes an
+element and raises `KeyError` if not found. `discard` deletes an element silently
+(no error if missing). `pop` removes and returns an arbitrary element; raises
+`KeyError` on an empty set. `clear` removes all elements. `union` returns a new
+set with elements from both sets. `intersection` returns a new set with elements
+common to both. `difference` returns a new set with elements in the receiver but
+not in the other. `issubset` returns `True` if all elements of the receiver are
+in the other set. `issuperset` returns `True` if all elements of the other set
+are in the receiver. `copy` returns a shallow copy.
+
 ## Exceptions
 
 `builtins` also provides the builtin exception hierarchy used by the checker and

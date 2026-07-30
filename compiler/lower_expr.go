@@ -915,6 +915,8 @@ func (c *lowerer) methodCall(x *ast.CallExpr, attr *ast.Attribute) {
 	case "pop":
 		if _, ok := recvType.(*types.Dict); ok {
 			c.callHost(c.dictPop(recvType, c.types[x]))
+		} else if _, ok := recvType.(*types.Set); ok {
+			c.callHost(c.setPop(recvType, c.types[x]))
 		} else {
 			if len(x.Args) == 0 {
 				c.emit(instr.I64_CONST, ^uint64(0))
@@ -938,6 +940,8 @@ func (c *lowerer) methodCall(x *ast.CallExpr, attr *ast.Attribute) {
 	case "copy":
 		if _, ok := recvType.(*types.Dict); ok {
 			c.callHost(c.dictCopy(recvType))
+		} else if _, ok := recvType.(*types.Set); ok {
+			c.callHost(c.setCopy(recvType))
 		} else {
 			c.callHost(c.listCopy(recvType))
 		}
@@ -951,13 +955,21 @@ func (c *lowerer) methodCall(x *ast.CallExpr, attr *ast.Attribute) {
 		if _, ok := recvType.(*types.Dict); ok {
 			c.callHost(c.dictClear(recvType))
 			c.emit(instr.REF_NULL)
+		} else if _, ok := recvType.(*types.Set); ok {
+			c.callHost(c.dictClear(recvType))
+			c.emit(instr.REF_NULL)
 		} else {
 			c.callHost(c.listClear(recvType))
 			c.emit(instr.REF_NULL)
 		}
 	case "remove":
-		c.callHost(c.listRemove(recvType))
-		c.emit(instr.REF_NULL)
+		if _, ok := recvType.(*types.Set); ok {
+			c.callHost(c.setRemove(recvType))
+			c.emit(instr.REF_NULL)
+		} else {
+			c.callHost(c.listRemove(recvType))
+			c.emit(instr.REF_NULL)
+		}
 	case "upper":
 		c.callHost(c.strUpper())
 	case "lower":
@@ -1031,6 +1043,23 @@ func (c *lowerer) methodCall(x *ast.CallExpr, attr *ast.Attribute) {
 		c.callHost(c.strZFill())
 	case "encode":
 		c.callHost(c.strEncode())
+	case "add":
+		c.emit(instr.I32_CONST, 1)
+		c.emit(instr.MAP_SET)
+		c.emit(instr.REF_NULL)
+	case "discard":
+		c.callHost(c.setDiscard(recvType))
+		c.emit(instr.REF_NULL)
+	case "union":
+		c.callHost(c.setUnion(recvType))
+	case "intersection":
+		c.callHost(c.setIntersection(recvType))
+	case "difference":
+		c.callHost(c.setDifference(recvType))
+	case "issubset":
+		c.callHost(c.setIsSubset(recvType))
+	case "issuperset":
+		c.callHost(c.setIsSuperset(recvType))
 	default:
 		c.fail(fmt.Errorf("lower method %s on %T: unsupported", attr.Name, recvType))
 	}

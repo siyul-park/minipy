@@ -1856,3 +1856,250 @@ func mapKey(v vmtypes.Boxed) vmtypes.MapKey {
 		return vmtypes.MapKey{Kind: vmtypes.KindRef, Bits: uint64(v.Ref())}
 	}
 }
+
+// --- Set methods ---
+
+func (c *lowerer) setRemove(receiver types.Type) *interp.HostFunction {
+	set := receiver.(*types.Set)
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: []vmtypes.Type{receiver.VM(), set.Elem.VM()}},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			val, err := i.Load(params[0].Ref())
+			if err != nil {
+				return nil, err
+			}
+			_, ok := mapDelete(val, params[1])
+			if !ok {
+				return nil, errDictKeyError
+			}
+			return nil, nil
+		},
+	)
+}
+
+func (c *lowerer) setDiscard(receiver types.Type) *interp.HostFunction {
+	set := receiver.(*types.Set)
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: []vmtypes.Type{receiver.VM(), set.Elem.VM()}},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			val, err := i.Load(params[0].Ref())
+			if err != nil {
+				return nil, err
+			}
+			mapDelete(val, params[1])
+			return nil, nil
+		},
+	)
+}
+
+func (c *lowerer) setPop(receiver types.Type, result types.Type) *interp.HostFunction {
+	set := receiver.(*types.Set)
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: []vmtypes.Type{receiver.VM()}, Returns: []vmtypes.Type{set.Elem.VM()}},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			keys, _, err := mapEntries(i, params[0])
+			if err != nil {
+				return nil, err
+			}
+			if len(keys) == 0 {
+				return nil, errDictKeyError
+			}
+			key := keys[0]
+			val, err := i.Load(params[0].Ref())
+			if err != nil {
+				return nil, err
+			}
+			mapDelete(val, key)
+			return []vmtypes.Boxed{key}, nil
+		},
+	)
+}
+
+func (c *lowerer) setCopy(receiver types.Type) *interp.HostFunction {
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: []vmtypes.Type{receiver.VM()}, Returns: []vmtypes.Type{receiver.VM()}},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			src, err := i.Load(params[0].Ref())
+			if err != nil {
+				return nil, err
+			}
+			mt, ok := src.Type().(*vmtypes.MapType)
+			if !ok {
+				return nil, interp.ErrTypeMismatch
+			}
+			keys, vals, err := mapEntries(i, params[0])
+			if err != nil {
+				return nil, err
+			}
+			out := vmtypes.NewMapForType(mt, len(keys))
+			for idx, key := range keys {
+				if err := mapSet(out, key, vals[idx]); err != nil {
+					return nil, err
+				}
+			}
+			addr, err := i.Alloc(out)
+			if err != nil {
+				return nil, err
+			}
+			return []vmtypes.Boxed{vmtypes.BoxRef(addr)}, nil
+		},
+	)
+}
+
+func (c *lowerer) setUnion(receiver types.Type) *interp.HostFunction {
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: []vmtypes.Type{receiver.VM(), receiver.VM()}, Returns: []vmtypes.Type{receiver.VM()}},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			src, err := i.Load(params[0].Ref())
+			if err != nil {
+				return nil, err
+			}
+			mt, ok := src.Type().(*vmtypes.MapType)
+			if !ok {
+				return nil, interp.ErrTypeMismatch
+			}
+			leftKeys, leftVals, err := mapEntries(i, params[0])
+			if err != nil {
+				return nil, err
+			}
+			rightKeys, rightVals, err := mapEntries(i, params[1])
+			if err != nil {
+				return nil, err
+			}
+			out := vmtypes.NewMapForType(mt, len(leftKeys)+len(rightKeys))
+			for idx, key := range leftKeys {
+				if err := mapSet(out, key, leftVals[idx]); err != nil {
+					return nil, err
+				}
+			}
+			for idx, key := range rightKeys {
+				if err := mapSet(out, key, rightVals[idx]); err != nil {
+					return nil, err
+				}
+			}
+			addr, err := i.Alloc(out)
+			if err != nil {
+				return nil, err
+			}
+			return []vmtypes.Boxed{vmtypes.BoxRef(addr)}, nil
+		},
+	)
+}
+
+func (c *lowerer) setIntersection(receiver types.Type) *interp.HostFunction {
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: []vmtypes.Type{receiver.VM(), receiver.VM()}, Returns: []vmtypes.Type{receiver.VM()}},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			src, err := i.Load(params[0].Ref())
+			if err != nil {
+				return nil, err
+			}
+			mt, ok := src.Type().(*vmtypes.MapType)
+			if !ok {
+				return nil, interp.ErrTypeMismatch
+			}
+			leftKeys, leftVals, err := mapEntries(i, params[0])
+			if err != nil {
+				return nil, err
+			}
+			out := vmtypes.NewMapForType(mt, 0)
+			for idx, key := range leftKeys {
+				_, found, err := mapGet(i, params[1], key)
+				if err != nil {
+					return nil, err
+				}
+				if found {
+					if err := mapSet(out, key, leftVals[idx]); err != nil {
+						return nil, err
+					}
+				}
+			}
+			addr, err := i.Alloc(out)
+			if err != nil {
+				return nil, err
+			}
+			return []vmtypes.Boxed{vmtypes.BoxRef(addr)}, nil
+		},
+	)
+}
+
+func (c *lowerer) setDifference(receiver types.Type) *interp.HostFunction {
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: []vmtypes.Type{receiver.VM(), receiver.VM()}, Returns: []vmtypes.Type{receiver.VM()}},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			src, err := i.Load(params[0].Ref())
+			if err != nil {
+				return nil, err
+			}
+			mt, ok := src.Type().(*vmtypes.MapType)
+			if !ok {
+				return nil, interp.ErrTypeMismatch
+			}
+			leftKeys, leftVals, err := mapEntries(i, params[0])
+			if err != nil {
+				return nil, err
+			}
+			out := vmtypes.NewMapForType(mt, 0)
+			for idx, key := range leftKeys {
+				_, found, err := mapGet(i, params[1], key)
+				if err != nil {
+					return nil, err
+				}
+				if !found {
+					if err := mapSet(out, key, leftVals[idx]); err != nil {
+						return nil, err
+					}
+				}
+			}
+			addr, err := i.Alloc(out)
+			if err != nil {
+				return nil, err
+			}
+			return []vmtypes.Boxed{vmtypes.BoxRef(addr)}, nil
+		},
+	)
+}
+
+func (c *lowerer) setIsSubset(receiver types.Type) *interp.HostFunction {
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: []vmtypes.Type{receiver.VM(), receiver.VM()}, Returns: []vmtypes.Type{vmtypes.TypeI1}},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			leftKeys, _, err := mapEntries(i, params[0])
+			if err != nil {
+				return nil, err
+			}
+			for _, key := range leftKeys {
+				_, found, err := mapGet(i, params[1], key)
+				if err != nil {
+					return nil, err
+				}
+				if !found {
+					return []vmtypes.Boxed{vmtypes.BoxI1(false)}, nil
+				}
+			}
+			return []vmtypes.Boxed{vmtypes.BoxI1(true)}, nil
+		},
+	)
+}
+
+func (c *lowerer) setIsSuperset(receiver types.Type) *interp.HostFunction {
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: []vmtypes.Type{receiver.VM(), receiver.VM()}, Returns: []vmtypes.Type{vmtypes.TypeI1}},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			rightKeys, _, err := mapEntries(i, params[1])
+			if err != nil {
+				return nil, err
+			}
+			for _, key := range rightKeys {
+				_, found, err := mapGet(i, params[0], key)
+				if err != nil {
+					return nil, err
+				}
+				if !found {
+					return []vmtypes.Boxed{vmtypes.BoxI1(false)}, nil
+				}
+			}
+			return []vmtypes.Boxed{vmtypes.BoxI1(true)}, nil
+		},
+	)
+}

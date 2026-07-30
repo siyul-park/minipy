@@ -1344,6 +1344,108 @@ func (c *checker) methodCallType(n *ast.CallExpr, attr *ast.Attribute) types.Typ
 			}
 			return t
 		}
+	case *types.Set:
+		args := c.positionalMethodArgs(n)
+		switch attr.Name {
+		case "add":
+			if len(args) != 1 {
+				c.errs.Add(n.Pos(), token.ArityMismatch, "set.add takes exactly 1 argument (%d given)", len(args))
+				return types.Invalid
+			}
+			if !types.AssignableTo(args[0], t.Elem) {
+				c.errs.Add(n.Args[0].Pos(), token.TypeMismatch, "set.add expects %s, got %s", t.Elem, args[0])
+				return types.Invalid
+			}
+			return types.None
+		case "remove":
+			if len(args) != 1 {
+				c.errs.Add(n.Pos(), token.ArityMismatch, "set.remove takes exactly 1 argument (%d given)", len(args))
+				return types.Invalid
+			}
+			if !types.AssignableTo(args[0], t.Elem) {
+				c.errs.Add(n.Args[0].Pos(), token.TypeMismatch, "set.remove expects %s, got %s", t.Elem, args[0])
+				return types.Invalid
+			}
+			return types.None
+		case "discard":
+			if len(args) != 1 {
+				c.errs.Add(n.Pos(), token.ArityMismatch, "set.discard takes exactly 1 argument (%d given)", len(args))
+				return types.Invalid
+			}
+			if !types.AssignableTo(args[0], t.Elem) {
+				c.errs.Add(n.Args[0].Pos(), token.TypeMismatch, "set.discard expects %s, got %s", t.Elem, args[0])
+				return types.Invalid
+			}
+			return types.None
+		case "pop":
+			if len(args) != 0 {
+				c.errs.Add(n.Pos(), token.ArityMismatch, "set.pop takes no arguments (%d given)", len(args))
+				return types.Invalid
+			}
+			return t.Elem
+		case "clear":
+			if len(args) != 0 {
+				c.errs.Add(n.Pos(), token.ArityMismatch, "set.clear takes no arguments (%d given)", len(args))
+				return types.Invalid
+			}
+			return types.None
+		case "union":
+			if len(args) != 1 {
+				c.errs.Add(n.Pos(), token.ArityMismatch, "set.union takes exactly 1 argument (%d given)", len(args))
+				return types.Invalid
+			}
+			if !types.Equal(args[0], t) {
+				c.errs.Add(n.Args[0].Pos(), token.TypeMismatch, "set.union expects %s, got %s", t, args[0])
+				return types.Invalid
+			}
+			return t
+		case "intersection":
+			if len(args) != 1 {
+				c.errs.Add(n.Pos(), token.ArityMismatch, "set.intersection takes exactly 1 argument (%d given)", len(args))
+				return types.Invalid
+			}
+			if !types.Equal(args[0], t) {
+				c.errs.Add(n.Args[0].Pos(), token.TypeMismatch, "set.intersection expects %s, got %s", t, args[0])
+				return types.Invalid
+			}
+			return t
+		case "difference":
+			if len(args) != 1 {
+				c.errs.Add(n.Pos(), token.ArityMismatch, "set.difference takes exactly 1 argument (%d given)", len(args))
+				return types.Invalid
+			}
+			if !types.Equal(args[0], t) {
+				c.errs.Add(n.Args[0].Pos(), token.TypeMismatch, "set.difference expects %s, got %s", t, args[0])
+				return types.Invalid
+			}
+			return t
+		case "issubset":
+			if len(args) != 1 {
+				c.errs.Add(n.Pos(), token.ArityMismatch, "set.issubset takes exactly 1 argument (%d given)", len(args))
+				return types.Invalid
+			}
+			if !types.Equal(args[0], t) {
+				c.errs.Add(n.Args[0].Pos(), token.TypeMismatch, "set.issubset expects %s, got %s", t, args[0])
+				return types.Invalid
+			}
+			return types.Bool
+		case "issuperset":
+			if len(args) != 1 {
+				c.errs.Add(n.Pos(), token.ArityMismatch, "set.issuperset takes exactly 1 argument (%d given)", len(args))
+				return types.Invalid
+			}
+			if !types.Equal(args[0], t) {
+				c.errs.Add(n.Args[0].Pos(), token.TypeMismatch, "set.issuperset expects %s, got %s", t, args[0])
+				return types.Invalid
+			}
+			return types.Bool
+		case "copy":
+			if len(args) != 0 {
+				c.errs.Add(n.Pos(), token.ArityMismatch, "set.copy takes no arguments (%d given)", len(args))
+				return types.Invalid
+			}
+			return t
+		}
 	default:
 		args := c.positionalMethodArgs(n)
 		if types.Equal(receiver, types.Str) {
