@@ -13,6 +13,7 @@ import (
 	"github.com/siyul-park/minipy/module"
 	"github.com/siyul-park/minipy/operator"
 	"github.com/siyul-park/minipy/parser"
+	randommod "github.com/siyul-park/minipy/random"
 	"github.com/siyul-park/minipy/stringmod"
 	"github.com/siyul-park/minipy/token"
 	"github.com/siyul-park/minipy/typing"
@@ -431,7 +432,7 @@ func cleanDir(dir string) string {
 // unqualified names), operator, typing, math, string, and functools.
 func defaultRegistry() *module.Registry {
 	return module.NewRegistry(
-		[]module.Module{builtins.New(), operator.New(), typing.New(), mathmod.New(), stringmod.New(), functools.New()},
+		[]module.Module{builtins.New(), operator.New(), typing.New(), mathmod.New(), stringmod.New(), functools.New(), randommod.New()},
 		module.WithFallback(builtins.Name),
 	)
 }

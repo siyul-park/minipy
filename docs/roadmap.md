@@ -91,6 +91,10 @@ owned by `docs/spec/`; compatibility status is summarized in
 - `functools`: higher-order function utilities (`reduce`). Inline-emitted
   iteration loop with lambda type inference for the accumulator function.
   Supports static types and dynamic/Any fallback.
+- `random`: pseudo-random number generation (`random`, `randint`, `randrange`,
+  `uniform`, `choice`, `shuffle`, `seed`). All functions backed by host
+  functions using Go's `math/rand/v2`. Supports static types and dynamic/Any
+  fallback.
 
 ## Current Explicit Restrictions
 

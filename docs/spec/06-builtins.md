@@ -533,6 +533,48 @@ their parameter types without explicit annotation.
 When any argument has type `Any` or is dynamic, the result type is `Any` and
 runtime dispatch is used.
 
+## `random`
+
+The `random` module provides pseudo-random number generation functions. All
+functions are backed by host functions that use Go's `math/rand/v2` package
+internally. The module maintains a shared RNG state that can be seeded for
+deterministic output.
+
+### Functions
+
+| Function | Arity | Accepted argument types | Result |
+|---|---:|---|---|
+| `random()` | 0 | (none) | `float` |
+| `randint(a, b)` | 2 | `int`, `int` | `int` |
+| `randrange(stop)` | 1 | `int` | `int` |
+| `randrange(start, stop)` | 2 | `int`, `int` | `int` |
+| `uniform(a, b)` | 2 | `int`/`float` | `float` |
+| `choice(xs)` | 1 | `list[T]` | `T` |
+| `shuffle(xs)` | 1 | `list[T]` | `None` |
+| `seed(n)` | 1 | `int` | `None` |
+
+`random()` returns a random float in `[0.0, 1.0)`.
+
+`randint(a, b)` returns a random integer in `[a, b]` inclusive.
+
+`randrange(stop)` returns a random integer in `[0, stop)`. `randrange(start,
+stop)` returns a random integer in `[start, stop)`. Raises an error at runtime
+if the range is empty.
+
+`uniform(a, b)` returns a random float in `[a, b]`. Integer arguments are
+promoted to float before computation.
+
+`choice(xs)` returns a random element from the list. Raises an error at runtime
+if the list is empty. When `xs` has type `list[T]`, the result is `T`; when `xs`
+is `Any`, the result is `Any`.
+
+`shuffle(xs)` shuffles the list in place and returns `None`.
+
+`seed(n)` re-seeds the RNG for deterministic output.
+
+When any argument has type `Any` or is dynamic, the result type is `Any` (except
+for `shuffle` and `seed` which always return `None`).
+
 ## Related Docs
 
 - `docs/README.md` — documentation map and ownership guide.
