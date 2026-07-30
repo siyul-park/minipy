@@ -6,6 +6,7 @@ import (
 	"github.com/siyul-park/minipy/ast"
 	"github.com/siyul-park/minipy/hostabi"
 	"github.com/siyul-park/minipy/module"
+	"github.com/siyul-park/minipy/operator"
 	"github.com/siyul-park/minipy/types"
 
 	"github.com/siyul-park/minivm/instr"
@@ -14,12 +15,20 @@ import (
 func emitPrint(e module.Emitter, args []ast.Expr) {
 	arg := args[0]
 	e.Expr(arg)
+	if isDynamicEmit(e.Type(arg)) {
+		e.CallHostVoid(operator.DynPrint(e.Runtime().Out()))
+		return
+	}
 	e.CallHostVoid(hostabi.PrintFunction(e.Runtime().Out(), e.Type(arg)))
 }
 
 func emitStr(e module.Emitter, args []ast.Expr) {
 	arg := args[0]
 	e.Expr(arg)
+	if isDynamicEmit(e.Type(arg)) {
+		e.CallHost(operator.DynStr())
+		return
+	}
 	if e.Type(arg) != types.Str {
 		e.CallHost(hostabi.StringFunction(e.Type(arg)))
 	}
@@ -52,7 +61,12 @@ func emitFloat(e module.Emitter, args []ast.Expr) {
 func emitBool(e module.Emitter, args []ast.Expr) {
 	arg := args[0]
 	e.Expr(arg)
-	switch typ := e.Type(arg); typ {
+	typ := e.Type(arg)
+	if isDynamicEmit(typ) {
+		e.CallHost(operator.DynBool())
+		return
+	}
+	switch typ {
 	case types.Int:
 		e.Emit(instr.I64_CONST, 0)
 		e.Emit(instr.I64_NE)
@@ -115,6 +129,10 @@ func emitAbs(e module.Emitter, args []ast.Expr) {
 func emitLen(e module.Emitter, args []ast.Expr) {
 	arg := args[0]
 	e.Expr(arg)
+	if isDynamicEmit(e.Type(arg)) {
+		e.CallHost(operator.DynLen())
+		return
+	}
 	switch t := e.Type(arg).(type) {
 	case *types.List:
 		e.Emit(instr.ARRAY_LEN)
@@ -308,4 +326,12 @@ func emitNext(e module.Emitter, args []ast.Expr) {
 	e.Emit(instr.DROP)
 	e.Emit(instr.UNREACHABLE)
 	e.Bind(end)
+}
+
+func isDynamicEmit(t types.Type) bool {
+	t = types.Erase(t)
+	if _, ok := t.(*types.Union); ok {
+		return true
+	}
+	return types.IsAny(t)
 }

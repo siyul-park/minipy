@@ -1169,6 +1169,13 @@ func (c *lowerer) emitWhile(n *ast.While) {
 // values with the minivm coroutine/iterator protocol. continue → increment or
 // resume, break → past the else block.
 func (c *lowerer) emitFor(n *ast.For) {
+	if refDynamic(c.types[n.Iter]) {
+		c.emitIteratorFor(n, func() {
+			c.expr(n.Iter)
+			c.callHost(operator.DynIter())
+		})
+		return
+	}
 	if c.iterates(c.types[n.Iter]) {
 		c.emitIteratorFor(n, func() {
 			c.iterate(n.Iter, c.types[n.Iter])

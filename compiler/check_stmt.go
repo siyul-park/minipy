@@ -661,12 +661,17 @@ func iterableElem(t types.Type) types.Type {
 		return x.Elem
 	case *types.Iterator:
 		return x.Elem
+	case *types.Union:
+		return types.Any
 	default:
 		if types.Equal(t, types.Str) {
 			return types.Str
 		}
 		if types.Equal(t, types.Bytes) {
 			return types.Int
+		}
+		if types.IsAny(t) {
+			return types.Any
 		}
 		return types.Invalid
 	}

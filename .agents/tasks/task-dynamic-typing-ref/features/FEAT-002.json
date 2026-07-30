@@ -1,0 +1,36 @@
+{
+  "id": "FEAT-002",
+  "type": "feat",
+  "description": "Enable dynamic operations on Any-typed and union-typed values by adding runtime type dispatch through host functions. When the checker sees an operation on Any/Union (arithmetic, comparison, str/print, bool/truthiness, len, iteration), instead of rejecting it, accept the operation and lower it through host-based runtime dispatch that uses REF_TEST/REF_CAST to unbox, perform the concrete operation, and rebox. When types are statically known (through narrowing, specialization, or inference), the existing static paths are used for maximum performance -- this is the hybrid static/dynamic approach.",
+  "status": "in_progress",
+  "steps": [
+    "Step 1 - Dynamic arithmetic on Any/Union: In operator/types.go BinaryType(), when left or right (or both) is Any or Union, instead of returning TypeMismatch, return the appropriate result type. For Any op Any -> Any, for Union members that share a common result (e.g. int|float + int -> float), return the joined result. Add a new function DynamicBinaryResult(left, op, right) that computes what the result type would be for dynamic dispatch. For now support +, -, *, /, //, %, ** where at least one operand is Any or a union containing numeric types.",
+    "Step 2 - Dynamic arithmetic lowering: In operator/emit.go EmitBinary(), when left or right is Any/Union, emit a call to a host function (dynBinaryOp) that receives both operands as ref values, the operation token, and returns a ref result. The host function uses Boxed.Kind()/Boxed.Type() to determine runtime types, performs the concrete operation, and returns the result. Create dynAdd, dynSub, dynMul, dynTrueDiv, dynFloorDiv, dynMod, dynPow host functions in a new file compiler/runtime_dynamic.go.",
+    "Step 3 - Dynamic comparison on Any/Union: In operator/types.go Comparable(), when left or right is Any or Union, allow equality (==, !=) and ordering (<, <=, >, >=) without error for numeric/string types. In operator/emit.go EmitCompareStack(), add dynamic dispatch for comparisons via a host function dynCompare that tests runtime types and dispatches to the correct comparison.",
+    "Step 4 - Dynamic truthiness (bool) on Any/Union: In builtins/emit.go emitBool() (the truthiness emitter), add a case for Any and Union types. Emit a call to a dynBool host function that uses REF_TEST on the runtime value to determine the type and apply the correct truthiness rule (0/0.0/empty-string/empty-container = false, None = false, everything else = true).",
+    "Step 5 - Dynamic str()/print() on Any/Union: In builtins/emit.go emitStr() and the print path, add support for Any/Union arguments. Emit a call to a dynStr host function that examines the runtime kind and formats accordingly (reusing hostabi.FormatScalar for scalars, container formatting for containers).",
+    "Step 6 - Dynamic len() on Any/Union: In builtins/emit.go emitLen() and the len type checker, when the argument is Any or a union containing len-able types, accept it and emit a dynLen host function that dispatches by runtime type to ARRAY_LEN/MAP_LEN/STRING_LEN.",
+    "Step 7 - Dynamic iteration (for loop) on Any/Union: In compiler/check_stmt.go forStmt(), when the iter expression is Any or Union, infer the element type as Any and allow the loop. In compiler/lower_stmt.go emitFor(), when the iterable is Any/Union, emit a host-based iteration path that tests the runtime type and creates an appropriate iterator.",
+    "Step 8 - Dynamic subscript (indexing) on Any/Union: In compiler/check_expr.go indexResultType()/sliceResultType(), when the receiver is Any or Union, return Any as result type. In compiler/lower_expr.go subscript(), emit a dynGetItem host function that tests the receiver's runtime type and performs the correct indexing operation.",
+    "Step 9 - Tests: Add comprehensive tests in a new file compiler/dynamic_test.go covering: (a) arithmetic on Any values, (b) comparison on Any values, (c) truthiness of Any values, (d) str() on Any values, (e) len() on Any values, (f) for-loop over Any iterables, (g) indexing Any values, (h) verify that statically-narrowed code still uses efficient static paths (no dynamic dispatch after isinstance), (i) verify specialization still works and produces static code for concrete call sites.",
+    "Step 10 - Update docs: Update docs/spec/02-types.md to document dynamic operation semantics for Any/Union. Update docs/spec/04-static-semantics.md to document that operations on Any/Union are now accepted (not rejected). Update docs/spec/05-codegen.md to document dynamic dispatch lowering. Update docs/roadmap.md to mark dynamic operations as shipped."
+  ],
+  "acceptance_criteria": [
+    "go test ./... passes including all new dynamic operation tests",
+    "Operations on Any-typed values work at runtime: x: Any = 42; y = x + 1 produces 43",
+    "Operations on union-typed values work: x: int | str = 42; print(str(x)) prints '42'",
+    "isinstance-narrowed code still uses static paths (no dynamic dispatch overhead after narrowing)",
+    "Specialization still produces concrete code for direct calls with concrete arguments",
+    "Dynamic arithmetic respects Python semantics: int + int -> int, int + float -> float, int / int -> float",
+    "Dynamic truthiness: bool(0) is False, bool('') is False, bool(None) is False, bool(1) is True",
+    "Dynamic str() formats values like Python: str(42) -> '42', str(True) -> 'True', str(None) -> 'None'"
+  ],
+  "verification": [
+    "go vet ./...",
+    "go test ./...",
+    "go test -run TestCompileDynamic ./compiler",
+    "go test -run TestCompileUnions ./compiler"
+  ],
+  "blocked_reason": null,
+  "findings": ""
+}
