@@ -12,16 +12,16 @@ import (
 	vmtypes "github.com/siyul-park/minivm/types"
 )
 
-// FormatValue renders a checked minipy value using its source type. Strings are
-// unquoted at the top level and use repr-style quoting inside containers.
-func FormatValue(i *interp.Interpreter, value vmtypes.Boxed, typ pytypes.Type) (string, error) {
-	f := formatter{i: i, seen: map[vmtypes.Ref]bool{}}
-	return f.value(value, pytypes.Erase(typ), false)
+type formatter struct {
+	interpreter *interp.Interpreter
+	seen        map[vmtypes.Ref]bool
 }
 
-type formatter struct {
-	i    *interp.Interpreter
-	seen map[vmtypes.Ref]bool
+// FormatValue renders a checked minipy value using its source type. Strings are
+// unquoted at the top level and use repr-style quoting inside containers.
+func FormatValue(interpreter *interp.Interpreter, value vmtypes.Boxed, typ pytypes.Type) (string, error) {
+	formatter := formatter{interpreter: interpreter, seen: map[vmtypes.Ref]bool{}}
+	return formatter.value(value, pytypes.Erase(typ), false)
 }
 
 func (f formatter) value(value vmtypes.Boxed, typ pytypes.Type, nested bool) (string, error) {
@@ -62,7 +62,11 @@ func (f formatter) value(value vmtypes.Boxed, typ pytypes.Type, nested bool) (st
 		return f.set(value, typ)
 	case *pytypes.Union:
 		for _, member := range typ.Members {
-			if f.matches(value, member) {
+			matches, err := f.matches(value, member)
+			if err != nil {
+				return "", err
+			}
+			if matches {
 				return f.value(value, member, nested)
 			}
 		}
@@ -82,8 +86,8 @@ func (f formatter) list(value vmtypes.Boxed, typ *pytypes.List) (string, error) 
 	defer delete(f.seen, ref)
 
 	parts := make([]string, len(values))
-	for idx, value := range values {
-		parts[idx], err = f.value(value, typ.Elem, true)
+	for index, value := range values {
+		parts[index], err = f.value(value, typ.Elem, true)
 		if err != nil {
 			return "", err
 		}
@@ -98,7 +102,7 @@ func (f formatter) tuple(value vmtypes.Boxed, typ *pytypes.Tuple) (string, error
 	}
 	tuple, ok := object.(*vmtypes.Struct)
 	if !ok || len(tuple.Typ.Fields) != len(typ.Elems) {
-		return "", fmt.Errorf("format tuple: %w", interp.ErrTypeMismatch)
+		return "", interp.ErrTypeMismatch
 	}
 	if f.seen[ref] {
 		return "(...)", nil
@@ -107,8 +111,8 @@ func (f formatter) tuple(value vmtypes.Boxed, typ *pytypes.Tuple) (string, error
 	defer delete(f.seen, ref)
 
 	parts := make([]string, len(typ.Elems))
-	for idx, elem := range typ.Elems {
-		parts[idx], err = f.value(tuple.Field(idx), elem, true)
+	for index, elem := range typ.Elems {
+		parts[index], err = f.value(tuple.Field(index), elem, true)
 		if err != nil {
 			return "", err
 		}
@@ -131,16 +135,16 @@ func (f formatter) dict(value vmtypes.Boxed, typ *pytypes.Dict) (string, error) 
 	defer delete(f.seen, ref)
 
 	parts := make([]string, len(keys))
-	for idx := range keys {
-		key, err := f.value(keys[idx], typ.Key, true)
+	for index := range keys {
+		key, err := f.value(keys[index], typ.Key, true)
 		if err != nil {
 			return "", err
 		}
-		val, err := f.value(values[idx], typ.Value, true)
+		value, err := f.value(values[index], typ.Value, true)
 		if err != nil {
 			return "", err
 		}
-		parts[idx] = key + ": " + val
+		parts[index] = key + ": " + value
 	}
 	sort.Strings(parts)
 	return "{" + strings.Join(parts, ", ") + "}", nil
@@ -161,8 +165,8 @@ func (f formatter) set(value vmtypes.Boxed, typ *pytypes.Set) (string, error) {
 	defer delete(f.seen, ref)
 
 	parts := make([]string, len(keys))
-	for idx, key := range keys {
-		parts[idx], err = f.value(key, typ.Elem, true)
+	for index, key := range keys {
+		parts[index], err = f.value(key, typ.Elem, true)
 		if err != nil {
 			return "", err
 		}
@@ -197,19 +201,22 @@ func (f formatter) dynamic(value vmtypes.Boxed, nested bool) (string, error) {
 	return object.String(), nil
 }
 
-func (f formatter) matches(value vmtypes.Boxed, typ pytypes.Type) bool {
+func (f formatter) matches(value vmtypes.Boxed, typ pytypes.Type) (bool, error) {
 	if pytypes.Equal(typ, pytypes.None) {
-		return value.Kind() == vmtypes.KindRef && value.Ref() == 0
+		return value.Kind() == vmtypes.KindRef && value.Ref() == 0, nil
 	}
-	vm := typ.VM()
-	if vm == nil {
-		return false
+	vmType := typ.VM()
+	if vmType == nil {
+		return false, nil
 	}
 	if value.Kind() != vmtypes.KindRef {
-		return value.Kind() == vm.Kind()
+		return value.Kind() == vmType.Kind(), nil
 	}
 	object, _, err := f.object(value)
-	return err == nil && object.Type().Equals(vm)
+	if err != nil {
+		return false, err
+	}
+	return object.Type().Equals(vmType), nil
 }
 
 func (f formatter) integer(value vmtypes.Boxed) (int64, error) {
@@ -222,7 +229,7 @@ func (f formatter) integer(value vmtypes.Boxed) (int64, error) {
 	}
 	n, ok := object.(vmtypes.I64)
 	if !ok {
-		return 0, fmt.Errorf("format int: %w", interp.ErrTypeMismatch)
+		return 0, interp.ErrTypeMismatch
 	}
 	return int64(n), nil
 }
@@ -244,7 +251,7 @@ func (f formatter) float(value vmtypes.Boxed) (float64, error) {
 	case vmtypes.F64:
 		return float64(n), nil
 	default:
-		return 0, fmt.Errorf("format float: %w", interp.ErrTypeMismatch)
+		return 0, interp.ErrTypeMismatch
 	}
 }
 
@@ -258,7 +265,7 @@ func (f formatter) boolean(value vmtypes.Boxed) (bool, error) {
 	}
 	b, ok := object.(vmtypes.I1)
 	if !ok {
-		return false, fmt.Errorf("format bool: %w", interp.ErrTypeMismatch)
+		return false, interp.ErrTypeMismatch
 	}
 	return bool(b), nil
 }
@@ -270,7 +277,7 @@ func (f formatter) string(value vmtypes.Boxed) (string, error) {
 	}
 	s, ok := object.(vmtypes.String)
 	if !ok {
-		return "", fmt.Errorf("format string: %w", interp.ErrTypeMismatch)
+		return "", interp.ErrTypeMismatch
 	}
 	return string(s), nil
 }
@@ -309,7 +316,7 @@ func (f formatter) array(value vmtypes.Boxed) ([]vmtypes.Boxed, vmtypes.Ref, err
 			values = append(values, vmtypes.BoxF64(value))
 		}
 	default:
-		return nil, 0, fmt.Errorf("format list: %w", interp.ErrTypeMismatch)
+		return nil, 0, interp.ErrTypeMismatch
 	}
 	return values, ref, nil
 }
@@ -357,17 +364,17 @@ func (f formatter) entries(value vmtypes.Boxed) ([]vmtypes.Boxed, []vmtypes.Boxe
 			values = append(values, entry.Value)
 		})
 	default:
-		return nil, nil, 0, fmt.Errorf("format map: %w", interp.ErrTypeMismatch)
+		return nil, nil, 0, interp.ErrTypeMismatch
 	}
 	return keys, values, ref, nil
 }
 
 func (f formatter) object(value vmtypes.Boxed) (vmtypes.Value, vmtypes.Ref, error) {
 	if value.Kind() != vmtypes.KindRef || value.Ref() == 0 {
-		return nil, 0, fmt.Errorf("load object: %w", interp.ErrTypeMismatch)
+		return nil, 0, interp.ErrTypeMismatch
 	}
 	ref := vmtypes.Ref(value.Ref())
-	object, err := f.i.Load(int(ref))
+	object, err := f.interpreter.Load(int(ref))
 	if err != nil {
 		return nil, 0, err
 	}
@@ -425,7 +432,7 @@ func writeReprRune(out *strings.Builder, r rune, ascii bool) {
 // trailing newline to out.
 func PrintFunction(out io.Writer, typ pytypes.Type) *interp.HostFunction {
 	return interp.NewHostFunction(
-		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeRef}},
+		&vmtypes.FunctionType{Params: []vmtypes.Type{pytypes.Erase(typ).VM()}},
 		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
 			text, err := FormatValue(i, params[0], typ)
 			if err != nil {
@@ -441,7 +448,7 @@ func PrintFunction(out io.Writer, typ pytypes.Type) *interp.HostFunction {
 // minivm string.
 func StringFunction(typ pytypes.Type) *interp.HostFunction {
 	return interp.NewHostFunction(
-		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeRef}, Returns: []vmtypes.Type{vmtypes.TypeString}},
+		&vmtypes.FunctionType{Params: []vmtypes.Type{pytypes.Erase(typ).VM()}, Returns: []vmtypes.Type{vmtypes.TypeString}},
 		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
 			text, err := FormatValue(i, params[0], typ)
 			if err != nil {

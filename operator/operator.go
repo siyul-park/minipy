@@ -55,7 +55,7 @@ var unaryOps = []namedOp{
 }
 
 // New builds the operator native module.
-func New() module.Module {
+func New() *module.NativeModule {
 	var symbols []module.Symbol
 	for _, op := range binaryOps {
 		symbols = append(symbols, binarySymbol(op.name, op.op))
@@ -70,14 +70,7 @@ func New() module.Module {
 	return module.NewNative(Name, symbols...)
 }
 
-func arity(c module.Checker, name string, want, got int, pos token.Pos, args []ast.Expr) {
-	c.Error(pos, token.ArityMismatch, "%s() takes exactly %d argument(s) (%d given)", name, want, got)
-	for _, a := range args {
-		c.Check(a)
-	}
-}
-
-func binarySymbol(name string, op token.Type) module.Symbol {
+func binarySymbol(name string, op token.Type) *module.NativeSymbol {
 	return module.NewSymbol(name,
 		func(c module.Checker, args []ast.Expr, pos token.Pos) types.Type {
 			if len(args) != 2 {
@@ -95,7 +88,7 @@ func binarySymbol(name string, op token.Type) module.Symbol {
 		}, nil)
 }
 
-func compareSymbol(name string, op token.Type) module.Symbol {
+func compareSymbol(name string, op token.Type) *module.NativeSymbol {
 	return module.NewSymbol(name,
 		func(c module.Checker, args []ast.Expr, pos token.Pos) types.Type {
 			if len(args) != 2 {
@@ -114,7 +107,7 @@ func compareSymbol(name string, op token.Type) module.Symbol {
 		}, nil)
 }
 
-func unarySymbol(name string, op token.Type) module.Symbol {
+func unarySymbol(name string, op token.Type) *module.NativeSymbol {
 	return module.NewSymbol(name,
 		func(c module.Checker, args []ast.Expr, pos token.Pos) types.Type {
 			if len(args) != 1 {
@@ -128,7 +121,7 @@ func unarySymbol(name string, op token.Type) module.Symbol {
 		}, nil)
 }
 
-func containsSymbol() module.Symbol {
+func containsSymbol() *module.NativeSymbol {
 	return module.NewSymbol("contains",
 		func(c module.Checker, args []ast.Expr, pos token.Pos) types.Type {
 			if len(args) != 2 {
@@ -149,7 +142,7 @@ func containsSymbol() module.Symbol {
 		}, nil)
 }
 
-func notSymbol() module.Symbol {
+func notSymbol() *module.NativeSymbol {
 	return module.NewSymbol("not_",
 		func(c module.Checker, args []ast.Expr, pos token.Pos) types.Type {
 			if len(args) != 1 {
@@ -168,7 +161,7 @@ func notSymbol() module.Symbol {
 		}, nil)
 }
 
-func absSymbol() module.Symbol {
+func absSymbol() *module.NativeSymbol {
 	return module.NewSymbol("abs",
 		func(c module.Checker, args []ast.Expr, pos token.Pos) types.Type {
 			if len(args) != 1 {
@@ -189,7 +182,7 @@ func absSymbol() module.Symbol {
 		}, nil)
 }
 
-func truthSymbol() module.Symbol {
+func truthSymbol() *module.NativeSymbol {
 	return module.NewSymbol("truth",
 		func(c module.Checker, args []ast.Expr, pos token.Pos) types.Type {
 			if len(args) != 1 {
@@ -208,6 +201,13 @@ func truthSymbol() module.Symbol {
 		func(e module.Emitter, args []ast.Expr) {
 			emitTruth(e, args[0])
 		}, nil)
+}
+
+func arity(c module.Checker, name string, want, got int, pos token.Pos, args []ast.Expr) {
+	c.Error(pos, token.ArityMismatch, "%s() takes exactly %d argument(s) (%d given)", name, want, got)
+	for _, arg := range args {
+		c.Check(arg)
+	}
 }
 
 func emitAbs(e module.Emitter, arg ast.Expr) {

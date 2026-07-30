@@ -54,6 +54,8 @@ var (
 	ellipsisValue      = vmtypes.NewStruct(types.Ellipsis.VM().(*vmtypes.StructType))
 	errListIndexValue  = errors.New("list.index value not found")
 	errListSliceLength = errors.New("list slice assignment length mismatch")
+	errExtendedSlice   = errors.New("extended slice assignment is not supported")
+	errSliceStep       = errors.New("slice step cannot be zero")
 )
 
 // trapClasses maps the VM trap codes minipy classifies into dedicated

@@ -13,11 +13,14 @@ import (
 	vmtypes "github.com/siyul-park/minivm/types"
 )
 
-// ErrOrdValue and ErrChrValue mark the runtime ValueError cases of ord/chr.
-// The compiler maps them to the builtin ValueError class so they are catchable.
+// Runtime ValueError cases exposed by builtin host functions. The compiler
+// boundary can classify these by identity without matching message text.
 var (
-	ErrOrdValue = errors.New("ord() expected a single Unicode character")
-	ErrChrValue = errors.New("chr() argument out of range")
+	ErrIntValue   = errors.New("invalid literal for int() with base 10")
+	ErrFloatValue = errors.New("could not convert string to float")
+	ErrRangeStep  = errors.New("range() step must not be zero")
+	ErrOrdValue   = errors.New("ord() expected a single Unicode character")
+	ErrChrValue   = errors.New("chr() argument out of range")
 )
 
 type rangeIterator struct {
@@ -76,7 +79,7 @@ func intParseHost() *interp.HostFunction {
 			}
 			n, err := strconv.ParseInt(strings.TrimSpace(s), 10, 64)
 			if err != nil {
-				return nil, fmt.Errorf("invalid literal for int() with base 10: %q", s)
+				return nil, fmt.Errorf("%w: %q", ErrIntValue, s)
 			}
 			return []vmtypes.Boxed{vmtypes.BoxI64(n)}, nil
 		},
@@ -93,7 +96,7 @@ func floatParseHost() *interp.HostFunction {
 			}
 			f, err := strconv.ParseFloat(strings.TrimSpace(s), 64)
 			if err != nil {
-				return nil, fmt.Errorf("could not convert string to float: %q", s)
+				return nil, fmt.Errorf("%w: %q", ErrFloatValue, s)
 			}
 			return []vmtypes.Boxed{vmtypes.BoxF64(f)}, nil
 		},
@@ -117,7 +120,7 @@ func rangeIterHost() *interp.HostFunction {
 				return nil, err
 			}
 			if step == 0 {
-				return nil, fmt.Errorf("range() step must not be zero")
+				return nil, ErrRangeStep
 			}
 			addr, err := i.Alloc(newRangeIterator(start, stop, step))
 			if err != nil {

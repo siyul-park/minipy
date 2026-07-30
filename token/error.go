@@ -75,12 +75,21 @@ func (l *ErrorList) Add(pos Pos, code Code, format string, args ...any) {
 	*l = append(*l, &Error{Pos: pos, Code: code, Msg: fmt.Sprintf(format, args...)})
 }
 
-// Err returns the list as an error, or nil when it is empty.
+// Err returns a defensive copy of the list as an error, or nil when it is
+// empty. Callers may retain or modify returned diagnostics without changing the
+// phase-owned accumulator.
 func (l ErrorList) Err() error {
 	if len(l) == 0 {
 		return nil
 	}
-	return l
+	copied := make(ErrorList, len(l))
+	for i, diagnostic := range l {
+		if diagnostic != nil {
+			clone := *diagnostic
+			copied[i] = &clone
+		}
+	}
+	return copied
 }
 
 // Error renders every diagnostic, one per line.

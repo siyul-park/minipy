@@ -31,13 +31,25 @@ func TestExceptions(t *testing.T) {
 	t.Run("hierarchy", func(t *testing.T) {
 		require.Empty(t, base["BaseException"])
 		require.Equal(t, "BaseException", base["Exception"])
-		for _, name := range []string{"ValueError", "TypeError", "IndexError", "KeyError", "StopIteration"} {
+		require.Equal(t, "Exception", base["ArithmeticError"])
+		require.Equal(t, "ArithmeticError", base["ZeroDivisionError"])
+		require.Equal(t, "ArithmeticError", base["OverflowError"])
+		require.Equal(t, "Exception", base["LookupError"])
+		require.Equal(t, "LookupError", base["IndexError"])
+		require.Equal(t, "LookupError", base["KeyError"])
+		require.Equal(t, "Exception", base["NameError"])
+		require.Equal(t, "NameError", base["UnboundLocalError"])
+		for _, name := range []string{"ValueError", "TypeError", "StopIteration", "AssertionError", "RuntimeError"} {
 			require.Equalf(t, "Exception", base[name], "%s base", name)
 		}
 	})
 
 	t.Run("base precedes subclass", func(t *testing.T) {
 		require.Less(t, order["BaseException"], order["Exception"])
+		require.Less(t, order["Exception"], order["ArithmeticError"])
+		require.Less(t, order["ArithmeticError"], order["ZeroDivisionError"])
+		require.Less(t, order["Exception"], order["LookupError"])
+		require.Less(t, order["LookupError"], order["IndexError"])
 		require.Less(t, order["Exception"], order["ValueError"])
 	})
 }

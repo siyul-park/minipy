@@ -37,11 +37,12 @@ type Symbol interface {
 	Emit(e Emitter, args []ast.Expr)
 }
 
-// RuntimeSymbol is a Symbol that also provides a runtime value, usually a host
-// function. Inline-only symbols implement Symbol alone.
+// RuntimeSymbol is a Symbol that declares an optional runtime value. The bool
+// result distinguishes inline-only symbols from runtime-backed symbols without
+// relying on a nil value or a misleading capability type assertion.
 type RuntimeSymbol interface {
 	Symbol
-	Value(r Runtime) vmtypes.Value
+	RuntimeValue(r Runtime) (vmtypes.Value, bool)
 }
 
 // Checker is the type-checking surface a Symbol may use during static analysis.

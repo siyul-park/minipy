@@ -24,7 +24,7 @@ not duplicate the full content of each document.
 | builtins and native modules | `docs/spec/06-builtins.md` |
 | Python compatibility status | `docs/compatibility.md` |
 | completed work and remaining gaps | `docs/roadmap.md` |
-| contributor coding patterns | `docs/coding-patterns.md` |
+| normative coding and compiler architecture standard | `docs/coding-patterns.md` (RFC 0001) |
 
 ## Reading Paths
 
@@ -54,8 +54,9 @@ not duplicate the full content of each document.
 - Compatibility is a user-facing matrix; keep rows short and link back to the
   owning spec when detail would become repetitive.
 - Roadmap is status-oriented; do not put normative language rules there.
-- Coding patterns govern contributor decisions; they should follow minivm shared
-  patterns and add only minipy-specific rules.
+- Coding patterns are accepted RFC 0001: the normative coding and compiler-
+  architecture standard for minipy. They are owned by this repository rather
+  than inherited from another project.
 - README is for orientation, not a full language manual.
 
 ## Quality Checklist

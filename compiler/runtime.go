@@ -2,13 +2,13 @@ package compiler
 
 import (
 	"errors"
-	"fmt"
 	"math"
 	"strconv"
 	"strings"
 
 	"github.com/siyul-park/minipy/builtins"
 	"github.com/siyul-park/minipy/hostabi"
+	pyoperator "github.com/siyul-park/minipy/operator"
 	"github.com/siyul-park/minipy/types"
 
 	"github.com/siyul-park/minivm/interp"
@@ -80,7 +80,7 @@ func (c *lowerer) dictRest(receiver types.Type) *interp.HostFunction {
 			}
 			mt, ok := src.Type().(*vmtypes.MapType)
 			if !ok {
-				return nil, fmt.Errorf("dict rest on non-map value")
+				return nil, interp.ErrTypeMismatch
 			}
 			ks, vs, err := mapEntries(i, params[0])
 			if err != nil {
@@ -310,7 +310,7 @@ func (c *lowerer) dictMerge(receiver types.Type) *interp.HostFunction {
 			}
 			mt, ok := src.Type().(*vmtypes.MapType)
 			if !ok {
-				return nil, fmt.Errorf("dict merge on non-map value")
+				return nil, interp.ErrTypeMismatch
 			}
 			leftKeys, leftVals, err := mapEntries(i, params[0])
 			if err != nil {
@@ -578,14 +578,19 @@ func (c *lowerer) exc() *interp.HostFunction {
 							class = classID("IndexError")
 						case errors.Is(exc.Unwrap(), interp.ErrTypeMismatch):
 							class = classID("TypeError")
-						case errors.Is(exc.Unwrap(), errListIndexValue):
+						case errors.Is(exc.Unwrap(), errListIndexValue),
+							errors.Is(exc.Unwrap(), errListSliceLength),
+							errors.Is(exc.Unwrap(), errExtendedSlice),
+							errors.Is(exc.Unwrap(), errSliceStep),
+							errors.Is(exc.Unwrap(), builtins.ErrIntValue),
+							errors.Is(exc.Unwrap(), builtins.ErrFloatValue),
+							errors.Is(exc.Unwrap(), builtins.ErrRangeStep),
+							errors.Is(exc.Unwrap(), builtins.ErrOrdValue),
+							errors.Is(exc.Unwrap(), builtins.ErrChrValue),
+							errors.Is(exc.Unwrap(), pyoperator.ErrNegativeExponent):
 							class = classID("ValueError")
-						case errors.Is(exc.Unwrap(), errListSliceLength):
-							class = classID("ValueError")
-						case errors.Is(exc.Unwrap(), builtins.ErrOrdValue):
-							class = classID("ValueError")
-						case errors.Is(exc.Unwrap(), builtins.ErrChrValue):
-							class = classID("ValueError")
+						case errors.Is(exc.Unwrap(), pyoperator.ErrRepeatOverflow):
+							class = classID("OverflowError")
 						}
 					}
 				}
@@ -887,7 +892,7 @@ func normalizeSliceRange(length int, rawStart, rawStop, rawStep int64) (int, int
 		step = 1
 	}
 	if step != 1 {
-		return 0, 0, fmt.Errorf("extended slice assignment is not supported")
+		return 0, 0, errExtendedSlice
 	}
 	startOmitted := rawStart == omittedSliceBound
 	stopOmitted := rawStop == omittedSliceBound
@@ -926,7 +931,7 @@ func sliceIndexes(length int, rawStart, rawStop, rawStep int64) ([]int, error) {
 		step = 1
 	}
 	if step == 0 {
-		return nil, fmt.Errorf("slice step cannot be zero")
+		return nil, errSliceStep
 	}
 	startOmitted := rawStart == omittedSliceBound
 	stopOmitted := rawStop == omittedSliceBound

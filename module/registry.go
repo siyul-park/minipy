@@ -119,7 +119,8 @@ func (r *Registry) Values(rt Runtime) map[string]map[string]vmtypes.Value {
 			if !ok {
 				continue
 			}
-			if value := runtime.Value(rt); value != nil {
+			value, ok := runtime.RuntimeValue(rt)
+			if ok {
 				symbols[name] = value
 			}
 		}

@@ -26,7 +26,7 @@ type spec struct {
 }
 
 // New builds the builtins native module.
-func New() module.Module {
+func New() *module.NativeModule {
 	return module.NewNative(Name,
 		callSymbol("print", spec{1, 1, printable(types.None)}, emitPrint, nil),
 		callSymbol("str", spec{1, 1, printable(types.Str)}, emitStr, nil),
@@ -48,7 +48,7 @@ func New() module.Module {
 	)
 }
 
-func callSymbol(name string, sp spec, emit module.EmitFunc, value module.ValueFunc) module.Symbol {
+func callSymbol(name string, sp spec, emit module.EmitFunc, value module.ValueFunc) *module.NativeSymbol {
 	check := func(c module.Checker, args []ast.Expr, pos token.Pos) types.Type {
 		return checkBuiltin(c, name, sp, args, pos)
 	}
@@ -73,8 +73,10 @@ func checkBuiltin(c module.Checker, name string, sp spec, args []ast.Expr, pos t
 		c.Error(pos, token.TypeMismatch, "%s() does not accept these arguments", name)
 		return types.Invalid
 	}
-	if name == "range" && len(args) == 3 && isConstIntLiteral(args[2]) && constIntValue(args[2]) == 0 {
-		c.Error(args[2].Pos(), token.SyntaxError, "range() step must not be zero")
+	if name == "range" && len(args) == 3 {
+		if step, ok := constInt(args[2]); ok && step == 0 {
+			c.Error(args[2].Pos(), token.SyntaxError, "range() step must not be zero")
+		}
 	}
 	return result
 }
@@ -83,31 +85,22 @@ func valueHost(fn func() *interp.HostFunction) module.ValueFunc {
 	return func(module.Runtime) vmtypes.Value { return fn() }
 }
 
-// isConstIntLiteral reports whether e is an int literal, optionally with a unary
-// +/- sign; this catches range(..., 0) statically when possible.
-func isConstIntLiteral(e ast.Expr) bool {
-	switch x := e.(type) {
+// constInt evaluates an int literal with an optional unary sign.
+func constInt(expr ast.Expr) (int64, bool) {
+	switch value := expr.(type) {
 	case *ast.IntLit:
-		return true
+		return value.Value, true
 	case *ast.UnaryExpr:
-		if x.Op == token.MINUS || x.Op == token.PLUS {
-			_, ok := x.X.(*ast.IntLit)
-			return ok
+		literal, ok := value.X.(*ast.IntLit)
+		if !ok {
+			return 0, false
+		}
+		switch value.Op {
+		case token.MINUS:
+			return -literal.Value, true
+		case token.PLUS:
+			return literal.Value, true
 		}
 	}
-	return false
-}
-
-// constIntValue evaluates a constant int literal accepted by isConstIntLiteral.
-func constIntValue(e ast.Expr) int64 {
-	switch x := e.(type) {
-	case *ast.IntLit:
-		return x.Value
-	case *ast.UnaryExpr:
-		if x.Op == token.MINUS {
-			return -constIntValue(x.X)
-		}
-		return constIntValue(x.X)
-	}
-	return 0
+	return 0, false
 }

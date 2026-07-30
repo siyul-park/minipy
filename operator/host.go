@@ -1,7 +1,7 @@
 package operator
 
 import (
-	"fmt"
+	"errors"
 	"math"
 	"strings"
 
@@ -10,6 +10,13 @@ import (
 
 	"github.com/siyul-park/minivm/interp"
 	vmtypes "github.com/siyul-park/minivm/types"
+)
+
+// Exceptions raised by operator host functions have stable identities so the
+// compiler runtime boundary can classify them without matching messages.
+var (
+	ErrNegativeExponent = errors.New("int ** negative exponent is not an int")
+	ErrRepeatOverflow   = errors.New("repeated sequence is too long")
 )
 
 func powInt() *interp.HostFunction {
@@ -25,7 +32,7 @@ func powInt() *interp.HostFunction {
 				return nil, err
 			}
 			if exp < 0 {
-				return nil, fmt.Errorf("int ** negative exponent is not an int")
+				return nil, ErrNegativeExponent
 			}
 			result := int64(1)
 			for exp > 0 {
@@ -116,36 +123,27 @@ func bytesConcat() *interp.HostFunction {
 	)
 }
 
-// bytesContentEqual compares two byte arrays by length and content.
-func bytesContentEqual(i *interp.Interpreter, a, b vmtypes.Boxed) (bool, error) {
-	_, ae, err := hostabi.ArrayElems(i, a)
-	if err != nil {
-		return false, err
-	}
-	_, be, err := hostabi.ArrayElems(i, b)
-	if err != nil {
-		return false, err
-	}
-	if len(ae) != len(be) {
-		return false, nil
-	}
-	for idx := range ae {
-		if ae[idx].I32() != be[idx].I32() {
-			return false, nil
-		}
-	}
-	return true, nil
-}
-
 func bytesEqual() *interp.HostFunction {
 	return interp.NewHostFunction(
 		&vmtypes.FunctionType{Params: []vmtypes.Type{types.Bytes.VM(), types.Bytes.VM()}, Returns: []vmtypes.Type{vmtypes.TypeI1}},
 		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
-			equal, err := bytesContentEqual(i, params[0], params[1])
+			_, left, err := hostabi.ArrayElems(i, params[0])
 			if err != nil {
 				return nil, err
 			}
-			return []vmtypes.Boxed{vmtypes.BoxI1(equal)}, nil
+			_, right, err := hostabi.ArrayElems(i, params[1])
+			if err != nil {
+				return nil, err
+			}
+			if len(left) != len(right) {
+				return []vmtypes.Boxed{vmtypes.BoxI1(false)}, nil
+			}
+			for index := range left {
+				if left[index].I32() != right[index].I32() {
+					return []vmtypes.Boxed{vmtypes.BoxI1(false)}, nil
+				}
+			}
+			return []vmtypes.Boxed{vmtypes.BoxI1(true)}, nil
 		},
 	)
 }
@@ -170,6 +168,56 @@ func bytesContains() *interp.HostFunction {
 				}
 			}
 			return []vmtypes.Boxed{vmtypes.BoxI1(false)}, nil
+		},
+	)
+}
+
+func stringRepeat() *interp.HostFunction {
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeI64, vmtypes.TypeString}, Returns: []vmtypes.Type{vmtypes.TypeString}},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			count, err := hostabi.LoadI64(i, params[0])
+			if err != nil {
+				return nil, err
+			}
+			value, err := hostabi.LoadStr(i, params[1])
+			if err != nil {
+				return nil, err
+			}
+			if count <= 0 {
+				return hostabi.AllocString(i, "")
+			}
+			if len(value) > 0 && count > int64(^uint(0)>>1)/int64(len(value)) {
+				return nil, ErrRepeatOverflow
+			}
+			return hostabi.AllocString(i, strings.Repeat(value, int(count)))
+		},
+	)
+}
+
+func listRepeat(list types.Type) *interp.HostFunction {
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: []vmtypes.Type{list.VM(), vmtypes.TypeI64}, Returns: []vmtypes.Type{list.VM()}},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			typ, elements, err := hostabi.ArrayElems(i, params[0])
+			if err != nil {
+				return nil, err
+			}
+			count, err := hostabi.LoadI64(i, params[1])
+			if err != nil {
+				return nil, err
+			}
+			if count <= 0 || len(elements) == 0 {
+				return hostabi.AllocArray(i, typ, nil)
+			}
+			if count > int64(^uint(0)>>1)/int64(len(elements)) {
+				return nil, ErrRepeatOverflow
+			}
+			values := make([]vmtypes.Boxed, 0, int(count)*len(elements))
+			for range count {
+				values = append(values, elements...)
+			}
+			return hostabi.AllocArray(i, typ, values)
 		},
 	)
 }

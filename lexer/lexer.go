@@ -9,6 +9,7 @@ package lexer
 
 import (
 	"bufio"
+	"errors"
 	"io"
 	"strconv"
 	"strings"
@@ -19,24 +20,25 @@ import (
 
 // Lexer scans source read from an io.Reader into tokens, one Next at a time.
 type Lexer struct {
-	r   *bufio.Reader
-	buf []rune // runes read so far; indexed by pos
-	pos int
+	reader *bufio.Reader
+	runes  []rune // runes read so far; indexed by offset
+	offset int
 
+	readErr error
 	readEOF bool
 	started bool
 	done    bool
 
-	line int
-	col  int
+	line   int
+	column int
 
 	indents     []int
 	parens      int
 	atLineStart bool
 	lineHasTok  bool
 
-	pending []token.Token
-	errs    token.ErrorList
+	pending     []token.Token
+	diagnostics token.ErrorList
 }
 
 // eofRune marks "no more input" from the rune accessors.
@@ -50,10 +52,10 @@ const bom = '\uFEFF'
 // unsupported unicode marker (u/U). The zero value means an unprefixed
 // string.
 type stringMode struct {
-	raw     bool
-	fstr    bool
-	bytes   bool
-	unicode bool
+	raw       bool
+	formatted bool
+	bytes     bool
+	unicode   bool
 }
 
 // classifyPrefix reports the stringMode for a string-prefix identifier (e.g.
@@ -71,10 +73,10 @@ func classifyPrefix(word string) (mode stringMode, ok bool) {
 			}
 			mode.raw = true
 		case 'f', 'F':
-			if mode.fstr {
+			if mode.formatted {
 				return stringMode{}, false
 			}
-			mode.fstr = true
+			mode.formatted = true
 		case 'b', 'B':
 			if mode.bytes {
 				return stringMode{}, false
@@ -89,36 +91,36 @@ func classifyPrefix(word string) (mode stringMode, ok bool) {
 			return stringMode{}, false
 		}
 	}
-	if mode.fstr && mode.bytes {
+	if mode.formatted && mode.bytes {
 		return stringMode{}, false
 	}
-	if mode.unicode && (mode.raw || mode.fstr || mode.bytes) {
+	if mode.unicode && (mode.raw || mode.formatted || mode.bytes) {
 		return stringMode{}, false
 	}
 	return mode, true
 }
 
-// New returns a Lexer over r.
-func New(r io.Reader) *Lexer {
+// New returns a Lexer over reader.
+func New(reader io.Reader) *Lexer {
 	return &Lexer{
-		r:           bufio.NewReader(r),
+		reader:      bufio.NewReader(reader),
 		line:        1,
-		col:         1,
+		column:      1,
 		indents:     []int{0},
 		atLineStart: true,
 	}
 }
 
-// Lex scans r and returns every token through ENDMARKER. A non-nil error is a
-// token.ErrorList holding every lexical diagnostic found.
-func Lex(r io.Reader) ([]token.Token, error) {
-	l := New(r)
+// Lex scans reader and returns every token through ENDMARKER. A non-nil error
+// contains lexical diagnostics, an operational reader failure, or both.
+func Lex(reader io.Reader) ([]token.Token, error) {
+	lexer := New(reader)
 	var tokens []token.Token
 	for {
-		next := l.Next()
+		next := lexer.Next()
 		tokens = append(tokens, next)
 		if next.Type == token.EOF {
-			return tokens, l.Err()
+			return tokens, lexer.Err()
 		}
 	}
 }
@@ -136,9 +138,18 @@ func (l *Lexer) Next() token.Token {
 	return next
 }
 
-// Err returns the accumulated lexical diagnostics, or nil if there were none.
+// Err returns accumulated lexical diagnostics, an operational reader failure,
+// or both. Reader errors preserve their identity for errors.Is/errors.As.
 func (l *Lexer) Err() error {
-	return l.errs.Err()
+	diagnosticErr := l.diagnostics.Err()
+	switch {
+	case diagnosticErr == nil:
+		return l.readErr
+	case l.readErr == nil:
+		return diagnosticErr
+	default:
+		return errors.Join(diagnosticErr, l.readErr)
+	}
 }
 
 // step advances the scanner by one unit of work, queuing zero or more tokens.
@@ -146,7 +157,7 @@ func (l *Lexer) step() {
 	if !l.started {
 		l.started = true
 		if l.cur() == bom {
-			l.pos++
+			l.offset++
 		}
 	}
 	if l.cur() == eofRune {
@@ -165,17 +176,17 @@ func (l *Lexer) step() {
 	c := l.cur()
 	switch {
 	case c == ' ' || c == '\f' || c == '\t':
-		l.pos++
-		l.col++
+		l.offset++
+		l.column++
 	case c == '\\':
 		if r := l.at(1); r == '\n' || r == '\r' {
-			l.pos++
-			l.col++
+			l.offset++
+			l.column++
 			l.consumeNewline()
 		} else {
-			l.errs.Add(l.here(), token.LexError, "unexpected character %q", string(c))
-			l.pos++
-			l.col++
+			l.diagnostics.Add(l.here(), token.LexError, "unexpected character %q", string(c))
+			l.offset++
+			l.column++
 		}
 	case c == '#':
 		l.skipComment()
@@ -226,12 +237,12 @@ func (l *Lexer) scanIndent() (blank bool) {
 		switch l.cur() {
 		case ' ', '\f':
 			width++
-			l.pos++
-			l.col++
+			l.offset++
+			l.column++
 		case '\t':
-			l.errs.Add(l.here(), token.LexError, "tab in indentation; minipy requires spaces")
-			l.pos++
-			l.col++
+			l.diagnostics.Add(l.here(), token.LexError, "tab in indentation; minipy requires spaces")
+			l.offset++
+			l.column++
 		default:
 			goto measured
 		}
@@ -258,7 +269,7 @@ measured:
 			l.add(token.DEDENT, "", l.here())
 		}
 		if l.indents[len(l.indents)-1] != width {
-			l.errs.Add(l.here(), token.LexError, "unindent does not match any outer indentation level")
+			l.diagnostics.Add(l.here(), token.LexError, "unindent does not match any outer indentation level")
 		}
 	}
 	return false
@@ -268,12 +279,12 @@ measured:
 // identifier is a string prefix immediately followed by a quote.
 func (l *Lexer) scanNameOrString() {
 	pos := l.here()
-	start := l.pos
+	start := l.offset
 	for isNameContinue(l.cur()) {
-		l.pos++
-		l.col++
+		l.offset++
+		l.column++
 	}
-	word := string(l.buf[start:l.pos])
+	word := string(l.runes[start:l.offset])
 
 	if word != "" && (l.cur() == '\'' || l.cur() == '"') {
 		if mode, ok := classifyPrefix(word); ok {
@@ -287,60 +298,60 @@ func (l *Lexer) scanNameOrString() {
 // scanNumber reads an int or float literal (docs/spec/01-lexical.md#numeric).
 func (l *Lexer) scanNumber() {
 	pos := l.here()
-	start := l.pos
+	start := l.offset
 
 	if l.cur() == '0' {
 		switch l.at(1) {
 		case 'x', 'X', 'o', 'O', 'b', 'B':
-			l.pos += 2
-			l.col += 2
+			l.offset += 2
+			l.column += 2
 			for isHexDigit(l.cur()) || l.cur() == '_' {
-				l.pos++
-				l.col++
+				l.offset++
+				l.column++
 			}
-			l.finishInt(start, l.pos, pos)
+			l.finishInt(start, l.offset, pos)
 			return
 		}
 	}
 
 	isFloat := false
 	for isDigit(l.cur()) || l.cur() == '_' {
-		l.pos++
-		l.col++
+		l.offset++
+		l.column++
 	}
 	if l.cur() == '.' {
 		isFloat = true
-		l.pos++
-		l.col++
+		l.offset++
+		l.column++
 		for isDigit(l.cur()) || l.cur() == '_' {
-			l.pos++
-			l.col++
+			l.offset++
+			l.column++
 		}
 	}
 	if l.cur() == 'e' || l.cur() == 'E' {
-		sp, sc := l.pos, l.col
-		l.pos++
-		l.col++
+		sp, sc := l.offset, l.column
+		l.offset++
+		l.column++
 		if l.cur() == '+' || l.cur() == '-' {
-			l.pos++
-			l.col++
+			l.offset++
+			l.column++
 		}
 		if isDigit(l.cur()) {
 			isFloat = true
 			for isDigit(l.cur()) || l.cur() == '_' {
-				l.pos++
-				l.col++
+				l.offset++
+				l.column++
 			}
 		} else {
-			l.pos, l.col = sp, sc
+			l.offset, l.column = sp, sc
 		}
 	}
 
-	end := l.pos
+	end := l.offset
 	if l.cur() == 'j' || l.cur() == 'J' {
-		l.errs.Add(pos, token.LexError, "imaginary literals are not supported (no complex)")
-		l.pos++
-		l.col++
+		l.diagnostics.Add(pos, token.LexError, "imaginary literals are not supported (no complex)")
+		l.offset++
+		l.column++
 	}
 
 	if isFloat {
@@ -356,43 +367,43 @@ func (l *Lexer) scanNumber() {
 // rejected and \u/\U are left undecoded (bytes has no Unicode escapes).
 func (l *Lexer) scanString(pos token.Pos, mode stringMode) {
 	if mode.unicode {
-		l.errs.Add(pos, token.UnsupportedFeature, "u/U string prefix is not supported")
+		l.diagnostics.Add(pos, token.UnsupportedFeature, "u/U string prefix is not supported")
 	}
 	q := l.cur()
 	triple := l.at(1) == q && l.at(2) == q
 	if triple {
-		l.pos += 3
-		l.col += 3
+		l.offset += 3
+		l.column += 3
 	} else {
-		l.pos++
-		l.col++
+		l.offset++
+		l.column++
 	}
 
 	var builder strings.Builder
 	for {
 		c := l.cur()
 		if c == eofRune {
-			l.errs.Add(pos, token.LexError, "unterminated string literal")
+			l.diagnostics.Add(pos, token.LexError, "unterminated string literal")
 			break
 		}
 		if !triple && (c == '\n' || c == '\r') {
-			l.errs.Add(pos, token.LexError, "unterminated string literal")
+			l.diagnostics.Add(pos, token.LexError, "unterminated string literal")
 			break
 		}
 		if c == q {
 			if !triple {
-				l.pos++
-				l.col++
+				l.offset++
+				l.column++
 				break
 			}
 			if l.at(1) == q && l.at(2) == q {
-				l.pos += 3
-				l.col += 3
+				l.offset += 3
+				l.column += 3
 				break
 			}
 			builder.WriteRune(c)
-			l.pos++
-			l.col++
+			l.offset++
+			l.column++
 			continue
 		}
 		if c == '\n' || c == '\r' {
@@ -403,27 +414,27 @@ func (l *Lexer) scanString(pos token.Pos, mode stringMode) {
 		if c == '\\' {
 			if mode.raw {
 				builder.WriteRune(c)
-				l.pos++
-				l.col++
+				l.offset++
+				l.column++
 				if l.cur() != eofRune {
 					l.checkBytesChar(mode, pos, l.cur())
 					builder.WriteRune(l.cur())
-					l.pos++
-					l.col++
+					l.offset++
+					l.column++
 				}
 				continue
 			}
-			l.pos++
-			l.col++
+			l.offset++
+			l.column++
 			l.decodeEscape(&builder, pos, mode)
 			continue
 		}
 		l.checkBytesChar(mode, pos, c)
 		builder.WriteRune(c)
-		l.pos++
-		l.col++
+		l.offset++
+		l.column++
 	}
-	if mode.fstr {
+	if mode.formatted {
 		l.add(token.FSTRING, builder.String(), pos)
 		return
 	}
@@ -438,7 +449,7 @@ func (l *Lexer) scanString(pos token.Pos, mode stringMode) {
 // directly (not via an escape) into a bytes literal.
 func (l *Lexer) checkBytesChar(mode stringMode, pos token.Pos, c rune) {
 	if mode.bytes && c > unicode.MaxASCII {
-		l.errs.Add(pos, token.LexError, "bytes literal cannot contain non-ASCII character %q", string(c))
+		l.diagnostics.Add(pos, token.LexError, "bytes literal cannot contain non-ASCII character %q", string(c))
 	}
 }
 
@@ -448,11 +459,11 @@ func (l *Lexer) checkBytesChar(mode stringMode, pos token.Pos, c rune) {
 func (l *Lexer) decodeEscape(builder *strings.Builder, pos token.Pos, mode stringMode) {
 	c := l.cur()
 	if c == eofRune {
-		l.errs.Add(pos, token.LexError, "unterminated escape sequence")
+		l.diagnostics.Add(pos, token.LexError, "unterminated escape sequence")
 		return
 	}
-	l.pos++
-	l.col++
+	l.offset++
+	l.column++
 	switch c {
 	case 'n':
 		builder.WriteByte('\n')
@@ -504,18 +515,18 @@ func (l *Lexer) decodeEscape(builder *strings.Builder, pos token.Pos, mode strin
 // raw byte instead of being UTF-8 encoded as a rune.
 func (l *Lexer) decodeHex(builder *strings.Builder, pos token.Pos, n int, asByte bool) {
 	l.fill(n - 1)
-	if l.pos+n > len(l.buf) {
-		l.errs.Add(pos, token.LexError, "truncated \\x/\\u/\\U escape")
+	if l.offset+n > len(l.runes) {
+		l.diagnostics.Add(pos, token.LexError, "truncated \\x/\\u/\\U escape")
 		return
 	}
-	digits := string(l.buf[l.pos : l.pos+n])
+	digits := string(l.runes[l.offset : l.offset+n])
 	v, err := strconv.ParseUint(digits, 16, 32)
 	if err != nil {
-		l.errs.Add(pos, token.LexError, "invalid hex escape %q", digits)
+		l.diagnostics.Add(pos, token.LexError, "invalid hex escape %q", digits)
 		return
 	}
-	l.pos += n
-	l.col += n
+	l.offset += n
+	l.column += n
 	if asByte {
 		builder.WriteByte(byte(v))
 		return
@@ -529,9 +540,9 @@ func (l *Lexer) scanOperator() {
 	c := l.cur()
 	emit := func(t token.Type, n int) {
 		l.fill(n - 1)
-		lit := string(l.buf[l.pos : l.pos+n])
-		l.pos += n
-		l.col += n
+		lit := string(l.runes[l.offset : l.offset+n])
+		l.offset += n
+		l.column += n
 		l.add(t, lit, pos)
 	}
 	la := func(k int) rune { return l.at(k) }
@@ -634,9 +645,9 @@ func (l *Lexer) scanOperator() {
 		if la(1) == '=' {
 			emit(token.NE, 2)
 		} else {
-			l.errs.Add(pos, token.LexError, "unexpected character %q", "!")
-			l.pos++
-			l.col++
+			l.diagnostics.Add(pos, token.LexError, "unexpected character %q", "!")
+			l.offset++
+			l.column++
 		}
 	case ':':
 		if la(1) == '=' {
@@ -679,28 +690,28 @@ func (l *Lexer) scanOperator() {
 	case ';':
 		emit(token.SEMICOLON, 1)
 	default:
-		l.errs.Add(pos, token.LexError, "unexpected character %q", string(c))
-		l.pos++
-		l.col++
+		l.diagnostics.Add(pos, token.LexError, "unexpected character %q", string(c))
+		l.offset++
+		l.column++
 	}
 }
 
 func (l *Lexer) finishInt(start, end int, pos token.Pos) {
-	clean := strings.ReplaceAll(string(l.buf[start:end]), "_", "")
+	clean := strings.ReplaceAll(string(l.runes[start:end]), "_", "")
 	if _, err := strconv.ParseInt(clean, 0, 64); err != nil {
 		if ne, ok := err.(*strconv.NumError); ok && ne.Err == strconv.ErrRange {
-			l.errs.Add(pos, token.IntOverflow, "integer literal %q exceeds int64", clean)
+			l.diagnostics.Add(pos, token.IntOverflow, "integer literal %q exceeds int64", clean)
 		} else {
-			l.errs.Add(pos, token.LexError, "invalid integer literal %q", clean)
+			l.diagnostics.Add(pos, token.LexError, "invalid integer literal %q", clean)
 		}
 	}
 	l.add(token.INT, clean, pos)
 }
 
 func (l *Lexer) finishFloat(start, end int, pos token.Pos) {
-	clean := strings.ReplaceAll(string(l.buf[start:end]), "_", "")
+	clean := strings.ReplaceAll(string(l.runes[start:end]), "_", "")
 	if _, err := strconv.ParseFloat(clean, 64); err != nil {
-		l.errs.Add(pos, token.LexError, "invalid float literal %q", clean)
+		l.diagnostics.Add(pos, token.LexError, "invalid float literal %q", clean)
 	}
 	l.add(token.FLOAT, clean, pos)
 }
@@ -711,22 +722,22 @@ func (l *Lexer) skipComment() {
 		if c == eofRune || c == '\n' || c == '\r' {
 			return
 		}
-		l.pos++
-		l.col++
+		l.offset++
+		l.column++
 	}
 }
 
 func (l *Lexer) consumeNewline() {
 	if l.cur() == '\r' {
-		l.pos++
+		l.offset++
 		if l.cur() == '\n' {
-			l.pos++
+			l.offset++
 		}
 	} else {
-		l.pos++
+		l.offset++
 	}
 	l.line++
-	l.col = 1
+	l.column = 1
 }
 
 func (l *Lexer) add(t token.Type, lit string, pos token.Pos) {
@@ -734,30 +745,30 @@ func (l *Lexer) add(t token.Type, lit string, pos token.Pos) {
 }
 
 func (l *Lexer) here() token.Pos {
-	return token.Pos{Line: l.line, Column: l.col}
+	return token.Pos{Line: l.line, Column: l.column}
 }
 
-// fill reads runes from the reader until buf holds at least pos+n+1 runes or the
-// input is exhausted.
+// fill reads runes until the buffer holds the requested lookahead or the input
+// is exhausted.
 func (l *Lexer) fill(n int) {
-	for !l.readEOF && len(l.buf) <= l.pos+n {
-		ch, _, err := l.r.ReadRune()
+	for !l.readEOF && len(l.runes) <= l.offset+n {
+		ch, _, err := l.reader.ReadRune()
 		if err != nil {
 			l.readEOF = true
-			if err != io.EOF {
-				l.errs.Add(l.here(), token.LexError, "read error: %s", err)
+			if !errors.Is(err, io.EOF) {
+				l.readErr = err
 			}
 			return
 		}
-		l.buf = append(l.buf, ch)
+		l.runes = append(l.runes, ch)
 	}
 }
 
 // at returns the rune k positions ahead of the cursor, or eofRune past the end.
 func (l *Lexer) at(k int) rune {
 	l.fill(k)
-	if l.pos+k < len(l.buf) {
-		return l.buf[l.pos+k]
+	if l.offset+k < len(l.runes) {
+		return l.runes[l.offset+k]
 	}
 	return eofRune
 }

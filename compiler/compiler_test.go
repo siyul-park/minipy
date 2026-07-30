@@ -497,8 +497,8 @@ func TestTypingAnnotations(t *testing.T) {
 func TestCompile(t *testing.T) {
 	t.Run("compiler object API and optimization option", func(t *testing.T) {
 		var buf bytes.Buffer
-		c := New(strings.NewReader("print(\"api\")\n"), WithOutput(&buf), WithOptimizationLevel(optimize.O1))
-		prog, err := c.Compile()
+		c := New(WithOutput(&buf), WithOptimizationLevel(optimize.O1))
+		prog, err := c.Compile(strings.NewReader("print(\"api\")\n"))
 		require.NoError(t, err)
 
 		vm := interp.New(prog)
@@ -1631,12 +1631,12 @@ with Ctx("a") as a, Ctx("b") as b:
 	})
 
 	t.Run("compiler reused across multiple Compile calls with default optimization level", func(t *testing.T) {
-		c := New(strings.NewReader("print(\"x\")\n"))
+		c := New()
 		require.NotNil(t, c)
-		first, err := c.Compile()
+		first, err := c.Compile(strings.NewReader("print(\"x\")\n"))
 		require.NoError(t, err)
 		require.NotNil(t, first)
-		second, err := c.Compile()
+		second, err := c.Compile(strings.NewReader("print(\"x\")\n"))
 		require.NoError(t, err)
 		require.NotNil(t, second)
 		prog, err := Compile(strings.NewReader("print(\"x\")\n"), WithOutput(io.Discard), WithOptimizationLevel(optimize.O2))
@@ -1645,9 +1645,9 @@ with Ctx("a") as a, Ctx("b") as b:
 	})
 
 	t.Run("read error is returned from Compile", func(t *testing.T) {
-		_, err := New(broken{}).Compile()
+		_, err := New().Compile(broken{})
 		require.Error(t, err)
-		require.ErrorContains(t, err, "read source")
+		require.ErrorIs(t, err, io.ErrUnexpectedEOF)
 	})
 
 	t.Run("Compile is repeatable for a nested specialized function with a native call", func(t *testing.T) {
@@ -1658,9 +1658,9 @@ with Ctx("a") as a, Ctx("b") as b:
 			"    print(identity(\"hi\"))\n" +
 			"report()\n"
 		var buf bytes.Buffer
-		c := New(strings.NewReader(src), WithOutput(&buf))
+		c := New(WithOutput(&buf))
 
-		first, err := c.Compile()
+		first, err := c.Compile(strings.NewReader(src))
 		require.NoError(t, err)
 		vm1 := interp.New(first)
 		defer vm1.Close()
@@ -1668,7 +1668,7 @@ with Ctx("a") as a, Ctx("b") as b:
 		firstOut := buf.String()
 		buf.Reset()
 
-		second, err := c.Compile()
+		second, err := c.Compile(strings.NewReader(src))
 		require.NoError(t, err)
 		vm2 := interp.New(second)
 		defer vm2.Close()

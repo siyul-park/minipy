@@ -1,169 +1,142 @@
 # AGENTS.md
 
-Repository instructions for Codex and Claude Code.
+Repository contract for coding agents working on minipy.
 
-This file is the common agent contract. Codex reads `AGENTS.md` directly. Claude Code loads `.claude/CLAUDE.md`, which imports this file and adds Claude-specific reminders.
+`docs/coding-patterns.md` is accepted RFC 0001 and the normative coding and
+compiler-architecture standard. This file routes work to that RFC and defines the
+required execution workflow. It MUST NOT duplicate detailed RFC rules.
 
-Keep this file terse and actionable. Put detailed coding rules in `docs/coding-patterns.md`, not here.
+## Instruction priority
 
-## Instruction Priority
+1. The user's latest explicit request.
+2. The closest applicable repository instruction.
+3. This repository contract.
+4. RFC 0001 (`docs/coding-patterns.md`).
+5. General Go convention.
 
-1. Follow the user's latest explicit request first.
-2. Follow the closest applicable repository instruction file.
-3. Use this file as the root repository contract.
-4. Use `docs/coding-patterns.md` as the coding-style authority.
-5. Match nearby code when it is stricter than this guide.
+Nearby code overrides RFC 0001 only when it is more specific, internally
+consistent, and compliant. Mention unresolved instruction conflicts in the final
+summary.
 
-If instructions conflict, choose the more specific instruction and mention the conflict in the final summary.
+## Required workflow
 
-## Quick Commands
+1. Run `git status --short --branch`; never overwrite unrelated user changes.
+2. Read RFC 0001 §2 and the task sections from its §1.3 reading index.
+3. Read the owning specification from the Task Router before code or test edits.
+4. Establish a runnable baseline before changing behavior.
+5. For multi-package or uncertain work, map ownership and phase boundaries before
+   editing.
+6. Change the smallest complete ownership unit; keep checker, lowerer, runtime,
+   diagnostics, tests, and docs synchronized where the contract crosses them.
+7. Run narrow checks after each ownership unit, then the Completion Gate.
+8. Perform one final simplification and semantic review before committing.
+
+## Quick commands
 
 ```bash
 go test ./...
+go vet ./...
 go test ./compiler ./parser ./lexer
 go test -run TestCompile ./compiler
 go run ./cmd/minipy --help
-go run ./cmd/minipy run path/to/program.py
-go run ./cmd/minipy repl
 ```
 
-## Required Workflow
-
-1. `git status --short`; never overwrite unrelated user changes.
-2. Prefer structural exploration before edits; use direct file reads only when the target is known.
-3. Read task-relevant docs from Task Router before writing code or tests.
-4. Read `docs/coding-patterns.md` through its Fast Path: always apply §0, then the task-relevant sections from its When to Read table.
-5. Mirror nearby tests; follow Test Conventions and `docs/coding-patterns.md` §6.
-6. Update docs using `docs/coding-patterns.md` §8 when behavior, diagnostics, syntax support, compatibility, pitfalls, workflow, or conventions change.
-7. Run narrow tests first, then `go test ./...` when the change warrants it.
-8. For lexer/parser/checker/lowerer/native-module work, read the owning spec from Task Router and keep implementation, diagnostics, and docs synchronized.
-9. Before reporting done, perform the Completion Gate below.
-
-## Completion Gate
-
-Do not call work complete, open/update a PR, or summarize a change as complete until every item below is true.
-
-1. Every touched code/test file was re-read against `docs/coding-patterns.md` §0.7-§0.9 and the task-specific sections.
-2. Every touched symbol has a current reason to exist.
-3. Removable symbols were removed, inlined, merged, narrowed, made private, renamed by role, or replaced by direct local code.
-4. A simpler algorithm or control flow was considered; the chosen shape is the simplest correct option found.
-5. Another simplification pass found no safe improvement.
-6. Declaration order follows `docs/coding-patterns.md` §1.3 and §2.4: callers before callees, except `With*` option functions may sit immediately above the constructor they configure.
-7. Tests follow `docs/coding-patterns.md` §6 and assert behavior rather than private shape.
-8. Public language behavior, diagnostics, compatibility status, and roadmap status are documented in the owning docs.
-9. PR, commit, and documentation expectations follow `docs/coding-patterns.md` §7-§8.
-10. Any intentionally skipped simplification is recorded in the final summary with the reason.
-
-## Coding Pattern Map
-
-`docs/coding-patterns.md` is the authority. This section routes agents to the right parts; it is not a replacement.
-
-| Need | Read in `docs/coding-patterns.md` |
-|---|---|
-| Before any code/test edit | When to Read, §0 |
-| Removing unnecessary structure | §0.1, §0.7-§0.9 |
-| Naming, helper extraction, method ownership | §1.2, §1.4, §1.5 |
-| File order, type/interface shape, struct fields | §2.1-§2.5 |
-| Public API, options, builders, parsers | §3 |
-| Errors, diagnostics, panic, recover | §4, §9 |
-| Architecture build tags | §5 |
-| Tests | §6 |
-| Commits, PRs, final review | §7 |
-| Documentation updates | §8 |
-| Minipy compiler phases, native modules, subset status | §9 |
+Development servers, watchers, and interactive commands MUST NOT be used in
+automated verification.
 
 ## Task Router
 
-| Task | Read | Usually edit | Verify |
+| Task | Read | Usually edit | Narrow verification |
 |---|---|---|---|
-| Lexing / tokens | `docs/spec/01-lexical.md`, `docs/coding-patterns.md` §9.3 | `token/`, `lexer/` | `go test ./token ./lexer` |
-| Parsing / grammar | `docs/spec/03-grammar.md`, `docs/coding-patterns.md` §9.3 | `ast/`, `parser/` | `go test ./ast ./parser` |
-| Type checking / diagnostics | `docs/spec/02-types.md`, `docs/spec/04-static-semantics.md`, `docs/coding-patterns.md` §9.3 | `types/`, `compiler/check*.go`, `token/error.go` | `go test ./types ./compiler` |
-| Lowering / runtime representation | `docs/spec/05-codegen.md`, `docs/coding-patterns.md` §9.3 | `compiler/lower*.go`, `hostabi/` | `go test ./compiler ./hostabi` |
-| Builtins / operator semantics | `docs/spec/06-builtins.md`, `docs/coding-patterns.md` §9.4 | `builtins/`, `operator/`, `module/` | `go test ./builtins ./operator ./module ./compiler` |
-| Module loading / imports | `docs/spec/00-overview.md`, `docs/spec/04-static-semantics.md` | `compiler/`, `module/` | `go test ./compiler ./module` |
-| CLI / REPL | `README.md`, `docs/spec/00-overview.md` | `cmd/minipy/` | `go test ./cmd/minipy ./compiler` |
-| Compatibility/status docs | `docs/README.md`, `docs/compatibility.md`, `docs/roadmap.md` | `docs/`, `README.md` | docs review + relevant package tests |
-| Style-only change | `docs/coding-patterns.md` | touched package/docs | package tests or docs review |
+| tokens / lexing | RFC §3-§4, §6-§11; `docs/spec/01-lexical.md` | `token/`, `lexer/` | `go test ./token ./lexer` |
+| parsing / grammar | RFC §3-§8, §11; `docs/spec/03-grammar.md` | `ast/`, `parser/` | `go test ./ast ./parser` |
+| types / checker / diagnostics | RFC §5-§9, §11; `docs/spec/02-types.md`, `docs/spec/04-static-semantics.md` | `types/`, `compiler/check*.go`, `token/error.go` | `go test ./types ./compiler` |
+| lowering / program passes | RFC §6-§11; `docs/spec/05-codegen.md` | `compiler/lower*.go`, `compiler/compiler.go`, `hostabi/` | `go test ./compiler ./hostabi` |
+| builtins / operators / native modules | RFC §5-§9, §11; `docs/spec/06-builtins.md` | `builtins/`, `operator/`, `module/`, `typing/` | `go test ./builtins ./operator ./module ./typing ./compiler` |
+| module graph / imports | RFC §5-§10; `docs/spec/00-overview.md`, `docs/spec/04-static-semantics.md` | `compiler/`, `module/` | `go test ./compiler ./module` |
+| CLI / REPL | RFC §3-§5, §9-§11; `README.md`, `docs/spec/00-overview.md` | `cmd/minipy/` | `go test ./cmd/minipy ./compiler` |
+| coding standard | all of RFC 0001 | RFC, this file, tool overlays | docs review + `go test ./...` when code changes |
+| compatibility / status | RFC §12; `docs/README.md` | `docs/`, `README.md` | docs review + owning package tests |
 
-## Documentation Index
+## Project and ownership map
 
-Read only docs relevant to the task.
-
-| Document | Covers |
-|---|---|
-| `README.md` | project purpose, package map, quick commands |
-| `docs/README.md` | documentation map and ownership guide |
-| `docs/spec/00-overview.md` | compiler architecture and execution model |
-| `docs/spec/01-lexical.md` | tokens, literals, indentation, f-strings |
-| `docs/spec/02-types.md` | source type system, assignability, inference, narrowing |
-| `docs/spec/03-grammar.md` | accepted syntax and parse-only forms |
-| `docs/spec/04-static-semantics.md` | checker behavior, scope, diagnostics |
-| `docs/spec/05-codegen.md` | lowering and runtime representation |
-| `docs/spec/06-builtins.md` | builtins, operator, native module behavior |
-| `docs/compatibility.md` | user-facing Python 3.13 compatibility status |
-| `docs/roadmap.md` | completed work and remaining gaps |
-| `docs/coding-patterns.md` | style authority: shared principles, symbol review, naming, file layout, APIs, errors, tests, PR/docs rules, minipy compiler rules |
-
-## Project Map
-
-minipy is a statically checked Python 3.13-inspired subset compiler targeting minivm.
+minipy is a statically checked Python 3.13-inspired subset compiler targeting
+minivm.
 
 ```text
-source.py -> lexer -> parser -> checker -> lowerer -> minivm program -> verify/run
+source -> tokens -> AST -> checked module graph -> lowered program
+       -> ordered transforms -> verified minivm program
 ```
 
 | Package | Responsibility |
 |---|---|
-| `token/` | token kinds, positions, diagnostic codes |
-| `lexer/` | indentation lexer and literal scanner |
-| `ast/` | data-only syntax tree nodes |
-| `parser/` | recursive-descent parser for supported and parse-only syntax |
-| `types/` | source-level type lattice and minivm type mapping |
-| `module/` | native/source module registry contracts |
-| `builtins/` | native `builtins` module and exception hierarchy |
-| `operator/` | native `operator` module and shared operator semantics |
-| `hostabi/` | runtime host ABI helpers and bridge types |
-| `compiler/` | loader, checker, lowerer, optimizer/verification pipeline |
-| `cmd/minipy/` | CLI and REPL |
+| `token` | token kinds, positions, diagnostic codes and rendering |
+| `lexer` | rune, indentation, and literal scanning |
+| `ast` | data-only syntax nodes |
+| `parser` | grammar, precedence, recovery, and AST construction |
+| `types` | source type lattice and minivm mapping |
+| `module` | native/source extension contracts and registry |
+| `builtins` | builtin symbols and exception hierarchy |
+| `operator` | operator typing and lowering semantics |
+| `hostabi` | host/minivm value bridge and iterator protocol |
+| `typing` | annotation-only native module |
+| `compiler` | module graph, checker, specialization, lowerer, passes |
+| `cmd/minipy` | CLI and REPL process boundaries |
 
-## Key Invariants
+## Non-negotiable compiler invariants
 
-Violations cause incorrect diagnostics, invalid lowering, or runtime mismatch.
+- minipy is a subset, not a CPython runtime or compatibility layer.
+- AST nodes remain data-only; semantic facts belong to checker-owned metadata.
+- Unsupported constructs fail before lowering.
+- Parser recovery may preserve parse-only forms for precise diagnostics.
+- Checker and lowerer remain synchronized for types, narrowing, specialization,
+  closures, exceptions, patterns, native calls, and containers.
+- Native operation rules live in `builtins` or `operator`, not duplicated in the
+  checker or lowerer.
+- Mutable compilation state belongs to one invocation, not reusable compiler
+  configuration.
+- Transform order remains visible; metadata removed for optimization is restored.
+- Every returned minivm program is verified after all transforms.
+- User-facing behavior updates the owning spec and status documents.
 
-- minipy is a subset, not a drop-in CPython implementation.
-- Unsupported constructs should be rejected before lowering, not fail later at runtime.
-- Parse-only syntax exists only to improve diagnostics and must be documented as parse-only.
-- AST nodes stay data-only; semantic checks belong in compiler phases.
-- Checker and lowerer assumptions must stay synchronized for narrowing, specialization, closures, exceptions, patterns, and native calls.
-- Native symbol behavior belongs in `builtins` or `operator`; do not duplicate native type/lowering rules directly in the checker or lowerer.
-- `compiler.Compile` and `compiler.New(...).Compile()` remain the obvious public entry points.
-- Every compiled program must be verified before it is returned.
-- Any user-facing language behavior change must update the owning spec file and compatibility/roadmap status when relevant.
+## Documentation owners
 
-## Tests
+| Concern | Owner |
+|---|---|
+| architecture and execution model | `docs/spec/00-overview.md` |
+| lexical rules | `docs/spec/01-lexical.md` |
+| source types | `docs/spec/02-types.md` |
+| grammar | `docs/spec/03-grammar.md` |
+| checker and diagnostics | `docs/spec/04-static-semantics.md` |
+| lowering and runtime representation | `docs/spec/05-codegen.md` |
+| builtins and native modules | `docs/spec/06-builtins.md` |
+| compatibility | `docs/compatibility.md` |
+| completed and deferred work | `docs/roadmap.md` |
+| coding and architecture standard | `docs/coding-patterns.md` (RFC 0001) |
 
-Before writing or modifying tests, read relevant docs from Task Router and apply `docs/coding-patterns.md` §6.
+## Completion Gate
 
-Core reminders:
+Do not report completion, commit, push, or open a PR until all applicable items
+are true:
 
-- One top-level test per public symbol: `Test<Func>` or `Test<Type>_<Method>`.
-- Put sub-cases under `t.Run`; do not split them into parallel top-level tests.
-- Keep source snippets, diagnostics, and expected runtime behavior visible near assertions.
-- Inline setup, run sequence, and assertions unless §6.8 allows a helper.
-- Use `require`, not `assert` or direct `t.Fatal` / `t.Errorf`, in new tests.
+1. Re-read every touched file against RFC 0001 §2 and its task sections.
+2. Confirm every touched symbol has a current owner and reason to exist.
+3. Remove obsolete wrappers, helpers, fields, parameters, results, and aliases.
+4. Confirm functions hold one abstraction level and callers precede callees.
+5. Confirm phase products and public APIs do not expose mutable implementation
+   state.
+6. Confirm checker/lowerer/native/runtime symmetry for cross-phase changes.
+7. Confirm diagnostics and operational error identity are preserved.
+8. Confirm tests use public behavior or an explicitly protected returned program
+   representation, never a private-state back door.
+9. Run narrow tests, `go vet ./...`, and `go test ./...`.
+10. Synchronize specs, compatibility, roadmap, workflow, and RFC documentation.
+11. Review the complete diff for unrelated edits and breaking API impact.
+12. Perform a final simplification pass; record any deliberate deviation from a
+    SHOULD rule or rejected simplification in the final summary.
 
-## Documentation Maintenance
+## Git and publication
 
-Update docs when behavior, diagnostics, syntax support, compatibility, commands, architecture, pitfalls, workflow, or conventions change. Use the owner matrix in `docs/coding-patterns.md` §8:
-
-- workflow / convention rules -> update both `AGENTS.md` and `.claude/CLAUDE.md`
-- coding style -> update `docs/coding-patterns.md`
-- language syntax -> update `docs/spec/03-grammar.md`
-- type/checker behavior -> update `docs/spec/02-types.md` or `docs/spec/04-static-semantics.md`
-- lowering/runtime representation -> update `docs/spec/05-codegen.md`
-- builtins/operator/native modules -> update `docs/spec/06-builtins.md`
-- user-facing compatibility -> update `docs/compatibility.md`
-- completed/deferred work -> update `docs/roadmap.md`
-
-Keep edits terse and factual; document current behavior only; preserve formatting; verify Markdown.
+Use focused Conventional Commits as defined by RFC 0001 §12.2. Public API breaks
+MUST use `!` and a `BREAKING CHANGE:` body. Push only a non-default branch and
+include tests, docs, migration impact, and known limitations in the PR body.

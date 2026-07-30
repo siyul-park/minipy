@@ -1,12 +1,12 @@
 // Package parser builds an ast.Module from minipy source. It implements the
 // supported subset of the Python grammar (docs/spec/03-grammar.md): simple
 // statements over the full operator-precedence expression chain, control
-// flow, and function definitions/calls/returns. Constructs outside the
-// subset are reported as UnsupportedFeature with the milestone that introduces
-// them.
+// flow, and function definitions/calls/returns. Parse-only and unsupported
+// constructs are retained only when they enable a precise diagnostic.
 package parser
 
 import (
+	"errors"
 	"io"
 	"strconv"
 	"strings"
@@ -40,11 +40,6 @@ var augAssign = map[token.Type]token.Type{
 	token.DOUBLESTAREQ:  token.DOUBLESTAR,
 }
 
-var compoundStmt = map[token.Type]string{
-	token.EXCEPT:  "'except' exceptions",
-	token.FINALLY: "'finally' exceptions",
-}
-
 // binPrec maps each binary operator to its precedence; higher binds tighter.
 // It covers bitwise_or (1) down to term (6); comparison sits just above and
 // unary/power just below (parseFactor) per docs/spec/03-grammar.md.
@@ -63,44 +58,60 @@ var binPrec = map[token.Type]int{
 	token.AT:          6,
 }
 
-// New returns a Parser over source read from r. No input is read until Parse
-// pulls tokens from the lexer.
-func New(r io.Reader) *Parser {
-	return &Parser{lex: lexer.New(r)}
-}
-
-// Parse reads minipy source from r and parses it into a Module. The returned
-// error merges every lexical and syntactic diagnostic (token.ErrorList); the
-// Module is always non-nil so callers can inspect a partial parse.
-func Parse(r io.Reader) (*ast.Module, error) {
-	return New(r).Parse()
+// Parse reads minipy source from reader and parses it into a Module. The
+// Module is always non-nil so callers can inspect a partial parse. A non-nil
+// error contains lexical or syntactic diagnostics, an operational reader
+// failure, or both.
+func Parse(reader io.Reader) (*ast.Module, error) {
+	return New(reader).Parse()
 }
 
 // ParseType parses a standalone annotation expression. It is used by postponed
 // annotations after the checker has accepted the relevant future flag.
-func ParseType(src string) (ast.Expr, error) {
-	p := New(strings.NewReader(src))
-	expr := p.parseType()
-	for p.at(token.NEWLINE) {
-		p.advance()
+func ParseType(source string) (ast.Expr, error) {
+	parser := New(strings.NewReader(source))
+	expr := parser.parseType()
+	for parser.at(token.NEWLINE) {
+		parser.advance()
 	}
-	if !p.at(token.EOF) {
-		p.errs.Add(p.cur().Pos, token.SyntaxError, "expected end of type annotation, got %s", p.cur().Type)
+	if !parser.at(token.EOF) {
+		parser.errs.Add(parser.cur().Pos, token.SyntaxError, "expected end of type annotation, got %s", parser.cur().Type)
 	}
-	if le, ok := p.lex.Err().(token.ErrorList); ok {
-		p.errs = append(le, p.errs...)
-	}
-	return expr, p.errs.Err()
+	return expr, parser.combinedError()
+}
+
+// New returns a Parser over source read from reader. No input is read until
+// Parse pulls tokens from the lexer.
+func New(reader io.Reader) *Parser {
+	return &Parser{lex: lexer.New(reader)}
 }
 
 // Parse parses the token stream into a Module, lexing on demand. Lexical
 // diagnostics gathered while pulling tokens are merged ahead of syntactic ones.
 func (p *Parser) Parse() (*ast.Module, error) {
-	mod := p.parseModule()
-	if le, ok := p.lex.Err().(token.ErrorList); ok {
-		p.errs = append(le, p.errs...)
+	module := p.parseModule()
+	return module, p.combinedError()
+}
+
+// combinedError preserves the concrete ErrorList contract for source
+// diagnostics while retaining operational reader error identity when present.
+func (p *Parser) combinedError() error {
+	lexerErr := p.lex.Err()
+	parserErr := p.errs.Err()
+	switch {
+	case lexerErr == nil:
+		return parserErr
+	case parserErr == nil:
+		return lexerErr
 	}
-	return mod, p.errs.Err()
+
+	if lexicalDiagnostics, ok := lexerErr.(token.ErrorList); ok {
+		diagnostics := make(token.ErrorList, 0, len(lexicalDiagnostics)+len(p.errs))
+		diagnostics = append(diagnostics, lexicalDiagnostics...)
+		diagnostics = append(diagnostics, p.errs...)
+		return diagnostics.Err()
+	}
+	return errors.Join(lexerErr, parserErr)
 }
 
 // parseModule parses the whole token stream into a Module.
@@ -148,9 +159,13 @@ func (p *Parser) parseStatement() []ast.Stmt {
 		p.skipLine()
 		p.skipBlock()
 		return nil
-	}
-	if msg, ok := compoundStmt[p.cur().Type]; ok {
-		p.errs.Add(p.cur().Pos, token.UnsupportedFeature, "%s is not supported yet", msg)
+	case token.EXCEPT:
+		p.errs.Add(p.cur().Pos, token.UnsupportedFeature, "'except' exceptions is not supported yet")
+		p.skipLine()
+		p.skipBlock()
+		return nil
+	case token.FINALLY:
+		p.errs.Add(p.cur().Pos, token.UnsupportedFeature, "'finally' exceptions is not supported yet")
 		p.skipLine()
 		p.skipBlock()
 		return nil
@@ -1202,7 +1217,14 @@ func (p *Parser) parseTypeAtom() ast.Expr {
 			node = &ast.Attribute{Base: ast.Base{Position: t.Pos}, X: node, Name: part.Literal}
 		}
 		if p.at(token.LBRACKET) {
-			switch typeBaseName(node) {
+			var baseName string
+			switch base := node.(type) {
+			case *ast.Name:
+				baseName = base.Name
+			case *ast.Attribute:
+				baseName = base.Name
+			}
+			switch baseName {
 			case "Annotated":
 				return p.parseAnnotatedType(node)
 			case "Literal":
@@ -1226,17 +1248,6 @@ func (p *Parser) parseTypeAtom() ast.Expr {
 	}
 	p.errs.Add(t.Pos, token.UnsupportedType, "expected a type name, got %s", t.Type)
 	return &ast.Name{Base: ast.Base{Position: t.Pos}, Name: ""}
-}
-
-func typeBaseName(e ast.Expr) string {
-	switch x := e.(type) {
-	case *ast.Name:
-		return x.Name
-	case *ast.Attribute:
-		return x.Name
-	default:
-		return ""
-	}
 }
 
 func (p *Parser) parseAnnotatedType(base ast.Expr) ast.Expr {
@@ -1597,12 +1608,18 @@ func (p *Parser) parseAtom() ast.Expr {
 		return &ast.EllipsisLit{Base: ast.Base{Position: t.Pos}}
 	case token.INT:
 		p.advance()
-		v, _ := strconv.ParseInt(t.Literal, 0, 64)
-		return &ast.IntLit{Base: ast.Base{Position: t.Pos}, Value: v}
+		value, parseErr := strconv.ParseInt(t.Literal, 0, 64)
+		if parseErr != nil {
+			value = 0 // The lexer owns the precise invalid/overflow diagnostic.
+		}
+		return &ast.IntLit{Base: ast.Base{Position: t.Pos}, Value: value}
 	case token.FLOAT:
 		p.advance()
-		v, _ := strconv.ParseFloat(t.Literal, 64)
-		return &ast.FloatLit{Base: ast.Base{Position: t.Pos}, Value: v}
+		value, parseErr := strconv.ParseFloat(t.Literal, 64)
+		if parseErr != nil {
+			value = 0 // The lexer owns the precise invalid/range diagnostic.
+		}
+		return &ast.FloatLit{Base: ast.Base{Position: t.Pos}, Value: value}
 	case token.STRING, token.FSTRING, token.BYTES:
 		return p.parseString()
 	case token.LPAREN:
