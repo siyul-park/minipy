@@ -284,6 +284,7 @@ Supported homogeneous `dict[K, V]` methods:
 | `values()` | 0 | none | `list[V]` |
 | `items()` | 0 | none | `list[tuple[K, V]]` |
 | `pop(key)` | 1 | `K` | `V` |
+| `pop(key, default)` | 2 | `K`, `V` | `V` |
 | `update(other)` | 1 | `dict[K, V]` | `None` |
 | `setdefault(key, default)` | 2 | `K`, `V` | `V` |
 | `clear()` | 0 | none | `None` |
@@ -291,7 +292,9 @@ Supported homogeneous `dict[K, V]` methods:
 
 `get` returns the value for key if present, otherwise the default (or the
 zero value of `V` when no default is given). `pop` removes the key and returns
-its value; raises `KeyError` if the key is not found. `update` merges all entries
+its value; raises `KeyError` if the key is not found and no default is given.
+When a default argument is provided, `pop` returns the default instead of raising
+`KeyError` for missing keys. `update` merges all entries
 from the argument dict into the receiver, overwriting existing keys. `setdefault`
 returns the value for key if present; otherwise inserts key with the default value
 and returns it. `clear` removes all entries. `copy` returns a shallow copy.

@@ -1320,8 +1320,16 @@ func (c *checker) methodCallType(n *ast.CallExpr, attr *ast.Attribute) types.Typ
 				return types.NewList(types.NewTuple(t.Key, t.Value))
 			}
 		case "pop":
-			if len(args) != 1 || !types.AssignableTo(args[0], t.Key) {
-				c.errs.Add(n.Pos(), token.TypeMismatch, "dict.pop expects exactly 1 key argument")
+			if len(args) < 1 || len(args) > 2 {
+				c.errs.Add(n.Pos(), token.ArityMismatch, "dict.pop expects 1 or 2 arguments (%d given)", len(args))
+				return types.Invalid
+			}
+			if !types.AssignableTo(args[0], t.Key) {
+				c.errs.Add(n.Pos(), token.TypeMismatch, "dict.pop key argument must be assignable to %s", t.Key)
+				return types.Invalid
+			}
+			if len(args) == 2 && !types.AssignableTo(args[1], t.Value) {
+				c.errs.Add(n.Pos(), token.TypeMismatch, "dict.pop default argument must be assignable to %s", t.Value)
 				return types.Invalid
 			}
 			return t.Value

@@ -64,7 +64,7 @@ full CPython compatibility.
 | Annotated assignment | ✅ | Declares a typed binding; value optional. |
 | Unannotated assignment | ✅ | First assignment infers binding type. |
 | Tuple/starred unpack assignment | ✅ | Supports list/tuple sources and homogeneous starred rest. |
-| Chained assignment | ◐ | Parsed only into the current assignment representation; avoid relying on CPython multi-target semantics. |
+| Chained assignment | ✅ | Assigns the same value to all targets; evaluates expression once. |
 | Augmented assignment | ✅ | Names, attributes, and subscripts (list elements, dict values) supported. |
 | `del` | ✅ | Names, list/dict items, and attributes; captured names rejected. |
 | `assert` | ✅ | Throws structured assertion error on false test. |
@@ -139,7 +139,7 @@ full CPython compatibility.
 | List literals | ✅ | Homogeneous; empty needs hint. |
 | List methods | ◐ | `append`, `pop`, `index`, `insert`, `extend`, `reverse`, `sort`, `copy`, `count`, `clear`, `remove`; statically typed homogeneous lists only. |
 | String methods | ◐ | `upper`, `lower`, `split`, `join`, `find`, `strip`, `lstrip`, `rstrip`, `startswith`, `endswith`, `replace`, `count`, `isdigit`, `isalpha`, `isalnum`, `isspace`, `capitalize`, `title`, `swapcase`, `center`, `ljust`, `rjust`, `zfill`, `encode`, `format`; statically typed. |
-| Dict methods | ◐ | `get`, `keys`, `values`, `items`, `pop`, `update`, `setdefault`, `clear`, `copy`; statically typed homogeneous dicts only. |
+| Dict methods | ◐ | `get`, `keys`, `values`, `items`, `pop` (with optional default), `update`, `setdefault`, `clear`, `copy`; statically typed homogeneous dicts only. |
 | Set methods | ◐ | `add`, `remove`, `discard`, `pop`, `clear`, `union`, `intersection`, `difference`, `issubset`, `issuperset`, `copy`; statically typed homogeneous sets only. |
 | Dict literals | ✅ | Homogeneous; empty needs hint; scalar hashable keys. |
 | Set literals | ✅ | Homogeneous; empty needs hint; scalar hashable elements. |

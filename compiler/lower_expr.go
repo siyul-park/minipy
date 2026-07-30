@@ -914,7 +914,11 @@ func (c *lowerer) methodCall(x *ast.CallExpr, attr *ast.Attribute) {
 		c.emit(instr.REF_NULL)
 	case "pop":
 		if _, ok := recvType.(*types.Dict); ok {
-			c.callHost(c.dictPop(recvType, c.types[x]))
+			if len(x.Args) == 2 {
+				c.callHost(c.dictPopDefault(recvType, c.types[x]))
+			} else {
+				c.callHost(c.dictPop(recvType, c.types[x]))
+			}
 		} else if _, ok := recvType.(*types.Set); ok {
 			c.callHost(c.setPop(recvType, c.types[x]))
 		} else {

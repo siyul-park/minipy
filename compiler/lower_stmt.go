@@ -24,12 +24,16 @@ func (c *lowerer) stmt(s ast.Stmt) {
 			c.set(n.Target.Name)
 		}
 	case *ast.Assign:
-		if name, ok := n.Target.(*ast.Name); ok {
-			c.expr(n.Value)
-			c.promoteIntToFloat(c.types[n.Value], c.typ(name.Name))
-			c.set(name.Name)
+		if len(n.Targets) == 0 {
+			if name, ok := n.Target.(*ast.Name); ok {
+				c.expr(n.Value)
+				c.promoteIntToFloat(c.types[n.Value], c.typ(name.Name))
+				c.set(name.Name)
+			} else {
+				c.assignTarget(n.Target, n.Value)
+			}
 		} else {
-			c.assignTarget(n.Target, n.Value)
+			c.chainedAssign(n)
 		}
 	case *ast.AugAssign:
 		if name, ok := n.Target.(*ast.Name); ok {
@@ -676,6 +680,62 @@ func (c *lowerer) emitClassTest(pat *ast.ClassPattern, slot int, typ types.Type,
 		idx := info.fieldIndex[kw]
 		child := c.childSlot(slot, idx, instr.STRUCT_GET)
 		c.emitPatternTest(pat.Kw[i], child, info.fields[idx].typ, next)
+	}
+}
+
+func (c *lowerer) chainedAssign(n *ast.Assign) {
+	c.expr(n.Value)
+	targets := append([]ast.Expr{n.Target}, n.Targets...)
+	for i, target := range targets {
+		if i < len(targets)-1 {
+			c.emit(instr.DUP)
+		}
+		if name, ok := target.(*ast.Name); ok {
+			c.promoteIntToFloat(c.types[n.Value], c.typ(name.Name))
+			c.set(name.Name)
+		} else {
+			slot := c.tmp()
+			c.emit(instr.GLOBAL_SET, uint64(slot))
+			c.assignTargetFromTemp(target, slot)
+		}
+	}
+}
+
+func (c *lowerer) assignTargetFromTemp(target ast.Expr, slot int) {
+	switch t := target.(type) {
+	case *ast.Subscript:
+		c.expr(t.X)
+		c.expr(t.Index)
+		c.emit(instr.GLOBAL_GET, uint64(slot))
+		switch recv := c.types[t.X].(type) {
+		case *types.List:
+			c.emit(instr.SWAP)
+			c.emit(instr.I64_TO_I32)
+			c.emit(instr.SWAP)
+			c.emit(instr.ARRAY_SET)
+		case *types.Dict:
+			c.emit(instr.MAP_SET)
+		case *types.Class:
+			owner, m := c.methodOwner(recv.Name, "__setitem__")
+			c.funcValue(m, owner.methodBody["__setitem__"])
+			c.emit(instr.CALL)
+			c.emit(instr.DROP)
+		default:
+			c.fail(fmt.Errorf("chained assign subscript: unsupported receiver %T", c.types[t.X]))
+		}
+	case *ast.Attribute:
+		if key := c.attrSym[t]; key != "" {
+			c.emit(instr.GLOBAL_GET, uint64(slot))
+			c.promoteIntToFloat(c.types[t], c.globals[key].typ)
+			c.emit(instr.GLOBAL_SET, uint64(c.globals[key].index))
+			return
+		}
+		c.expr(t.X)
+		c.emit(instr.I32_CONST, uint64(c.fieldIndex(t)))
+		c.emit(instr.GLOBAL_GET, uint64(slot))
+		c.emit(instr.STRUCT_SET)
+	default:
+		c.fail(fmt.Errorf("chained assign target %T: unsupported", target))
 	}
 }
 

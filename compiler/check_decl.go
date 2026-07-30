@@ -1128,7 +1128,15 @@ func stmtHasYield(s ast.Stmt) bool {
 	case *ast.AnnAssign:
 		return n.Value != nil && exprHasYield(n.Value)
 	case *ast.Assign:
-		return exprHasYield(n.Value) || exprHasYield(n.Target)
+		if exprHasYield(n.Value) || exprHasYield(n.Target) {
+			return true
+		}
+		for _, t := range n.Targets {
+			if exprHasYield(t) {
+				return true
+			}
+		}
+		return false
 	case *ast.AugAssign:
 		return exprHasYield(n.Value) || exprHasYield(n.Target)
 	case *ast.Assert:

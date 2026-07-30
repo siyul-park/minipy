@@ -87,6 +87,24 @@ func (c *lowerer) dictPop(receiver, result types.Type) *interp.HostFunction {
 	)
 }
 
+func (c *lowerer) dictPopDefault(receiver, result types.Type) *interp.HostFunction {
+	dict := receiver.(*types.Dict)
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: []vmtypes.Type{receiver.VM(), dict.Key.VM(), result.VM()}, Returns: []vmtypes.Type{result.VM()}},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			val, err := i.Load(params[0].Ref())
+			if err != nil {
+				return nil, err
+			}
+			value, ok := mapDelete(val, params[1])
+			if !ok {
+				return []vmtypes.Boxed{params[2]}, nil
+			}
+			return []vmtypes.Boxed{value}, nil
+		},
+	)
+}
+
 func (c *lowerer) dictUpdate(receiver types.Type) *interp.HostFunction {
 	return interp.NewHostFunction(
 		&vmtypes.FunctionType{Params: []vmtypes.Type{receiver.VM(), receiver.VM()}},

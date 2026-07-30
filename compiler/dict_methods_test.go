@@ -65,4 +65,25 @@ func TestCompileDictMethods(t *testing.T) {
 			"print(v + \" \" + str(len(d)))\n"
 		require.Equal(t, "one 1\n", run(t, src))
 	})
+
+	t.Run("pop with default returns value when key exists", func(t *testing.T) {
+		src := "d: dict[str, int] = {\"a\": 1, \"b\": 2}\n" +
+			"v: int = d.pop(\"a\", 99)\n" +
+			"print(str(v) + \" \" + str(len(d)))\n"
+		require.Equal(t, "1 1\n", run(t, src))
+	})
+
+	t.Run("pop with default returns default when key missing", func(t *testing.T) {
+		src := "d: dict[str, int] = {\"a\": 1}\n" +
+			"v: int = d.pop(\"b\", 99)\n" +
+			"print(str(v))\n"
+		require.Equal(t, "99\n", run(t, src))
+	})
+
+	t.Run("pop with default does not modify dict when key missing", func(t *testing.T) {
+		src := "d: dict[str, int] = {\"a\": 1, \"b\": 2}\n" +
+			"v: int = d.pop(\"c\", 0)\n" +
+			"print(str(v) + \" \" + str(len(d)))\n"
+		require.Equal(t, "0 2\n", run(t, src))
+	})
 }

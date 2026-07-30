@@ -682,7 +682,7 @@ func (p *Parser) parseSimpleStmt() ast.Stmt {
 			for _, target := range targets {
 				p.requireTarget(target)
 			}
-			assign := &ast.Assign{Base: ast.Base{Position: pos}, Target: targets[0], Value: value}
+			assign := &ast.Assign{Base: ast.Base{Position: pos}, Target: targets[0], Targets: targets[1:], Value: value}
 			return assign
 		}
 		return nil
