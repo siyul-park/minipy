@@ -127,16 +127,20 @@ generation with an unresolved type variable is a compiler bug.
 - any concrete value assignable to a union member may flow into that union
 - a union may flow into a wider union that admits all of its members
 - any value may flow into `Any`
-- implicit numeric coercion is not allowed
+- `int` is assignable to `float` (implicit numeric widening, matching standard
+  Python semantics)
 
-For example, `int` is not assignable to `float`; write `float(x)` explicitly.
+For example, `x: float = 1` is valid because int widens to float.
 `bool` is not assignable to `int`.
 
 ## Numeric Types
 
-`int` is signed 64-bit and `float` is `float64`. minipy does not implement
-Python's arbitrary-precision integers, complex numbers, or implicit mixed numeric
-arithmetic. Operators reject unsupported type combinations during checking.
+`int` is signed 64-bit and `float` is `float64`. minipy implements Python's
+implicit mixed numeric arithmetic: when one operand is `int` and the other is
+`float`, the `int` operand is promoted to `float` and the result is `float`.
+This matches standard Python behavior. Comparisons between `int` and `float`
+are also permitted. minipy does not implement Python's arbitrary-precision
+integers or complex numbers.
 
 ## Bytes
 

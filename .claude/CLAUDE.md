@@ -4,29 +4,34 @@
 
 ## Claude Code Overlay
 
-This file imports the common agent contract from `AGENTS.md`. Keep shared rules there so Claude Code and Codex stay aligned.
+The imported `AGENTS.md` is the repository workflow contract.
+`docs/coding-patterns.md` is accepted RFC 0001 and the normative coding and
+compiler-architecture standard. This overlay contains Claude-specific execution
+reminders only; shared rules MUST NOT be copied here.
 
-Use this file only for Claude-specific execution reminders.
+## Required Claude flow
 
-## Required Claude Flow
+1. Follow the imported workflow and RFC reading index before editing.
+2. For multi-file, uncertain, architectural, or public-API work, explore and map
+   ownership before planning edits.
+3. Establish a runnable baseline and narrow verification target.
+4. Keep a visible plan for multi-step work and complete ownership units in order.
+5. Re-read touched files, inspect the complete diff, and run the imported
+   Completion Gate before reporting done.
+6. Report verification evidence, documentation updates, breaking API impact,
+   deliberate RFC deviations, and rejected simplifications.
 
-1. Start from the imported `AGENTS.md` workflow.
-2. For multi-file, uncertain, or risky work, explore first, then plan, then edit.
-3. Give yourself a runnable verification target before editing whenever possible.
-4. Before reporting done, complete the `AGENTS.md` Completion Gate and the Claude checklist below.
-5. Show evidence in the final summary: tests run, docs updated, and any intentionally skipped simplification.
+## Compiler review reminders
 
-## Claude Checklist
+When compiler or runtime code changes, explicitly verify:
 
-Before reporting done, re-read every touched code/test file and verify:
-
-- `docs/coding-patterns.md` §0.7-§0.9 was applied: every touched symbol has a reason, simpler algorithms were considered, and another simplification pass found no safe improvement.
-- Declaration order follows §1.3 and §2.4: callers before callees, with the allowed exception that `With*` option functions may sit immediately above the constructor they configure.
-- Minipy compiler rules in §9 were applied when touching lexer, parser, checker, lowerer, native modules, or language-support docs.
-- Checker and lowerer assumptions stayed synchronized for narrowing, specialization, closures, exceptions, patterns, and native calls.
-- Parse-only, rejected, restricted, lowered, planned, and out-of-scope language behavior stayed explicit in the owning docs.
-- Diagnostics for malformed user source flow through `token.Error` / `token.ErrorList`, not panic.
-- Language behavior changes updated the owning spec plus compatibility or roadmap status when relevant.
-- Native symbol changes kept the checker rule, emitter callback, and optional runtime value / host function coherent.
-
-If any checklist item is intentionally not applied, record the reason in the final summary.
+- reusable configuration contains no per-compilation mutable state;
+- parser, checker, lowerer, optimizer, and verifier boundaries remain visible;
+- checker and lowerer agree on types, narrowing, specializations, closures,
+  exceptions, patterns, native calls, and containers;
+- native symbols retain a coherent checker/emitter/runtime contract;
+- malformed user source returns stable diagnostics rather than panic;
+- optimizer metadata is restored and every returned program is verified;
+- tests observe public behavior or a protected returned program representation,
+  never private implementation state;
+- owning specs and compatibility/status documents match current behavior.

@@ -97,10 +97,13 @@ func LoadI64(i *interp.Interpreter, v vmtypes.Boxed) (int64, error) {
 	return int64(n), nil
 }
 
-// AllocArray allocates a heap array of the given type and returns it as a single
-// boxed ref.
+// AllocArray allocates a heap array whose type and elements are copied from
+// the caller. The minivm heap owns the copies and retains any nested refs through
+// the array's Traceable contract.
 func AllocArray(i *interp.Interpreter, typ *vmtypes.ArrayType, elems []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
-	addr, err := i.Alloc(vmtypes.NewArray(typ, elems...))
+	ownedType := vmtypes.NewArrayType(typ.Elem)
+	ownedElems := append([]vmtypes.Boxed(nil), elems...)
+	addr, err := i.Alloc(vmtypes.NewArray(ownedType, ownedElems...))
 	if err != nil {
 		return nil, err
 	}
@@ -117,71 +120,75 @@ func ArrayElems(i *interp.Interpreter, ref vmtypes.Boxed) (*vmtypes.ArrayType, [
 	if err != nil {
 		return nil, nil, err
 	}
-	switch a := val.(type) {
+	switch array := val.(type) {
 	case *vmtypes.Array:
-		return a.Typ, append([]vmtypes.Boxed(nil), a.Elems...), nil
+		return vmtypes.NewArrayType(array.Typ.Elem), append([]vmtypes.Boxed(nil), array.Elems...), nil
 	case vmtypes.TypedArray[bool]:
-		out := make([]vmtypes.Boxed, len(a))
-		for idx, elem := range a {
-			out[idx] = vmtypes.BoxI1(elem)
+		out := make([]vmtypes.Boxed, len(array))
+		for index, elem := range array {
+			out[index] = vmtypes.BoxI1(elem)
 		}
-		return vmtypes.TypeI1Array, out, nil
+		return vmtypes.NewArrayType(vmtypes.TypeI1), out, nil
 	case vmtypes.TypedArray[int8]:
-		out := make([]vmtypes.Boxed, len(a))
-		for idx, elem := range a {
-			out[idx] = vmtypes.BoxI32(int32(elem))
+		out := make([]vmtypes.Boxed, len(array))
+		for index, elem := range array {
+			out[index] = vmtypes.BoxI32(int32(elem))
 		}
-		return vmtypes.TypeI8Array, out, nil
+		return vmtypes.NewArrayType(vmtypes.TypeI8), out, nil
 	case vmtypes.TypedArray[int32]:
-		out := make([]vmtypes.Boxed, len(a))
-		for idx, elem := range a {
-			out[idx] = vmtypes.BoxI32(elem)
+		out := make([]vmtypes.Boxed, len(array))
+		for index, elem := range array {
+			out[index] = vmtypes.BoxI32(elem)
 		}
-		return vmtypes.TypeI32Array, out, nil
+		return vmtypes.NewArrayType(vmtypes.TypeI32), out, nil
 	case vmtypes.TypedArray[int64]:
-		out := make([]vmtypes.Boxed, len(a))
-		for idx, elem := range a {
-			out[idx] = vmtypes.BoxI64(elem)
+		out := make([]vmtypes.Boxed, len(array))
+		for index, elem := range array {
+			out[index] = vmtypes.BoxI64(elem)
 		}
-		return vmtypes.TypeI64Array, out, nil
+		return vmtypes.NewArrayType(vmtypes.TypeI64), out, nil
 	case vmtypes.TypedArray[float32]:
-		out := make([]vmtypes.Boxed, len(a))
-		for idx, elem := range a {
-			out[idx] = vmtypes.BoxF32(elem)
+		out := make([]vmtypes.Boxed, len(array))
+		for index, elem := range array {
+			out[index] = vmtypes.BoxF32(elem)
 		}
-		return vmtypes.TypeF32Array, out, nil
+		return vmtypes.NewArrayType(vmtypes.TypeF32), out, nil
 	case vmtypes.TypedArray[float64]:
-		out := make([]vmtypes.Boxed, len(a))
-		for idx, elem := range a {
-			out[idx] = vmtypes.BoxF64(elem)
+		out := make([]vmtypes.Boxed, len(array))
+		for index, elem := range array {
+			out[index] = vmtypes.BoxF64(elem)
 		}
-		return vmtypes.TypeF64Array, out, nil
+		return vmtypes.NewArrayType(vmtypes.TypeF64), out, nil
 	default:
 		return nil, nil, interp.ErrTypeMismatch
 	}
 }
 
 // BoxedEqual reports whether two boxed values are equal, comparing heap strings
-// by contents and other refs by identity.
-func BoxedEqual(i *interp.Interpreter, a, b vmtypes.Boxed) (bool, error) {
-	if a.Kind() != b.Kind() {
+// by contents and other live refs by identity. Non-null references are loaded
+// before an identity result so stale refs always preserve the interpreter error.
+func BoxedEqual(i *interp.Interpreter, left, right vmtypes.Boxed) (bool, error) {
+	if left.Kind() != right.Kind() {
 		return false, nil
 	}
-	if a.Kind() != vmtypes.KindRef {
-		return a == b, nil
+	if left.Kind() != vmtypes.KindRef {
+		return left == right, nil
 	}
-	if a.Ref() == b.Ref() {
+	if left.Ref() == 0 || right.Ref() == 0 {
+		return left.Ref() == right.Ref(), nil
+	}
+	leftValue, err := i.Load(left.Ref())
+	if err != nil {
+		return false, err
+	}
+	if left.Ref() == right.Ref() {
 		return true, nil
 	}
-	av, err := i.Load(a.Ref())
+	rightValue, err := i.Load(right.Ref())
 	if err != nil {
 		return false, err
 	}
-	bv, err := i.Load(b.Ref())
-	if err != nil {
-		return false, err
-	}
-	as, aok := av.(vmtypes.String)
-	bs, bok := bv.(vmtypes.String)
-	return aok && bok && as == bs, nil
+	leftString, leftIsString := leftValue.(vmtypes.String)
+	rightString, rightIsString := rightValue.(vmtypes.String)
+	return leftIsString && rightIsString && leftString == rightString, nil
 }

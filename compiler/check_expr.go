@@ -427,7 +427,8 @@ func (c *checker) fstringPart(part ast.FStringPart) {
 }
 
 // ifExpType types the conditional expression `body if cond else orelse`: cond
-// must be bool and the two arms must share a type (docs/spec/04-static-semantics.md).
+// must be bool and the two arms are joined via types.Join, allowing compatible
+// types such as int and float to produce a promoted result (e.g., float).
 func (c *checker) ifExpType(n *ast.IfExp) types.Type {
 	c.condition(n.Cond)
 	bt := c.expr(n.Body)
@@ -435,11 +436,7 @@ func (c *checker) ifExpType(n *ast.IfExp) types.Type {
 	if bt == types.Invalid || et == types.Invalid {
 		return types.Invalid
 	}
-	if !types.Equal(bt, et) {
-		c.errs.Add(n.Pos(), token.TypeMismatch, "conditional expression arms have different types: %s and %s", bt, et)
-		return types.Invalid
-	}
-	return bt
+	return types.Join(bt, et)
 }
 
 func (c *checker) nameType(n *ast.Name) types.Type {
@@ -582,6 +579,12 @@ func (c *checker) lambda(n *ast.LambdaExpr, hint types.Type) types.Type {
 	}
 	c.current = prev
 	c.lambdas[n] = info
+	// When the hint's return type is Any (open inference), use the body's
+	// inferred type so callers like map() obtain the concrete return type.
+	if types.IsAny(callable.Return) && bt != types.Invalid {
+		info.result = bt
+		return types.NewCallable(callable.Params, bt)
+	}
 	return callable
 }
 
@@ -1251,6 +1254,49 @@ func (c *checker) methodCallType(n *ast.CallExpr, attr *ast.Attribute) types.Typ
 				return types.Invalid
 			}
 			return types.None
+		case "sort":
+			if len(args) != 0 {
+				c.errs.Add(n.Pos(), token.ArityMismatch, "list.sort takes no arguments (%d given)", len(args))
+				return types.Invalid
+			}
+			elem := t.Elem
+			if !types.Equal(elem, types.Int) && !types.Equal(elem, types.Float) && !types.Equal(elem, types.Str) && !types.Equal(elem, types.Bool) {
+				c.errs.Add(n.Pos(), token.TypeMismatch, "list.sort requires comparable elements (int, float, str, bool), got %s", elem)
+				return types.Invalid
+			}
+			return types.None
+		case "copy":
+			if len(args) != 0 {
+				c.errs.Add(n.Pos(), token.ArityMismatch, "list.copy takes no arguments (%d given)", len(args))
+				return types.Invalid
+			}
+			return t
+		case "count":
+			if len(args) != 1 {
+				c.errs.Add(n.Pos(), token.ArityMismatch, "list.count takes exactly 1 argument (%d given)", len(args))
+				return types.Invalid
+			}
+			if !types.AssignableTo(args[0], t.Elem) {
+				c.errs.Add(n.Args[0].Pos(), token.TypeMismatch, "list.count expects %s, got %s", t.Elem, args[0])
+				return types.Invalid
+			}
+			return types.Int
+		case "clear":
+			if len(args) != 0 {
+				c.errs.Add(n.Pos(), token.ArityMismatch, "list.clear takes no arguments (%d given)", len(args))
+				return types.Invalid
+			}
+			return types.None
+		case "remove":
+			if len(args) != 1 {
+				c.errs.Add(n.Pos(), token.ArityMismatch, "list.remove takes exactly 1 argument (%d given)", len(args))
+				return types.Invalid
+			}
+			if !types.AssignableTo(args[0], t.Elem) {
+				c.errs.Add(n.Args[0].Pos(), token.TypeMismatch, "list.remove expects %s, got %s", t.Elem, args[0])
+				return types.Invalid
+			}
+			return types.None
 		}
 	case *types.Dict:
 		args := c.positionalMethodArgs(n)
@@ -1273,6 +1319,146 @@ func (c *checker) methodCallType(n *ast.CallExpr, attr *ast.Attribute) types.Typ
 			if len(args) == 0 {
 				return types.NewList(types.NewTuple(t.Key, t.Value))
 			}
+		case "pop":
+			if len(args) < 1 || len(args) > 2 {
+				c.errs.Add(n.Pos(), token.ArityMismatch, "dict.pop expects 1 or 2 arguments (%d given)", len(args))
+				return types.Invalid
+			}
+			if !types.AssignableTo(args[0], t.Key) {
+				c.errs.Add(n.Pos(), token.TypeMismatch, "dict.pop key argument must be assignable to %s", t.Key)
+				return types.Invalid
+			}
+			if len(args) == 2 && !types.AssignableTo(args[1], t.Value) {
+				c.errs.Add(n.Pos(), token.TypeMismatch, "dict.pop default argument must be assignable to %s", t.Value)
+				return types.Invalid
+			}
+			return t.Value
+		case "update":
+			if len(args) != 1 || !types.Equal(args[0], t) {
+				c.errs.Add(n.Pos(), token.TypeMismatch, "dict.update expects a dict of the same type")
+				return types.Invalid
+			}
+			return types.None
+		case "setdefault":
+			if len(args) != 2 || !types.AssignableTo(args[0], t.Key) || !types.AssignableTo(args[1], t.Value) {
+				c.errs.Add(n.Pos(), token.TypeMismatch, "dict.setdefault expects (key, default)")
+				return types.Invalid
+			}
+			return t.Value
+		case "clear":
+			if len(args) != 0 {
+				c.errs.Add(n.Pos(), token.ArityMismatch, "dict.clear takes no arguments (%d given)", len(args))
+				return types.Invalid
+			}
+			return types.None
+		case "copy":
+			if len(args) != 0 {
+				c.errs.Add(n.Pos(), token.ArityMismatch, "dict.copy takes no arguments (%d given)", len(args))
+				return types.Invalid
+			}
+			return t
+		}
+	case *types.Set:
+		args := c.positionalMethodArgs(n)
+		switch attr.Name {
+		case "add":
+			if len(args) != 1 {
+				c.errs.Add(n.Pos(), token.ArityMismatch, "set.add takes exactly 1 argument (%d given)", len(args))
+				return types.Invalid
+			}
+			if !types.AssignableTo(args[0], t.Elem) {
+				c.errs.Add(n.Args[0].Pos(), token.TypeMismatch, "set.add expects %s, got %s", t.Elem, args[0])
+				return types.Invalid
+			}
+			return types.None
+		case "remove":
+			if len(args) != 1 {
+				c.errs.Add(n.Pos(), token.ArityMismatch, "set.remove takes exactly 1 argument (%d given)", len(args))
+				return types.Invalid
+			}
+			if !types.AssignableTo(args[0], t.Elem) {
+				c.errs.Add(n.Args[0].Pos(), token.TypeMismatch, "set.remove expects %s, got %s", t.Elem, args[0])
+				return types.Invalid
+			}
+			return types.None
+		case "discard":
+			if len(args) != 1 {
+				c.errs.Add(n.Pos(), token.ArityMismatch, "set.discard takes exactly 1 argument (%d given)", len(args))
+				return types.Invalid
+			}
+			if !types.AssignableTo(args[0], t.Elem) {
+				c.errs.Add(n.Args[0].Pos(), token.TypeMismatch, "set.discard expects %s, got %s", t.Elem, args[0])
+				return types.Invalid
+			}
+			return types.None
+		case "pop":
+			if len(args) != 0 {
+				c.errs.Add(n.Pos(), token.ArityMismatch, "set.pop takes no arguments (%d given)", len(args))
+				return types.Invalid
+			}
+			return t.Elem
+		case "clear":
+			if len(args) != 0 {
+				c.errs.Add(n.Pos(), token.ArityMismatch, "set.clear takes no arguments (%d given)", len(args))
+				return types.Invalid
+			}
+			return types.None
+		case "union":
+			if len(args) != 1 {
+				c.errs.Add(n.Pos(), token.ArityMismatch, "set.union takes exactly 1 argument (%d given)", len(args))
+				return types.Invalid
+			}
+			if !types.Equal(args[0], t) {
+				c.errs.Add(n.Args[0].Pos(), token.TypeMismatch, "set.union expects %s, got %s", t, args[0])
+				return types.Invalid
+			}
+			return t
+		case "intersection":
+			if len(args) != 1 {
+				c.errs.Add(n.Pos(), token.ArityMismatch, "set.intersection takes exactly 1 argument (%d given)", len(args))
+				return types.Invalid
+			}
+			if !types.Equal(args[0], t) {
+				c.errs.Add(n.Args[0].Pos(), token.TypeMismatch, "set.intersection expects %s, got %s", t, args[0])
+				return types.Invalid
+			}
+			return t
+		case "difference":
+			if len(args) != 1 {
+				c.errs.Add(n.Pos(), token.ArityMismatch, "set.difference takes exactly 1 argument (%d given)", len(args))
+				return types.Invalid
+			}
+			if !types.Equal(args[0], t) {
+				c.errs.Add(n.Args[0].Pos(), token.TypeMismatch, "set.difference expects %s, got %s", t, args[0])
+				return types.Invalid
+			}
+			return t
+		case "issubset":
+			if len(args) != 1 {
+				c.errs.Add(n.Pos(), token.ArityMismatch, "set.issubset takes exactly 1 argument (%d given)", len(args))
+				return types.Invalid
+			}
+			if !types.Equal(args[0], t) {
+				c.errs.Add(n.Args[0].Pos(), token.TypeMismatch, "set.issubset expects %s, got %s", t, args[0])
+				return types.Invalid
+			}
+			return types.Bool
+		case "issuperset":
+			if len(args) != 1 {
+				c.errs.Add(n.Pos(), token.ArityMismatch, "set.issuperset takes exactly 1 argument (%d given)", len(args))
+				return types.Invalid
+			}
+			if !types.Equal(args[0], t) {
+				c.errs.Add(n.Args[0].Pos(), token.TypeMismatch, "set.issuperset expects %s, got %s", t, args[0])
+				return types.Invalid
+			}
+			return types.Bool
+		case "copy":
+			if len(args) != 0 {
+				c.errs.Add(n.Pos(), token.ArityMismatch, "set.copy takes no arguments (%d given)", len(args))
+				return types.Invalid
+			}
+			return t
 		}
 	default:
 		args := c.positionalMethodArgs(n)
@@ -1296,6 +1482,53 @@ func (c *checker) methodCallType(n *ast.CallExpr, attr *ast.Attribute) types.Typ
 				if len(args) == 1 && types.Equal(args[0], types.Str) {
 					return types.Int
 				}
+			case "strip", "lstrip", "rstrip":
+				if len(args) == 0 || (len(args) == 1 && types.Equal(args[0], types.Str)) {
+					return types.Str
+				}
+			case "startswith", "endswith":
+				if len(args) == 1 && types.Equal(args[0], types.Str) {
+					return types.Bool
+				}
+			case "replace":
+				if (len(args) == 2 || len(args) == 3) &&
+					types.Equal(args[0], types.Str) && types.Equal(args[1], types.Str) &&
+					(len(args) == 2 || types.Equal(args[2], types.Int)) {
+					return types.Str
+				}
+			case "count":
+				if len(args) == 1 && types.Equal(args[0], types.Str) {
+					return types.Int
+				}
+			case "isdigit", "isalpha", "isalnum", "isspace":
+				if len(args) == 0 {
+					return types.Bool
+				}
+			case "capitalize", "title", "swapcase":
+				if len(args) == 0 {
+					return types.Str
+				}
+			case "center", "ljust", "rjust":
+				if (len(args) == 1 && types.Equal(args[0], types.Int)) ||
+					(len(args) == 2 && types.Equal(args[0], types.Int) && types.Equal(args[1], types.Str)) {
+					return types.Str
+				}
+			case "zfill":
+				if len(args) == 1 && types.Equal(args[0], types.Int) {
+					return types.Str
+				}
+			case "encode":
+				if len(args) == 0 {
+					return types.Bytes
+				}
+			case "format":
+				for _, arg := range args {
+					if arg != types.Invalid && !types.Printable(arg) {
+						c.errs.Add(n.Pos(), token.TypeMismatch, "str.format() argument must be printable")
+						return types.Invalid
+					}
+				}
+				return types.Str
 			}
 		}
 	}

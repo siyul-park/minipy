@@ -37,17 +37,21 @@ type Symbol interface {
 	Emit(e Emitter, args []ast.Expr)
 }
 
-// RuntimeSymbol is a Symbol that also provides a runtime value, usually a host
-// function. Inline-only symbols implement Symbol alone.
+// RuntimeSymbol is a Symbol that declares an optional runtime value. The bool
+// result distinguishes inline-only symbols from runtime-backed symbols without
+// relying on a nil value or a misleading capability type assertion.
 type RuntimeSymbol interface {
 	Symbol
-	Value(r Runtime) vmtypes.Value
+	RuntimeValue(r Runtime) (vmtypes.Value, bool)
 }
 
 // Checker is the type-checking surface a Symbol may use during static analysis.
 type Checker interface {
 	// Check type-checks a sub-expression and returns its type.
 	Check(ast.Expr) types.Type
+	// CheckWithHint type-checks a sub-expression with a type hint (used to
+	// infer lambda parameter types from expected Callable context).
+	CheckWithHint(ast.Expr, types.Type) types.Type
 	// SetType records the resolved type of an expression.
 	SetType(ast.Expr, types.Type)
 	// ResolveType interprets an expression as a type annotation.

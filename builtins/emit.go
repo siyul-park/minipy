@@ -185,6 +185,97 @@ func emitIter(e module.Emitter, args []ast.Expr) {
 	}
 }
 
+func emitSorted(e module.Emitter, args []ast.Expr) {
+	e.Expr(args[0])
+	e.CallHost(sortedHost(e.Type(args[0])))
+}
+
+func emitReversed(e module.Emitter, args []ast.Expr) {
+	e.Expr(args[0])
+	e.CallHost(reversedHost(e.Type(args[0])))
+}
+
+func emitMin(e module.Emitter, args []ast.Expr) {
+	if len(args) == 1 {
+		e.Expr(args[0])
+		e.CallHost(minListHost(e.Type(args[0])))
+		return
+	}
+	for _, arg := range args {
+		e.Expr(arg)
+	}
+	e.CallHost(minArgsHost(e.Type(args[0]), len(args)))
+}
+
+func emitMax(e module.Emitter, args []ast.Expr) {
+	if len(args) == 1 {
+		e.Expr(args[0])
+		e.CallHost(maxListHost(e.Type(args[0])))
+		return
+	}
+	for _, arg := range args {
+		e.Expr(arg)
+	}
+	e.CallHost(maxArgsHost(e.Type(args[0]), len(args)))
+}
+
+func emitSum(e module.Emitter, args []ast.Expr) {
+	e.Expr(args[0])
+	e.CallHost(sumHost(e.Type(args[0])))
+}
+
+func emitAny(e module.Emitter, args []ast.Expr) {
+	e.Expr(args[0])
+	e.CallHost(anyHost())
+}
+
+func emitAll(e module.Emitter, args []ast.Expr) {
+	e.Expr(args[0])
+	e.CallHost(allHost())
+}
+
+func emitRound(e module.Emitter, args []ast.Expr) {
+	e.Expr(args[0])
+	if len(args) == 2 {
+		e.Expr(args[1])
+		e.CallHost(roundDigitsHost())
+	} else {
+		e.CallHost(roundHost())
+	}
+}
+
+func emitDivmod(e module.Emitter, args []ast.Expr) {
+	e.Expr(args[0])
+	e.Expr(args[1])
+	e.CallHost(divmodHost(e.Type(args[0])))
+}
+
+func emitPow(e module.Emitter, args []ast.Expr) {
+	e.Expr(args[0])
+	e.Expr(args[1])
+	e.CallHost(powHost(e.Type(args[0]), e.Type(args[1])))
+}
+
+func emitHex(e module.Emitter, args []ast.Expr) {
+	e.Expr(args[0])
+	e.CallHost(hexHost())
+}
+
+func emitOct(e module.Emitter, args []ast.Expr) {
+	e.Expr(args[0])
+	e.CallHost(octHost())
+}
+
+func emitBin(e module.Emitter, args []ast.Expr) {
+	e.Expr(args[0])
+	e.CallHost(binHost())
+}
+
+func emitRepr(e module.Emitter, args []ast.Expr) {
+	e.Expr(args[0])
+	e.CallHost(reprHost(e.Type(args[0])))
+}
+
 func emitOrd(e module.Emitter, args []ast.Expr) {
 	e.Expr(args[0])
 	e.CallHost(e.Host(Name, "ord"))

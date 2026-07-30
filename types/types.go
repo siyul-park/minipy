@@ -282,7 +282,9 @@ func Erase(t Type) Type {
 
 // Join returns the least upper bound of a and b in the lattice
 // (⊥ < concrete < closed-union < Any). Invalid is treated as bottom so error
-// operands do not poison inference. Distinct members merge into a closed union.
+// operands do not poison inference. Numeric promotion applies: joining int and
+// float yields float (matching standard Python semantics). Other distinct
+// members merge into a closed union.
 func Join(a, b Type) Type {
 	switch {
 	case a == nil || a == Invalid:
@@ -293,6 +295,12 @@ func Join(a, b Type) Type {
 		return a
 	case IsAny(a) || IsAny(b):
 		return Any
+	}
+	// Numeric promotion: int and float join to float (Python widens int to float).
+	// Erase literal refinements so Literal[1, 2] joins with float correctly.
+	ea, eb := Erase(a), Erase(b)
+	if (Equal(ea, Int) && Equal(eb, Float)) || (Equal(ea, Float) && Equal(eb, Int)) {
+		return Float
 	}
 	return NewUnion(a, b)
 }
@@ -326,14 +334,19 @@ func Equal(a, b Type) bool {
 }
 
 // AssignableTo reports whether a value of type src may be stored where dst is
-// expected. There is no implicit numeric coercion, but widening into a union or
-// Any is free: a concrete value flows into any union that admits it, and a
-// union flows into a wider union whose members cover it.
+// expected. Implicit numeric widening allows int to flow into float (matching
+// standard Python semantics). Widening into a union or Any is free: a concrete
+// value flows into any union that admits it, and a union flows into a wider
+// union whose members cover it.
 func AssignableTo(src, dst Type) bool {
 	if src == nil || dst == nil || src == Invalid || dst == Invalid {
 		return false
 	}
 	if Equal(src, dst) {
+		return true
+	}
+	// Numeric widening: int is assignable to float (Python promotes int to float).
+	if Equal(src, Int) && Equal(dst, Float) {
 		return true
 	}
 	if dl, ok := dst.(*Literal); ok {

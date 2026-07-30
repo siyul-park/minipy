@@ -804,19 +804,26 @@ func (c *checker) resolveAlias(key string) types.Type {
 }
 
 func (c *checker) assign(n *ast.Assign) {
-	name, ok := n.Target.(*ast.Name)
+	c.assignSingleTarget(n.Target, n.Value, n.Pos())
+	for _, extra := range n.Targets {
+		c.assignSingleTarget(extra, n.Value, n.Pos())
+	}
+}
+
+func (c *checker) assignSingleTarget(target ast.Expr, value ast.Expr, pos token.Pos) {
+	name, ok := target.(*ast.Name)
 	if !ok {
-		c.assignTarget(n.Target, n.Value, n.Pos())
+		c.assignTarget(target, value, pos)
 		return
 	}
 	if c.current == nil {
 		if _, isFunc := c.functions[c.key(name.Name)]; isFunc {
-			c.errs.Add(n.Pos(), token.TypeMismatch, "cannot assign to function %q", name.Name)
-			c.expr(n.Value)
+			c.errs.Add(pos, token.TypeMismatch, "cannot assign to function %q", name.Name)
+			c.expr(value)
 			return
 		}
 	}
-	value := c.expr(n.Value)
+	vtype := c.expr(value)
 	if c.current != nil {
 		switch {
 		case c.current.globals[name.Name]:
@@ -825,8 +832,8 @@ func (c *checker) assign(n *ast.Assign) {
 			if cap == nil {
 				return
 			}
-			if cap.typ != types.Invalid && value != types.Invalid && !types.AssignableTo(value, cap.typ) {
-				c.errs.Add(n.Value.Pos(), token.TypeMismatch, "cannot assign %s to %s %q", value, cap.typ, name.Name)
+			if cap.typ != types.Invalid && vtype != types.Invalid && !types.AssignableTo(vtype, cap.typ) {
+				c.errs.Add(value.Pos(), token.TypeMismatch, "cannot assign %s to %s %q", vtype, cap.typ, name.Name)
 			}
 			cap.boxed = true
 			cap.src.boxed = true
@@ -835,10 +842,10 @@ func (c *checker) assign(n *ast.Assign) {
 		default:
 			l, declared := c.current.locals[name.Name]
 			if !declared {
-				l = c.declareLocal(name.Name, value, n.Pos())
+				l = c.declareLocal(name.Name, vtype, pos)
 			}
-			if l.typ != types.Invalid && value != types.Invalid && !types.AssignableTo(value, l.typ) {
-				c.errs.Add(n.Value.Pos(), token.TypeMismatch, "cannot assign %s to %s %q", value, l.typ, name.Name)
+			if l.typ != types.Invalid && vtype != types.Invalid && !types.AssignableTo(vtype, l.typ) {
+				c.errs.Add(value.Pos(), token.TypeMismatch, "cannot assign %s to %s %q", vtype, l.typ, name.Name)
 			}
 			l.init = true
 			c.types[name] = l.typ
@@ -849,13 +856,13 @@ func (c *checker) assign(n *ast.Assign) {
 	if !declared {
 		// Whole-program inference: an unannotated global takes the type of its
 		// first assignment instead of requiring an annotation.
-		g = c.declare(name.Name, value, n.Pos())
+		g = c.declare(name.Name, vtype, pos)
 		g.init = true
-		c.types[name] = value
+		c.types[name] = vtype
 		return
 	}
-	if g.typ != types.Invalid && value != types.Invalid && !types.AssignableTo(value, g.typ) {
-		c.errs.Add(n.Value.Pos(), token.TypeMismatch, "cannot assign %s to %s %q", value, g.typ, name.Name)
+	if g.typ != types.Invalid && vtype != types.Invalid && !types.AssignableTo(vtype, g.typ) {
+		c.errs.Add(value.Pos(), token.TypeMismatch, "cannot assign %s to %s %q", vtype, g.typ, name.Name)
 	}
 	g.init = true
 	c.types[name] = g.typ
@@ -1085,12 +1092,18 @@ func (c *checker) augAssign(n *ast.AugAssign) {
 	if !ok {
 		attr, ok := n.Target.(*ast.Attribute)
 		if !ok {
-			c.errs.Add(n.Pos(), token.UnsupportedFeature, "augmented assignment target is not supported")
-			c.expr(n.Value)
+			sub, ok := n.Target.(*ast.Subscript)
+			if !ok {
+				c.errs.Add(n.Pos(), token.UnsupportedFeature, "augmented assignment target is not supported")
+				c.expr(n.Value)
+				return
+			}
+			c.augAssignSubscript(n, sub)
 			return
 		}
 		receiver := c.expr(attr.X)
 		field := c.fieldType(attr, receiver)
+		c.types[attr] = field
 		value := c.expr(n.Value)
 		result := c.binaryType(field, n.Op, value, n.Pos())
 		if result != types.Invalid && field != types.Invalid && !types.AssignableTo(result, field) {
@@ -1152,6 +1165,18 @@ func (c *checker) augAssign(n *ast.AugAssign) {
 		c.errs.Add(n.Pos(), token.TypeMismatch, "result %s is not assignable to %s %q", result, g.typ, name.Name)
 	}
 	g.init = true
+}
+
+func (c *checker) augAssignSubscript(n *ast.AugAssign, sub *ast.Subscript) {
+	receiver := c.expr(sub.X)
+	index := c.expr(sub.Index)
+	elem := c.indexResultType(sub, receiver, index)
+	c.types[sub] = elem
+	value := c.expr(n.Value)
+	result := c.binaryType(elem, n.Op, value, n.Pos())
+	if result != types.Invalid && elem != types.Invalid && !types.AssignableTo(result, elem) {
+		c.errs.Add(n.Pos(), token.TypeMismatch, "result %s is not assignable to element %s", result, elem)
+	}
 }
 
 // declare registers a new global or returns the existing one, reporting a type

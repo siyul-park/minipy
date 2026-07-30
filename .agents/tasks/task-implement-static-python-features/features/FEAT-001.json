@@ -1,0 +1,24 @@
+{
+  "id": "FEAT-001",
+  "type": "feat",
+  "description": "Add string methods: strip, lstrip, rstrip, startswith, endswith, replace, count, isdigit, isalpha, isalnum, isspace, capitalize, title, swapcase, center, ljust, rjust, zfill, encode",
+  "status": "completed",
+  "steps": [
+    "In compiler/check_expr.go, in the methodCallType function, within the `types.Equal(receiver, types.Str)` default switch case, add new cases for each string method with proper argument type checking: strip/lstrip/rstrip (0 or 1 str arg) -> str, startswith/endswith (1 str arg) -> bool, replace (2 or 3 args: str, str, optional int) -> str, count (1 str arg) -> int, isdigit/isalpha/isalnum/isspace (0 args) -> bool, capitalize/title/swapcase (0 args) -> str, center/ljust/rjust (1 or 2 args: int, optional str) -> str, zfill (1 int arg) -> str, encode (0 args) -> bytes",
+    "In compiler/lower_expr.go, in the methodCall function's default switch, add lowering cases for each new string method that calls the appropriate host function via c.callHost()",
+    "In compiler/runtime.go, add host functions: strStrip, strLStrip, strRStrip, strStartsWith, strEndsWith, strReplace, strCount, strIsDigit, strIsAlpha, strIsAlnum, strIsSpace, strCapitalize, strTitle, strSwapCase, strCenter, strLJust, strRJust, strZFill, strEncode. Each follows the pattern of strUpper/strLower/strSplit/strJoin/strFind already there.",
+    "Add tests in a new file compiler/string_methods_test.go using the run(t, src) pattern to verify each method works correctly at runtime",
+    "Update docs/spec/06-builtins.md to add a String Methods table listing all new methods",
+    "Update docs/compatibility.md to mark string methods as implemented"
+  ],
+  "acceptance_criteria": [
+    "go test ./... passes with all new string method tests",
+    "Each method produces correct output: e.g. '  hello  '.strip() == 'hello', 'hello'.startswith('he') == True, 'hello'.replace('l', 'r') == 'herro', 'hello'.count('l') == 2, '123'.isdigit() == True, 'hello'.capitalize() == 'Hello', 'hi'.center(10) == '    hi    ', '42'.zfill(5) == '00042', 'hello'.encode() returns bytes"
+  ],
+  "verification": [
+    "go vet ./...",
+    "go test ./compiler -run TestCompileStringMethods"
+  ],
+  "blocked_reason": null,
+  "findings": "All 19 string methods implemented successfully. Used separate host functions for strip/lstrip/rstrip with and without args (no-arg variants use TrimSpace/TrimLeft/TrimRight with whitespace cutset, arg variants pass the chars string). replace uses I64_CONST with ^uint64(0) sentinel for the unlimited case, matching the split pattern. center/ljust/rjust push a default space string const when the fill arg is omitted. encode returns i8 array (bytes type). All 35 test cases pass."
+}

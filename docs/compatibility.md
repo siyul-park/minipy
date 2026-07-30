@@ -64,8 +64,8 @@ full CPython compatibility.
 | Annotated assignment | ✅ | Declares a typed binding; value optional. |
 | Unannotated assignment | ✅ | First assignment infers binding type. |
 | Tuple/starred unpack assignment | ✅ | Supports list/tuple sources and homogeneous starred rest. |
-| Chained assignment | ◐ | Parsed only into the current assignment representation; avoid relying on CPython multi-target semantics. |
-| Augmented assignment | ◐ | Names and attributes supported; other targets rejected. |
+| Chained assignment | ✅ | Assigns the same value to all targets; evaluates expression once. |
+| Augmented assignment | ✅ | Names, attributes, and subscripts (list elements, dict values) supported. |
 | `del` | ✅ | Names, list/dict items, and attributes; captured names rejected. |
 | `assert` | ✅ | Throws structured assertion error on false test. |
 | `if`/`elif`/`else` | ✅ | Includes narrowing and static truth pruning. |
@@ -137,7 +137,10 @@ full CPython compatibility.
 | Slicing | ✅ | Lists and strings. |
 | Slice assignment/deletion | ◐ | `list[T]` contiguous slices only; omitted step or literal `1`; replacement length must match. |
 | List literals | ✅ | Homogeneous; empty needs hint. |
-| List methods | ◐ | `append`, `pop`, `index`, `insert`, `extend`, and `reverse`; statically typed homogeneous lists only. |
+| List methods | ◐ | `append`, `pop`, `index`, `insert`, `extend`, `reverse`, `sort`, `copy`, `count`, `clear`, `remove`; statically typed homogeneous lists only. |
+| String methods | ◐ | `upper`, `lower`, `split`, `join`, `find`, `strip`, `lstrip`, `rstrip`, `startswith`, `endswith`, `replace`, `count`, `isdigit`, `isalpha`, `isalnum`, `isspace`, `capitalize`, `title`, `swapcase`, `center`, `ljust`, `rjust`, `zfill`, `encode`, `format`; statically typed. |
+| Dict methods | ◐ | `get`, `keys`, `values`, `items`, `pop` (with optional default), `update`, `setdefault`, `clear`, `copy`; statically typed homogeneous dicts only. |
+| Set methods | ◐ | `add`, `remove`, `discard`, `pop`, `clear`, `union`, `intersection`, `difference`, `issubset`, `issuperset`, `copy`; statically typed homogeneous sets only. |
 | Dict literals | ✅ | Homogeneous; empty needs hint; scalar hashable keys. |
 | Set literals | ✅ | Homogeneous; empty needs hint; scalar hashable elements. |
 | Tuple literals | ✅ | Fixed arity, heterogeneous. |
@@ -182,8 +185,18 @@ full CPython compatibility.
 | `ord`, `chr` | ✅ | Unicode codepoint conversion; static `str->int` / `int->str`; `ValueError` for invalid inputs. `chr` rejects surrogate codepoints (`0xD800..0xDFFF`), diverging from CPython. |
 | `range`, `iter`, `next` | ✅ | Iterator paths. |
 | `enumerate`, `zip` | ✅ | List-based eager helpers. |
+| `sorted`, `reversed` | ✅ | Return new lists; `sorted` requires comparable element types. |
+| `min`, `max` | ✅ | Variadic (2+ same-type args) or single list of comparable elements. |
+| `sum` | ✅ | Accepts `list[int]` or `list[float]`. |
+| `any`, `all` | ✅ | Accept `list[bool]`; short-circuit evaluation. |
+| `round` | ✅ | 1-arg: `float -> int` (banker's rounding); 2-arg: `float, int -> float`. |
+| `divmod` | ✅ | Accepts same numeric type pair; returns tuple. Floor division semantics. |
+| `pow` | ✅ | `int,int -> int`; mixed/float yields `float`. |
+| `hex`, `oct`, `bin` | ✅ | `int -> str` formatting. |
+| `repr` | ✅ | Printable values to `str` with quotes for strings. |
 | `getattr`, `hasattr` | ◐ | Concrete class instances and literal declared field names only; no methods, dynamic strings, defaults, or runtime lookup. |
 | `isinstance` | ✅ | Type/class checks and narrowing support. |
+| `map`, `filter` | ✅ | Static list-based versions; `map(fn, list) -> list[R]`, `filter(pred, list) -> list[T]`. Inline lambdas supported via type inference. |
 | Builtin exceptions | ✅ | Seeded class hierarchy. |
 | `operator` module | ✅ | Native functions for syntax operator semantics. |
 | `typing` module | ◐ | Annotation-only native symbols; no runtime typing objects. |

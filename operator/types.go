@@ -9,7 +9,8 @@ import (
 
 // BinaryType applies the arithmetic/bitwise/shift typing rules
 // (docs/spec/04-static-semantics.md). Mixed int/float and bool arithmetic are
-// rejected; `str + str` and list `+`/`*` are the only non-numeric cases.
+// rejected; strings, bytes, and homogeneous lists have only their declared
+// concatenation and repetition operations.
 func BinaryType(c module.Checker, left types.Type, op token.Type, right types.Type, pos token.Pos) types.Type {
 	left = types.Erase(left)
 	right = types.Erase(right)
@@ -32,10 +33,14 @@ func BinaryType(c module.Checker, left types.Type, op token.Type, right types.Ty
 		}
 		return arith(c, left, op, right, pos)
 	case token.STAR:
-		if types.Equal(left, types.Str) && types.Equal(right, types.Int) {
+		if types.Equal(left, types.Str) && types.Equal(right, types.Int) ||
+			types.Equal(left, types.Int) && types.Equal(right, types.Str) {
 			return types.Str
 		}
 		if list, ok := left.(*types.List); ok && types.Equal(right, types.Int) {
+			return types.NewList(list.Elem)
+		}
+		if list, ok := right.(*types.List); ok && types.Equal(left, types.Int) {
 			return types.NewList(list.Elem)
 		}
 		return arith(c, left, op, right, pos)
@@ -46,6 +51,11 @@ func BinaryType(c module.Checker, left types.Type, op token.Type, right types.Ty
 			return types.Float
 		}
 		if types.Equal(left, types.Float) && types.Equal(right, types.Float) {
+			return types.Float
+		}
+		// Mixed int/float division: promote to float.
+		if (types.Equal(left, types.Int) && types.Equal(right, types.Float)) ||
+			(types.Equal(left, types.Float) && types.Equal(right, types.Int)) {
 			return types.Float
 		}
 		return mismatch(c, op, left, right, pos)
@@ -64,6 +74,11 @@ func arith(c module.Checker, left types.Type, op token.Type, right types.Type, p
 		return types.Int
 	}
 	if types.Equal(left, types.Float) && types.Equal(right, types.Float) {
+		return types.Float
+	}
+	// Mixed int/float: promote to float (standard Python semantics).
+	if (types.Equal(left, types.Int) && types.Equal(right, types.Float)) ||
+		(types.Equal(left, types.Float) && types.Equal(right, types.Int)) {
 		return types.Float
 	}
 	return mismatch(c, op, left, right, pos)
@@ -145,6 +160,11 @@ func Comparable(c module.Checker, op token.Type, left, right types.Type, pos tok
 		return
 	}
 	if !types.Equal(left, right) {
+		// Allow mixed int/float comparisons (standard Python semantics).
+		if (types.Equal(left, types.Int) && types.Equal(right, types.Float)) ||
+			(types.Equal(left, types.Float) && types.Equal(right, types.Int)) {
+			return
+		}
 		c.Error(pos, token.NotComparable, "'%s' not supported between instances of %s and %s", op, left, right)
 	}
 }

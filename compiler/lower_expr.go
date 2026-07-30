@@ -495,6 +495,13 @@ func (c *lowerer) fieldIndex(x *ast.Attribute) int {
 	return c.classes[cls.Name].fieldIndex[x.Name]
 }
 
+func (c *lowerer) fieldType(x *ast.Attribute) types.Type {
+	cls := c.types[x.X].(*types.Class)
+	info := c.classes[cls.Name]
+	idx := info.fieldIndex[x.Name]
+	return info.fields[idx].typ
+}
+
 // fstringConcat lowers a sequence of f-string parts into a left-associated
 // STRING_CONCAT chain seeded with the empty string. It is reused both for the
 // whole f-string and for a nested format spec (f"{x:{w}.{p}f}").
@@ -573,16 +580,20 @@ func staticFStringFormat(parts []ast.FStringPart) (string, bool) {
 
 // ifExp lowers the conditional expression `body if cond else orelse`
 // (docs/spec/05-codegen.md): branch to the true arm when the condition holds,
-// else fall through to the false arm.
+// else fall through to the false arm. Each arm is promoted to the joined
+// result type when numeric widening applies.
 func (c *lowerer) ifExp(x *ast.IfExp) {
+	resultType := c.types[x]
 	c.expr(x.Cond)
 	trueL := c.label()
 	end := c.label()
 	c.brIf(trueL)
 	c.expr(x.Orelse)
+	c.promoteIntToFloat(c.types[x.Orelse], resultType)
 	c.br(end)
 	c.bind(trueL)
 	c.expr(x.Body)
+	c.promoteIntToFloat(c.types[x.Body], resultType)
 	c.bind(end)
 }
 
@@ -677,8 +688,12 @@ func (c *lowerer) call(x *ast.CallExpr) {
 			return
 		}
 		if info, ok := c.functions[sym]; ok {
-			for _, arg := range c.functionCallArgs(x, info) {
+			args := c.functionCallArgs(x, info)
+			for i, arg := range args {
 				c.expr(arg)
+				if i < len(info.params) {
+					c.promoteIntToFloat(c.types[arg], info.params[i].typ)
+				}
 			}
 			if spec := c.callSpec[x]; spec != nil {
 				c.emit(instr.CONST_GET, uint64(c.specs[spec]))
@@ -791,8 +806,12 @@ func (c *lowerer) construct(x *ast.CallExpr, cls *class) {
 	args := c.checkedArgs(x)
 	if init := cls.methods["__init__"]; init != nil {
 		c.emit(instr.DUP)
-		for _, arg := range args {
+		for i, arg := range args {
 			c.expr(arg)
+			// Promote int to float when the parameter expects float.
+			if i+1 < len(init.params) {
+				c.promoteIntToFloat(c.types[arg], init.params[i+1].typ)
+			}
 		}
 		c.funcValue(init, cls.methodBody["__init__"])
 		c.emit(instr.CALL)
@@ -803,6 +822,7 @@ func (c *lowerer) construct(x *ast.CallExpr, cls *class) {
 		c.emit(instr.DUP)
 		c.emit(instr.I32_CONST, uint64(cls.fields[i].index))
 		c.expr(arg)
+		c.promoteIntToFloat(c.types[arg], cls.fields[i].typ)
 		c.emit(instr.STRUCT_SET)
 	}
 }
@@ -822,6 +842,7 @@ func (c *lowerer) applyFieldDefaults(cls *class) {
 		c.emit(instr.DUP)
 		c.emit(instr.I32_CONST, uint64(field.index))
 		c.expr(field.value)
+		c.promoteIntToFloat(c.types[field.value], field.typ)
 		c.emit(instr.STRUCT_SET)
 	}
 }
@@ -881,16 +902,31 @@ func (c *lowerer) methodCall(x *ast.CallExpr, attr *ast.Attribute) {
 		c.callHost(c.dictValues(recvType, c.types[x]))
 	case "items":
 		c.callHost(c.dictItems(recvType, c.types[x]))
+	case "update":
+		c.callHost(c.dictUpdate(recvType))
+		c.emit(instr.REF_NULL)
+	case "setdefault":
+		c.callHost(c.dictSetDefault(recvType, c.types[x]))
 	case "append":
 		c.emit(instr.I32_CONST, 1)
 		c.emit(instr.ARRAY_APPEND)
 		c.emit(instr.DROP)
 		c.emit(instr.REF_NULL)
 	case "pop":
-		if len(x.Args) == 0 {
-			c.emit(instr.I64_CONST, ^uint64(0))
+		if _, ok := recvType.(*types.Dict); ok {
+			if len(x.Args) == 2 {
+				c.callHost(c.dictPopDefault(recvType, c.types[x]))
+			} else {
+				c.callHost(c.dictPop(recvType, c.types[x]))
+			}
+		} else if _, ok := recvType.(*types.Set); ok {
+			c.callHost(c.setPop(recvType, c.types[x]))
+		} else {
+			if len(x.Args) == 0 {
+				c.emit(instr.I64_CONST, ^uint64(0))
+			}
+			c.emitArrayDelete()
 		}
-		c.emitArrayDelete()
 	case "index":
 		c.callHost(c.listIndex(recvType))
 	case "insert":
@@ -902,6 +938,42 @@ func (c *lowerer) methodCall(x *ast.CallExpr, attr *ast.Attribute) {
 	case "reverse":
 		c.emitListReverse()
 		c.emit(instr.REF_NULL)
+	case "sort":
+		c.callHost(c.listSort(recvType))
+		c.emit(instr.REF_NULL)
+	case "copy":
+		if _, ok := recvType.(*types.Dict); ok {
+			c.callHost(c.dictCopy(recvType))
+		} else if _, ok := recvType.(*types.Set); ok {
+			c.callHost(c.setCopy(recvType))
+		} else {
+			c.callHost(c.listCopy(recvType))
+		}
+	case "count":
+		if _, ok := recvType.(*types.List); ok {
+			c.callHost(c.listCount(recvType))
+		} else {
+			c.callHost(c.strCount())
+		}
+	case "clear":
+		if _, ok := recvType.(*types.Dict); ok {
+			c.callHost(c.dictClear(recvType))
+			c.emit(instr.REF_NULL)
+		} else if _, ok := recvType.(*types.Set); ok {
+			c.callHost(c.dictClear(recvType))
+			c.emit(instr.REF_NULL)
+		} else {
+			c.callHost(c.listClear(recvType))
+			c.emit(instr.REF_NULL)
+		}
+	case "remove":
+		if _, ok := recvType.(*types.Set); ok {
+			c.callHost(c.setRemove(recvType))
+			c.emit(instr.REF_NULL)
+		} else {
+			c.callHost(c.listRemove(recvType))
+			c.emit(instr.REF_NULL)
+		}
 	case "upper":
 		c.callHost(c.strUpper())
 	case "lower":
@@ -915,9 +987,117 @@ func (c *lowerer) methodCall(x *ast.CallExpr, attr *ast.Attribute) {
 		c.callHost(c.strJoin())
 	case "find":
 		c.callHost(c.strFind())
+	case "strip":
+		if len(x.Args) == 0 {
+			c.callHost(c.strStripNoArg())
+		} else {
+			c.callHost(c.strStripChars())
+		}
+	case "lstrip":
+		if len(x.Args) == 0 {
+			c.callHost(c.strLStripNoArg())
+		} else {
+			c.callHost(c.strLStripChars())
+		}
+	case "rstrip":
+		if len(x.Args) == 0 {
+			c.callHost(c.strRStripNoArg())
+		} else {
+			c.callHost(c.strRStripChars())
+		}
+	case "startswith":
+		c.callHost(c.strStartsWith())
+	case "endswith":
+		c.callHost(c.strEndsWith())
+	case "replace":
+		if len(x.Args) == 2 {
+			c.emit(instr.I64_CONST, ^uint64(0))
+		}
+		c.callHost(c.strReplace())
+	case "isdigit":
+		c.callHost(c.strIsDigit())
+	case "isalpha":
+		c.callHost(c.strIsAlpha())
+	case "isalnum":
+		c.callHost(c.strIsAlnum())
+	case "isspace":
+		c.callHost(c.strIsSpace())
+	case "capitalize":
+		c.callHost(c.strCapitalize())
+	case "title":
+		c.callHost(c.strTitle())
+	case "swapcase":
+		c.callHost(c.strSwapCase())
+	case "center":
+		if len(x.Args) == 1 {
+			c.constGet(vmtypes.String(" "))
+		}
+		c.callHost(c.strCenter())
+	case "ljust":
+		if len(x.Args) == 1 {
+			c.constGet(vmtypes.String(" "))
+		}
+		c.callHost(c.strLJust())
+	case "rjust":
+		if len(x.Args) == 1 {
+			c.constGet(vmtypes.String(" "))
+		}
+		c.callHost(c.strRJust())
+	case "zfill":
+		c.callHost(c.strZFill())
+	case "encode":
+		c.callHost(c.strEncode())
+	case "format":
+		c.emitStrFormat(x)
+	case "add":
+		c.emit(instr.I32_CONST, 1)
+		c.emit(instr.MAP_SET)
+		c.emit(instr.REF_NULL)
+	case "discard":
+		c.callHost(c.setDiscard(recvType))
+		c.emit(instr.REF_NULL)
+	case "union":
+		c.callHost(c.setUnion(recvType))
+	case "intersection":
+		c.callHost(c.setIntersection(recvType))
+	case "difference":
+		c.callHost(c.setDifference(recvType))
+	case "issubset":
+		c.callHost(c.setIsSubset(recvType))
+	case "issuperset":
+		c.callHost(c.setIsSuperset(recvType))
 	default:
 		c.fail(fmt.Errorf("lower method %s on %T: unsupported", attr.Name, recvType))
 	}
+}
+
+// emitStrFormat lowers str.format(args...). At this point the stack holds
+// [receiver_str, arg0, arg1, ..., argN-1] (top). Each argument is converted to
+// a string and then all N+1 string values are passed to a host function that
+// performs the placeholder substitution.
+func (c *lowerer) emitStrFormat(x *ast.CallExpr) {
+	n := len(x.Args)
+	// Save each arg (top of stack last pushed) into a temporary slot,
+	// converting non-string args to string along the way.
+	argSlots := make([]int, n)
+	for i := n - 1; i >= 0; i-- {
+		if !types.Equal(c.types[x.Args[i]], types.Str) {
+			c.callHost(hostabi.StringFunction(c.types[x.Args[i]]))
+		}
+		slot := c.tmp()
+		argSlots[i] = slot
+		c.emit(instr.GLOBAL_SET, uint64(slot))
+	}
+	// Receiver (format string) is now on top - already a string.
+	recvSlot := c.tmp()
+	c.emit(instr.GLOBAL_SET, uint64(recvSlot))
+
+	// Push in order: format_string, arg0_str, arg1_str, ...
+	c.emit(instr.GLOBAL_GET, uint64(recvSlot))
+	for _, slot := range argSlots {
+		c.emit(instr.GLOBAL_GET, uint64(slot))
+	}
+	c.callHost(c.strFormatMethod(n))
 }
 
 // emitBool pushes a bool literal as an i1 value. There is no i1 const opcode,

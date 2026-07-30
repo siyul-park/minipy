@@ -2,13 +2,15 @@ package compiler
 
 import (
 	"errors"
-	"fmt"
 	"math"
+	"sort"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/siyul-park/minipy/builtins"
 	"github.com/siyul-park/minipy/hostabi"
+	pyoperator "github.com/siyul-park/minipy/operator"
 	"github.com/siyul-park/minipy/types"
 
 	"github.com/siyul-park/minivm/interp"
@@ -67,6 +69,160 @@ func (c *lowerer) dictItems(receiver, result types.Type) *interp.HostFunction {
 	)
 }
 
+func (c *lowerer) dictPop(receiver, result types.Type) *interp.HostFunction {
+	dict := receiver.(*types.Dict)
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: []vmtypes.Type{receiver.VM(), dict.Key.VM()}, Returns: []vmtypes.Type{result.VM()}},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			val, err := i.Load(params[0].Ref())
+			if err != nil {
+				return nil, err
+			}
+			value, ok := mapDelete(val, params[1])
+			if !ok {
+				return nil, errDictKeyError
+			}
+			return []vmtypes.Boxed{value}, nil
+		},
+	)
+}
+
+func (c *lowerer) dictPopDefault(receiver, result types.Type) *interp.HostFunction {
+	dict := receiver.(*types.Dict)
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: []vmtypes.Type{receiver.VM(), dict.Key.VM(), result.VM()}, Returns: []vmtypes.Type{result.VM()}},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			val, err := i.Load(params[0].Ref())
+			if err != nil {
+				return nil, err
+			}
+			value, ok := mapDelete(val, params[1])
+			if !ok {
+				return []vmtypes.Boxed{params[2]}, nil
+			}
+			return []vmtypes.Boxed{value}, nil
+		},
+	)
+}
+
+func (c *lowerer) dictUpdate(receiver types.Type) *interp.HostFunction {
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: []vmtypes.Type{receiver.VM(), receiver.VM()}},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			dst, err := i.Load(params[0].Ref())
+			if err != nil {
+				return nil, err
+			}
+			keys, vals, err := mapEntries(i, params[1])
+			if err != nil {
+				return nil, err
+			}
+			for idx, key := range keys {
+				if err := retainBoxes(i, []vmtypes.Boxed{key}); err != nil {
+					return nil, err
+				}
+				if err := retainBoxes(i, []vmtypes.Boxed{vals[idx]}); err != nil {
+					return nil, err
+				}
+				if err := mapSet(dst, key, vals[idx]); err != nil {
+					return nil, err
+				}
+			}
+			return nil, nil
+		},
+	)
+}
+
+func (c *lowerer) dictSetDefault(receiver, result types.Type) *interp.HostFunction {
+	dict := receiver.(*types.Dict)
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: []vmtypes.Type{receiver.VM(), dict.Key.VM(), dict.Value.VM()}, Returns: []vmtypes.Type{result.VM()}},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			val, ok, err := mapGet(i, params[0], params[1])
+			if err != nil {
+				return nil, err
+			}
+			if ok {
+				return []vmtypes.Boxed{val}, nil
+			}
+			dst, err := i.Load(params[0].Ref())
+			if err != nil {
+				return nil, err
+			}
+			if err := retainBoxes(i, []vmtypes.Boxed{params[1]}); err != nil {
+				return nil, err
+			}
+			if err := retainBoxes(i, []vmtypes.Boxed{params[2]}); err != nil {
+				return nil, err
+			}
+			if err := mapSet(dst, params[1], params[2]); err != nil {
+				return nil, err
+			}
+			return []vmtypes.Boxed{params[2]}, nil
+		},
+	)
+}
+
+func (c *lowerer) dictClear(receiver types.Type) *interp.HostFunction {
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: []vmtypes.Type{receiver.VM()}},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			val, err := i.Load(params[0].Ref())
+			if err != nil {
+				return nil, err
+			}
+			switch m := val.(type) {
+			case *vmtypes.TypedMap[bool]:
+				m.Clear(func(v vmtypes.Boxed) {})
+			case *vmtypes.TypedMap[int32]:
+				m.Clear(func(v vmtypes.Boxed) {})
+			case *vmtypes.TypedMap[int64]:
+				m.Clear(func(v vmtypes.Boxed) {})
+			case *vmtypes.TypedMap[float32]:
+				m.Clear(func(v vmtypes.Boxed) {})
+			case *vmtypes.TypedMap[float64]:
+				m.Clear(func(v vmtypes.Boxed) {})
+			case *vmtypes.Map:
+				m.Clear(func(e vmtypes.MapEntry) {})
+			default:
+				return nil, interp.ErrTypeMismatch
+			}
+			return nil, nil
+		},
+	)
+}
+
+func (c *lowerer) dictCopy(receiver types.Type) *interp.HostFunction {
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: []vmtypes.Type{receiver.VM()}, Returns: []vmtypes.Type{receiver.VM()}},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			src, err := i.Load(params[0].Ref())
+			if err != nil {
+				return nil, err
+			}
+			mt, ok := src.Type().(*vmtypes.MapType)
+			if !ok {
+				return nil, interp.ErrTypeMismatch
+			}
+			keys, vals, err := mapEntries(i, params[0])
+			if err != nil {
+				return nil, err
+			}
+			out := vmtypes.NewMapForType(mt, len(keys))
+			for idx, key := range keys {
+				if err := mapSet(out, key, vals[idx]); err != nil {
+					return nil, err
+				}
+			}
+			addr, err := i.Alloc(out)
+			if err != nil {
+				return nil, err
+			}
+			return []vmtypes.Boxed{vmtypes.BoxRef(addr)}, nil
+		},
+	)
+}
+
 // dictRest returns a new dict holding receiver minus the keys in the second
 // argument. It backs mapping-pattern `**rest` captures.
 func (c *lowerer) dictRest(receiver types.Type) *interp.HostFunction {
@@ -80,7 +236,7 @@ func (c *lowerer) dictRest(receiver types.Type) *interp.HostFunction {
 			}
 			mt, ok := src.Type().(*vmtypes.MapType)
 			if !ok {
-				return nil, fmt.Errorf("dict rest on non-map value")
+				return nil, interp.ErrTypeMismatch
 			}
 			ks, vs, err := mapEntries(i, params[0])
 			if err != nil {
@@ -138,6 +294,28 @@ func mapSet(m vmtypes.Value, key, val vmtypes.Boxed) error {
 		return interp.ErrTypeMismatch
 	}
 	return nil
+}
+
+// mapDelete removes a key from a map value and returns the associated value.
+// It returns (value, true) when the key existed, or (zero, false) otherwise.
+func mapDelete(m vmtypes.Value, key vmtypes.Boxed) (vmtypes.Boxed, bool) {
+	switch mm := m.(type) {
+	case *vmtypes.TypedMap[bool]:
+		return mm.Delete(key.Bool())
+	case *vmtypes.TypedMap[int32]:
+		return mm.Delete(key.I32())
+	case *vmtypes.TypedMap[int64]:
+		return mm.Delete(key.I64())
+	case *vmtypes.TypedMap[float32]:
+		return mm.Delete(key.F32())
+	case *vmtypes.TypedMap[float64]:
+		return mm.Delete(key.F64())
+	case *vmtypes.Map:
+		entry, ok := mm.Delete(mapKey(key))
+		return entry.Value, ok
+	default:
+		return 0, false
+	}
 }
 
 // arraySlice builds `receiver[a:b:c]` for any array-backed VM type (list or
@@ -300,6 +478,135 @@ func (c *lowerer) listExtend(receiver types.Type) *interp.HostFunction {
 	)
 }
 
+func (c *lowerer) listSort(receiver types.Type) *interp.HostFunction {
+	elem := receiver.(*types.List).Elem
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: []vmtypes.Type{receiver.VM()}},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			typ, elems, err := hostabi.ArrayElems(i, params[0])
+			if err != nil {
+				return nil, err
+			}
+			var sortErr error
+			sort.SliceStable(elems, func(a, b int) bool {
+				if sortErr != nil {
+					return false
+				}
+				switch {
+				case types.Equal(elem, types.Int):
+					return elems[a].I64() < elems[b].I64()
+				case types.Equal(elem, types.Float):
+					return elems[a].F64() < elems[b].F64()
+				case types.Equal(elem, types.Bool):
+					return !elems[a].Bool() && elems[b].Bool()
+				case types.Equal(elem, types.Str):
+					sa, e := hostabi.LoadStr(i, elems[a])
+					if e != nil {
+						sortErr = e
+						return false
+					}
+					sb, e := hostabi.LoadStr(i, elems[b])
+					if e != nil {
+						sortErr = e
+						return false
+					}
+					return sa < sb
+				}
+				return false
+			})
+			if sortErr != nil {
+				return nil, sortErr
+			}
+			if err := i.Store(params[0].Ref(), vmtypes.NewArray(typ, elems...)); err != nil {
+				return nil, err
+			}
+			return nil, nil
+		},
+	)
+}
+
+func (c *lowerer) listCopy(receiver types.Type) *interp.HostFunction {
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: []vmtypes.Type{receiver.VM()}, Returns: []vmtypes.Type{receiver.VM()}},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			typ, elems, err := hostabi.ArrayElems(i, params[0])
+			if err != nil {
+				return nil, err
+			}
+			return hostabi.AllocArray(i, typ, elems)
+		},
+	)
+}
+
+func (c *lowerer) listCount(receiver types.Type) *interp.HostFunction {
+	elem := receiver.(*types.List).Elem
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: []vmtypes.Type{receiver.VM(), elem.VM()}, Returns: []vmtypes.Type{vmtypes.TypeI64}},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			_, elems, err := hostabi.ArrayElems(i, params[0])
+			if err != nil {
+				return nil, err
+			}
+			count := int64(0)
+			for _, e := range elems {
+				equal, err := hostabi.BoxedEqual(i, e, params[1])
+				if err != nil {
+					return nil, err
+				}
+				if equal {
+					count++
+				}
+			}
+			return []vmtypes.Boxed{vmtypes.BoxI64(count)}, nil
+		},
+	)
+}
+
+func (c *lowerer) listClear(receiver types.Type) *interp.HostFunction {
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: []vmtypes.Type{receiver.VM()}},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			typ, _, err := hostabi.ArrayElems(i, params[0])
+			if err != nil {
+				return nil, err
+			}
+			if err := i.Store(params[0].Ref(), vmtypes.NewArray(typ)); err != nil {
+				return nil, err
+			}
+			return nil, nil
+		},
+	)
+}
+
+func (c *lowerer) listRemove(receiver types.Type) *interp.HostFunction {
+	elem := receiver.(*types.List).Elem
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: []vmtypes.Type{receiver.VM(), elem.VM()}},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			typ, elems, err := hostabi.ArrayElems(i, params[0])
+			if err != nil {
+				return nil, err
+			}
+			for idx, e := range elems {
+				equal, err := hostabi.BoxedEqual(i, e, params[1])
+				if err != nil {
+					return nil, err
+				}
+				if equal {
+					out := make([]vmtypes.Boxed, 0, len(elems)-1)
+					out = append(out, elems[:idx]...)
+					out = append(out, elems[idx+1:]...)
+					if err := i.Store(params[0].Ref(), vmtypes.NewArray(typ, out...)); err != nil {
+						return nil, err
+					}
+					return nil, nil
+				}
+			}
+			return nil, errListRemoveValue
+		},
+	)
+}
+
 func (c *lowerer) dictMerge(receiver types.Type) *interp.HostFunction {
 	return interp.NewHostFunction(
 		&vmtypes.FunctionType{Params: []vmtypes.Type{receiver.VM(), receiver.VM()}, Returns: []vmtypes.Type{receiver.VM()}},
@@ -310,7 +617,7 @@ func (c *lowerer) dictMerge(receiver types.Type) *interp.HostFunction {
 			}
 			mt, ok := src.Type().(*vmtypes.MapType)
 			if !ok {
-				return nil, fmt.Errorf("dict merge on non-map value")
+				return nil, interp.ErrTypeMismatch
 			}
 			leftKeys, leftVals, err := mapEntries(i, params[0])
 			if err != nil {
@@ -559,6 +866,571 @@ func (c *lowerer) strJoin() *interp.HostFunction {
 	)
 }
 
+func (c *lowerer) strStripNoArg() *interp.HostFunction {
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeString}, Returns: []vmtypes.Type{vmtypes.TypeString}},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			text, err := hostabi.LoadStr(i, params[0])
+			if err != nil {
+				return nil, err
+			}
+			return hostabi.AllocString(i, strings.TrimSpace(text))
+		},
+	)
+}
+
+func (c *lowerer) strStripChars() *interp.HostFunction {
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeString, vmtypes.TypeString}, Returns: []vmtypes.Type{vmtypes.TypeString}},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			text, err := hostabi.LoadStr(i, params[0])
+			if err != nil {
+				return nil, err
+			}
+			chars, err := hostabi.LoadStr(i, params[1])
+			if err != nil {
+				return nil, err
+			}
+			return hostabi.AllocString(i, strings.Trim(text, chars))
+		},
+	)
+}
+
+func (c *lowerer) strLStripNoArg() *interp.HostFunction {
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeString}, Returns: []vmtypes.Type{vmtypes.TypeString}},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			text, err := hostabi.LoadStr(i, params[0])
+			if err != nil {
+				return nil, err
+			}
+			return hostabi.AllocString(i, strings.TrimLeft(text, " \t\n\r\x0b\x0c"))
+		},
+	)
+}
+
+func (c *lowerer) strLStripChars() *interp.HostFunction {
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeString, vmtypes.TypeString}, Returns: []vmtypes.Type{vmtypes.TypeString}},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			text, err := hostabi.LoadStr(i, params[0])
+			if err != nil {
+				return nil, err
+			}
+			chars, err := hostabi.LoadStr(i, params[1])
+			if err != nil {
+				return nil, err
+			}
+			return hostabi.AllocString(i, strings.TrimLeft(text, chars))
+		},
+	)
+}
+
+func (c *lowerer) strRStripNoArg() *interp.HostFunction {
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeString}, Returns: []vmtypes.Type{vmtypes.TypeString}},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			text, err := hostabi.LoadStr(i, params[0])
+			if err != nil {
+				return nil, err
+			}
+			return hostabi.AllocString(i, strings.TrimRight(text, " \t\n\r\x0b\x0c"))
+		},
+	)
+}
+
+func (c *lowerer) strRStripChars() *interp.HostFunction {
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeString, vmtypes.TypeString}, Returns: []vmtypes.Type{vmtypes.TypeString}},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			text, err := hostabi.LoadStr(i, params[0])
+			if err != nil {
+				return nil, err
+			}
+			chars, err := hostabi.LoadStr(i, params[1])
+			if err != nil {
+				return nil, err
+			}
+			return hostabi.AllocString(i, strings.TrimRight(text, chars))
+		},
+	)
+}
+
+func (c *lowerer) strStartsWith() *interp.HostFunction {
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeString, vmtypes.TypeString}, Returns: []vmtypes.Type{vmtypes.TypeI1}},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			text, err := hostabi.LoadStr(i, params[0])
+			if err != nil {
+				return nil, err
+			}
+			prefix, err := hostabi.LoadStr(i, params[1])
+			if err != nil {
+				return nil, err
+			}
+			return []vmtypes.Boxed{vmtypes.BoxI1(strings.HasPrefix(text, prefix))}, nil
+		},
+	)
+}
+
+func (c *lowerer) strEndsWith() *interp.HostFunction {
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeString, vmtypes.TypeString}, Returns: []vmtypes.Type{vmtypes.TypeI1}},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			text, err := hostabi.LoadStr(i, params[0])
+			if err != nil {
+				return nil, err
+			}
+			suffix, err := hostabi.LoadStr(i, params[1])
+			if err != nil {
+				return nil, err
+			}
+			return []vmtypes.Boxed{vmtypes.BoxI1(strings.HasSuffix(text, suffix))}, nil
+		},
+	)
+}
+
+func (c *lowerer) strReplace() *interp.HostFunction {
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeString, vmtypes.TypeString, vmtypes.TypeString, vmtypes.TypeI64}, Returns: []vmtypes.Type{vmtypes.TypeString}},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			text, err := hostabi.LoadStr(i, params[0])
+			if err != nil {
+				return nil, err
+			}
+			old, err := hostabi.LoadStr(i, params[1])
+			if err != nil {
+				return nil, err
+			}
+			newStr, err := hostabi.LoadStr(i, params[2])
+			if err != nil {
+				return nil, err
+			}
+			count := params[3].I64()
+			var result string
+			if count < 0 {
+				result = strings.ReplaceAll(text, old, newStr)
+			} else {
+				result = strings.Replace(text, old, newStr, int(count))
+			}
+			return hostabi.AllocString(i, result)
+		},
+	)
+}
+
+func (c *lowerer) strCount() *interp.HostFunction {
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeString, vmtypes.TypeString}, Returns: []vmtypes.Type{vmtypes.TypeI64}},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			text, err := hostabi.LoadStr(i, params[0])
+			if err != nil {
+				return nil, err
+			}
+			sub, err := hostabi.LoadStr(i, params[1])
+			if err != nil {
+				return nil, err
+			}
+			return []vmtypes.Boxed{vmtypes.BoxI64(int64(strings.Count(text, sub)))}, nil
+		},
+	)
+}
+
+func (c *lowerer) strIsDigit() *interp.HostFunction {
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeString}, Returns: []vmtypes.Type{vmtypes.TypeI1}},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			text, err := hostabi.LoadStr(i, params[0])
+			if err != nil {
+				return nil, err
+			}
+			if len(text) == 0 {
+				return []vmtypes.Boxed{vmtypes.BoxI1(false)}, nil
+			}
+			for _, r := range text {
+				if !unicode.IsDigit(r) {
+					return []vmtypes.Boxed{vmtypes.BoxI1(false)}, nil
+				}
+			}
+			return []vmtypes.Boxed{vmtypes.BoxI1(true)}, nil
+		},
+	)
+}
+
+func (c *lowerer) strIsAlpha() *interp.HostFunction {
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeString}, Returns: []vmtypes.Type{vmtypes.TypeI1}},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			text, err := hostabi.LoadStr(i, params[0])
+			if err != nil {
+				return nil, err
+			}
+			if len(text) == 0 {
+				return []vmtypes.Boxed{vmtypes.BoxI1(false)}, nil
+			}
+			for _, r := range text {
+				if !unicode.IsLetter(r) {
+					return []vmtypes.Boxed{vmtypes.BoxI1(false)}, nil
+				}
+			}
+			return []vmtypes.Boxed{vmtypes.BoxI1(true)}, nil
+		},
+	)
+}
+
+func (c *lowerer) strIsAlnum() *interp.HostFunction {
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeString}, Returns: []vmtypes.Type{vmtypes.TypeI1}},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			text, err := hostabi.LoadStr(i, params[0])
+			if err != nil {
+				return nil, err
+			}
+			if len(text) == 0 {
+				return []vmtypes.Boxed{vmtypes.BoxI1(false)}, nil
+			}
+			for _, r := range text {
+				if !unicode.IsLetter(r) && !unicode.IsDigit(r) {
+					return []vmtypes.Boxed{vmtypes.BoxI1(false)}, nil
+				}
+			}
+			return []vmtypes.Boxed{vmtypes.BoxI1(true)}, nil
+		},
+	)
+}
+
+func (c *lowerer) strIsSpace() *interp.HostFunction {
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeString}, Returns: []vmtypes.Type{vmtypes.TypeI1}},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			text, err := hostabi.LoadStr(i, params[0])
+			if err != nil {
+				return nil, err
+			}
+			if len(text) == 0 {
+				return []vmtypes.Boxed{vmtypes.BoxI1(false)}, nil
+			}
+			for _, r := range text {
+				if !unicode.IsSpace(r) {
+					return []vmtypes.Boxed{vmtypes.BoxI1(false)}, nil
+				}
+			}
+			return []vmtypes.Boxed{vmtypes.BoxI1(true)}, nil
+		},
+	)
+}
+
+func (c *lowerer) strCapitalize() *interp.HostFunction {
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeString}, Returns: []vmtypes.Type{vmtypes.TypeString}},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			text, err := hostabi.LoadStr(i, params[0])
+			if err != nil {
+				return nil, err
+			}
+			if len(text) == 0 {
+				return hostabi.AllocString(i, "")
+			}
+			runes := []rune(text)
+			runes[0] = unicode.ToUpper(runes[0])
+			for j := 1; j < len(runes); j++ {
+				runes[j] = unicode.ToLower(runes[j])
+			}
+			return hostabi.AllocString(i, string(runes))
+		},
+	)
+}
+
+func (c *lowerer) strTitle() *interp.HostFunction {
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeString}, Returns: []vmtypes.Type{vmtypes.TypeString}},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			text, err := hostabi.LoadStr(i, params[0])
+			if err != nil {
+				return nil, err
+			}
+			runes := []rune(text)
+			wordStart := true
+			for j, r := range runes {
+				if unicode.IsLetter(r) || unicode.IsDigit(r) {
+					if wordStart {
+						runes[j] = unicode.ToUpper(r)
+						wordStart = false
+					} else {
+						runes[j] = unicode.ToLower(r)
+					}
+				} else {
+					wordStart = true
+				}
+			}
+			return hostabi.AllocString(i, string(runes))
+		},
+	)
+}
+
+func (c *lowerer) strSwapCase() *interp.HostFunction {
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeString}, Returns: []vmtypes.Type{vmtypes.TypeString}},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			text, err := hostabi.LoadStr(i, params[0])
+			if err != nil {
+				return nil, err
+			}
+			runes := []rune(text)
+			for j, r := range runes {
+				if unicode.IsUpper(r) {
+					runes[j] = unicode.ToLower(r)
+				} else if unicode.IsLower(r) {
+					runes[j] = unicode.ToUpper(r)
+				}
+			}
+			return hostabi.AllocString(i, string(runes))
+		},
+	)
+}
+
+func (c *lowerer) strCenter() *interp.HostFunction {
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeString, vmtypes.TypeI64, vmtypes.TypeString}, Returns: []vmtypes.Type{vmtypes.TypeString}},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			text, err := hostabi.LoadStr(i, params[0])
+			if err != nil {
+				return nil, err
+			}
+			width := params[1].I64()
+			fill, err := hostabi.LoadStr(i, params[2])
+			if err != nil {
+				return nil, err
+			}
+			fillRunes := []rune(fill)
+			if len(fillRunes) == 0 {
+				return hostabi.AllocString(i, text)
+			}
+			fillChar := fillRunes[0]
+			runes := []rune(text)
+			pad := int(width) - len(runes)
+			if pad <= 0 {
+				return hostabi.AllocString(i, text)
+			}
+			left := pad / 2
+			right := pad - left
+			var b strings.Builder
+			for j := 0; j < left; j++ {
+				b.WriteRune(fillChar)
+			}
+			b.WriteString(text)
+			for j := 0; j < right; j++ {
+				b.WriteRune(fillChar)
+			}
+			return hostabi.AllocString(i, b.String())
+		},
+	)
+}
+
+func (c *lowerer) strLJust() *interp.HostFunction {
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeString, vmtypes.TypeI64, vmtypes.TypeString}, Returns: []vmtypes.Type{vmtypes.TypeString}},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			text, err := hostabi.LoadStr(i, params[0])
+			if err != nil {
+				return nil, err
+			}
+			width := params[1].I64()
+			fill, err := hostabi.LoadStr(i, params[2])
+			if err != nil {
+				return nil, err
+			}
+			fillRunes := []rune(fill)
+			if len(fillRunes) == 0 {
+				return hostabi.AllocString(i, text)
+			}
+			fillChar := fillRunes[0]
+			runes := []rune(text)
+			pad := int(width) - len(runes)
+			if pad <= 0 {
+				return hostabi.AllocString(i, text)
+			}
+			var b strings.Builder
+			b.WriteString(text)
+			for j := 0; j < pad; j++ {
+				b.WriteRune(fillChar)
+			}
+			return hostabi.AllocString(i, b.String())
+		},
+	)
+}
+
+func (c *lowerer) strRJust() *interp.HostFunction {
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeString, vmtypes.TypeI64, vmtypes.TypeString}, Returns: []vmtypes.Type{vmtypes.TypeString}},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			text, err := hostabi.LoadStr(i, params[0])
+			if err != nil {
+				return nil, err
+			}
+			width := params[1].I64()
+			fill, err := hostabi.LoadStr(i, params[2])
+			if err != nil {
+				return nil, err
+			}
+			fillRunes := []rune(fill)
+			if len(fillRunes) == 0 {
+				return hostabi.AllocString(i, text)
+			}
+			fillChar := fillRunes[0]
+			runes := []rune(text)
+			pad := int(width) - len(runes)
+			if pad <= 0 {
+				return hostabi.AllocString(i, text)
+			}
+			var b strings.Builder
+			for j := 0; j < pad; j++ {
+				b.WriteRune(fillChar)
+			}
+			b.WriteString(text)
+			return hostabi.AllocString(i, b.String())
+		},
+	)
+}
+
+func (c *lowerer) strZFill() *interp.HostFunction {
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeString, vmtypes.TypeI64}, Returns: []vmtypes.Type{vmtypes.TypeString}},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			text, err := hostabi.LoadStr(i, params[0])
+			if err != nil {
+				return nil, err
+			}
+			width := params[1].I64()
+			runes := []rune(text)
+			pad := int(width) - len(runes)
+			if pad <= 0 {
+				return hostabi.AllocString(i, text)
+			}
+			var b strings.Builder
+			start := 0
+			if len(runes) > 0 && (runes[0] == '+' || runes[0] == '-') {
+				b.WriteRune(runes[0])
+				start = 1
+			}
+			for j := 0; j < pad; j++ {
+				b.WriteByte('0')
+			}
+			for _, r := range runes[start:] {
+				b.WriteRune(r)
+			}
+			return hostabi.AllocString(i, b.String())
+		},
+	)
+}
+
+func (c *lowerer) strEncode() *interp.HostFunction {
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeString}, Returns: []vmtypes.Type{vmtypes.NewArrayType(vmtypes.TypeI8)}},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			text, err := hostabi.LoadStr(i, params[0])
+			if err != nil {
+				return nil, err
+			}
+			bs := []byte(text)
+			elems := make([]vmtypes.Boxed, len(bs))
+			for j, b := range bs {
+				elems[j] = vmtypes.BoxI32(int32(int8(b)))
+			}
+			return hostabi.AllocArray(i, vmtypes.NewArrayType(vmtypes.TypeI8), elems)
+		},
+	)
+}
+
+// strFormatMethod returns a host function that applies Python str.format()
+// semantics. It takes the format string as the first parameter and argCount
+// string parameters (already converted to str by the lowerer). It handles
+// both auto-numbered {} and explicitly-numbered {0}, {1} placeholders.
+func (c *lowerer) strFormatMethod(argCount int) *interp.HostFunction {
+	params := make([]vmtypes.Type, 1+argCount)
+	params[0] = vmtypes.TypeString
+	for j := 1; j <= argCount; j++ {
+		params[j] = vmtypes.TypeString
+	}
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: params, Returns: []vmtypes.Type{vmtypes.TypeString}},
+		func(i *interp.Interpreter, ps []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			format, err := hostabi.LoadStr(i, ps[0])
+			if err != nil {
+				return nil, err
+			}
+			args := make([]string, len(ps)-1)
+			for j := 1; j < len(ps); j++ {
+				args[j-1], err = hostabi.LoadStr(i, ps[j])
+				if err != nil {
+					return nil, err
+				}
+			}
+			result := applyStrFormat(format, args)
+			return hostabi.AllocString(i, result)
+		},
+	)
+}
+
+// applyStrFormat processes a Python format string, replacing {} with the next
+// positional argument and {N} with the N-th argument. Escaped {{ and }} are
+// converted to literal { and }.
+func applyStrFormat(format string, args []string) string {
+	var b strings.Builder
+	autoIdx := 0
+	i := 0
+	for i < len(format) {
+		ch := format[i]
+		if ch == '{' {
+			if i+1 < len(format) && format[i+1] == '{' {
+				b.WriteByte('{')
+				i += 2
+				continue
+			}
+			// Find closing }
+			end := strings.IndexByte(format[i+1:], '}')
+			if end < 0 {
+				b.WriteByte(ch)
+				i++
+				continue
+			}
+			field := format[i+1 : i+1+end]
+			if field == "" {
+				// Auto-numbering: {}
+				if autoIdx < len(args) {
+					b.WriteString(args[autoIdx])
+				}
+				autoIdx++
+			} else {
+				// Explicit index: {0}, {1}, ...
+				idx := 0
+				for _, c := range field {
+					if c >= '0' && c <= '9' {
+						idx = idx*10 + int(c-'0')
+					} else {
+						break
+					}
+				}
+				if idx < len(args) {
+					b.WriteString(args[idx])
+				}
+			}
+			i += 1 + end + 1
+		} else if ch == '}' {
+			if i+1 < len(format) && format[i+1] == '}' {
+				b.WriteByte('}')
+				i += 2
+				continue
+			}
+			b.WriteByte(ch)
+			i++
+		} else {
+			b.WriteByte(ch)
+			i++
+		}
+	}
+	return b.String()
+}
+
 func (c *lowerer) exc() *interp.HostFunction {
 	excType := c.classes["BaseException"].typ.VM().(*vmtypes.StructType)
 	classID := func(name string) int64 { return int64(c.classes[name].classID) }
@@ -578,14 +1450,22 @@ func (c *lowerer) exc() *interp.HostFunction {
 							class = classID("IndexError")
 						case errors.Is(exc.Unwrap(), interp.ErrTypeMismatch):
 							class = classID("TypeError")
-						case errors.Is(exc.Unwrap(), errListIndexValue):
+						case errors.Is(exc.Unwrap(), errListIndexValue),
+							errors.Is(exc.Unwrap(), errListRemoveValue),
+							errors.Is(exc.Unwrap(), errListSliceLength),
+							errors.Is(exc.Unwrap(), errExtendedSlice),
+							errors.Is(exc.Unwrap(), errSliceStep),
+							errors.Is(exc.Unwrap(), builtins.ErrIntValue),
+							errors.Is(exc.Unwrap(), builtins.ErrFloatValue),
+							errors.Is(exc.Unwrap(), builtins.ErrRangeStep),
+							errors.Is(exc.Unwrap(), builtins.ErrOrdValue),
+							errors.Is(exc.Unwrap(), builtins.ErrChrValue),
+							errors.Is(exc.Unwrap(), pyoperator.ErrNegativeExponent):
 							class = classID("ValueError")
-						case errors.Is(exc.Unwrap(), errListSliceLength):
-							class = classID("ValueError")
-						case errors.Is(exc.Unwrap(), builtins.ErrOrdValue):
-							class = classID("ValueError")
-						case errors.Is(exc.Unwrap(), builtins.ErrChrValue):
-							class = classID("ValueError")
+						case errors.Is(exc.Unwrap(), errDictKeyError):
+							class = classID("KeyError")
+						case errors.Is(exc.Unwrap(), pyoperator.ErrRepeatOverflow):
+							class = classID("OverflowError")
 						}
 					}
 				}
@@ -887,7 +1767,7 @@ func normalizeSliceRange(length int, rawStart, rawStop, rawStep int64) (int, int
 		step = 1
 	}
 	if step != 1 {
-		return 0, 0, fmt.Errorf("extended slice assignment is not supported")
+		return 0, 0, errExtendedSlice
 	}
 	startOmitted := rawStart == omittedSliceBound
 	stopOmitted := rawStop == omittedSliceBound
@@ -926,7 +1806,7 @@ func sliceIndexes(length int, rawStart, rawStop, rawStep int64) ([]int, error) {
 		step = 1
 	}
 	if step == 0 {
-		return nil, fmt.Errorf("slice step cannot be zero")
+		return nil, errSliceStep
 	}
 	startOmitted := rawStart == omittedSliceBound
 	stopOmitted := rawStop == omittedSliceBound
@@ -1085,4 +1965,251 @@ func mapKey(v vmtypes.Boxed) vmtypes.MapKey {
 	default:
 		return vmtypes.MapKey{Kind: vmtypes.KindRef, Bits: uint64(v.Ref())}
 	}
+}
+
+// --- Set methods ---
+
+func (c *lowerer) setRemove(receiver types.Type) *interp.HostFunction {
+	set := receiver.(*types.Set)
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: []vmtypes.Type{receiver.VM(), set.Elem.VM()}},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			val, err := i.Load(params[0].Ref())
+			if err != nil {
+				return nil, err
+			}
+			_, ok := mapDelete(val, params[1])
+			if !ok {
+				return nil, errDictKeyError
+			}
+			return nil, nil
+		},
+	)
+}
+
+func (c *lowerer) setDiscard(receiver types.Type) *interp.HostFunction {
+	set := receiver.(*types.Set)
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: []vmtypes.Type{receiver.VM(), set.Elem.VM()}},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			val, err := i.Load(params[0].Ref())
+			if err != nil {
+				return nil, err
+			}
+			mapDelete(val, params[1])
+			return nil, nil
+		},
+	)
+}
+
+func (c *lowerer) setPop(receiver types.Type, result types.Type) *interp.HostFunction {
+	set := receiver.(*types.Set)
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: []vmtypes.Type{receiver.VM()}, Returns: []vmtypes.Type{set.Elem.VM()}},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			keys, _, err := mapEntries(i, params[0])
+			if err != nil {
+				return nil, err
+			}
+			if len(keys) == 0 {
+				return nil, errDictKeyError
+			}
+			key := keys[0]
+			val, err := i.Load(params[0].Ref())
+			if err != nil {
+				return nil, err
+			}
+			mapDelete(val, key)
+			return []vmtypes.Boxed{key}, nil
+		},
+	)
+}
+
+func (c *lowerer) setCopy(receiver types.Type) *interp.HostFunction {
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: []vmtypes.Type{receiver.VM()}, Returns: []vmtypes.Type{receiver.VM()}},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			src, err := i.Load(params[0].Ref())
+			if err != nil {
+				return nil, err
+			}
+			mt, ok := src.Type().(*vmtypes.MapType)
+			if !ok {
+				return nil, interp.ErrTypeMismatch
+			}
+			keys, vals, err := mapEntries(i, params[0])
+			if err != nil {
+				return nil, err
+			}
+			out := vmtypes.NewMapForType(mt, len(keys))
+			for idx, key := range keys {
+				if err := mapSet(out, key, vals[idx]); err != nil {
+					return nil, err
+				}
+			}
+			addr, err := i.Alloc(out)
+			if err != nil {
+				return nil, err
+			}
+			return []vmtypes.Boxed{vmtypes.BoxRef(addr)}, nil
+		},
+	)
+}
+
+func (c *lowerer) setUnion(receiver types.Type) *interp.HostFunction {
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: []vmtypes.Type{receiver.VM(), receiver.VM()}, Returns: []vmtypes.Type{receiver.VM()}},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			src, err := i.Load(params[0].Ref())
+			if err != nil {
+				return nil, err
+			}
+			mt, ok := src.Type().(*vmtypes.MapType)
+			if !ok {
+				return nil, interp.ErrTypeMismatch
+			}
+			leftKeys, leftVals, err := mapEntries(i, params[0])
+			if err != nil {
+				return nil, err
+			}
+			rightKeys, rightVals, err := mapEntries(i, params[1])
+			if err != nil {
+				return nil, err
+			}
+			out := vmtypes.NewMapForType(mt, len(leftKeys)+len(rightKeys))
+			for idx, key := range leftKeys {
+				if err := mapSet(out, key, leftVals[idx]); err != nil {
+					return nil, err
+				}
+			}
+			for idx, key := range rightKeys {
+				if err := mapSet(out, key, rightVals[idx]); err != nil {
+					return nil, err
+				}
+			}
+			addr, err := i.Alloc(out)
+			if err != nil {
+				return nil, err
+			}
+			return []vmtypes.Boxed{vmtypes.BoxRef(addr)}, nil
+		},
+	)
+}
+
+func (c *lowerer) setIntersection(receiver types.Type) *interp.HostFunction {
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: []vmtypes.Type{receiver.VM(), receiver.VM()}, Returns: []vmtypes.Type{receiver.VM()}},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			src, err := i.Load(params[0].Ref())
+			if err != nil {
+				return nil, err
+			}
+			mt, ok := src.Type().(*vmtypes.MapType)
+			if !ok {
+				return nil, interp.ErrTypeMismatch
+			}
+			leftKeys, leftVals, err := mapEntries(i, params[0])
+			if err != nil {
+				return nil, err
+			}
+			out := vmtypes.NewMapForType(mt, 0)
+			for idx, key := range leftKeys {
+				_, found, err := mapGet(i, params[1], key)
+				if err != nil {
+					return nil, err
+				}
+				if found {
+					if err := mapSet(out, key, leftVals[idx]); err != nil {
+						return nil, err
+					}
+				}
+			}
+			addr, err := i.Alloc(out)
+			if err != nil {
+				return nil, err
+			}
+			return []vmtypes.Boxed{vmtypes.BoxRef(addr)}, nil
+		},
+	)
+}
+
+func (c *lowerer) setDifference(receiver types.Type) *interp.HostFunction {
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: []vmtypes.Type{receiver.VM(), receiver.VM()}, Returns: []vmtypes.Type{receiver.VM()}},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			src, err := i.Load(params[0].Ref())
+			if err != nil {
+				return nil, err
+			}
+			mt, ok := src.Type().(*vmtypes.MapType)
+			if !ok {
+				return nil, interp.ErrTypeMismatch
+			}
+			leftKeys, leftVals, err := mapEntries(i, params[0])
+			if err != nil {
+				return nil, err
+			}
+			out := vmtypes.NewMapForType(mt, 0)
+			for idx, key := range leftKeys {
+				_, found, err := mapGet(i, params[1], key)
+				if err != nil {
+					return nil, err
+				}
+				if !found {
+					if err := mapSet(out, key, leftVals[idx]); err != nil {
+						return nil, err
+					}
+				}
+			}
+			addr, err := i.Alloc(out)
+			if err != nil {
+				return nil, err
+			}
+			return []vmtypes.Boxed{vmtypes.BoxRef(addr)}, nil
+		},
+	)
+}
+
+func (c *lowerer) setIsSubset(receiver types.Type) *interp.HostFunction {
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: []vmtypes.Type{receiver.VM(), receiver.VM()}, Returns: []vmtypes.Type{vmtypes.TypeI1}},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			leftKeys, _, err := mapEntries(i, params[0])
+			if err != nil {
+				return nil, err
+			}
+			for _, key := range leftKeys {
+				_, found, err := mapGet(i, params[1], key)
+				if err != nil {
+					return nil, err
+				}
+				if !found {
+					return []vmtypes.Boxed{vmtypes.BoxI1(false)}, nil
+				}
+			}
+			return []vmtypes.Boxed{vmtypes.BoxI1(true)}, nil
+		},
+	)
+}
+
+func (c *lowerer) setIsSuperset(receiver types.Type) *interp.HostFunction {
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: []vmtypes.Type{receiver.VM(), receiver.VM()}, Returns: []vmtypes.Type{vmtypes.TypeI1}},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			rightKeys, _, err := mapEntries(i, params[1])
+			if err != nil {
+				return nil, err
+			}
+			for _, key := range rightKeys {
+				_, found, err := mapGet(i, params[0], key)
+				if err != nil {
+					return nil, err
+				}
+				if !found {
+					return []vmtypes.Boxed{vmtypes.BoxI1(false)}, nil
+				}
+			}
+			return []vmtypes.Boxed{vmtypes.BoxI1(true)}, nil
+		},
+	)
 }

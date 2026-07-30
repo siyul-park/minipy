@@ -19,36 +19,31 @@ type EmitFunc func(e Emitter, args []ast.Expr)
 // ValueFunc produces the optional runtime value of a native symbol.
 type ValueFunc func(r Runtime) vmtypes.Value
 
-// funcSymbol is a Symbol assembled from type-check and emit callbacks.
-type funcSymbol struct {
+// NativeSymbol is a native callable assembled from checker, emitter, and
+// optional runtime-value behaviors.
+type NativeSymbol struct {
 	name  string
 	check CheckFunc
 	emit  EmitFunc
-}
-
-// valueSymbol adds a runtime value to a funcSymbol.
-type valueSymbol struct {
-	*funcSymbol
 	value ValueFunc
 }
 
-var (
-	_ Symbol        = (*funcSymbol)(nil)
-	_ RuntimeSymbol = (*valueSymbol)(nil)
-)
-
-// nativeModule is a Module backed by an in-memory symbol table.
-type nativeModule struct {
+// NativeModule is an immutable in-memory module whose symbol order is the
+// registration order.
+type NativeModule struct {
 	name    string
 	symbols map[string]Symbol
 	names   []string
 }
 
-var _ Module = (*nativeModule)(nil)
+var (
+	_ RuntimeSymbol = (*NativeSymbol)(nil)
+	_ Module        = (*NativeModule)(nil)
+)
 
-// NewSymbol builds a Symbol from its type-check, emit, and optional runtime
-// value behaviors.
-func NewSymbol(name string, check CheckFunc, emit EmitFunc, value ValueFunc) Symbol {
+// NewSymbol builds a native symbol from its type-check, emit, and optional
+// runtime-value behaviors.
+func NewSymbol(name string, check CheckFunc, emit EmitFunc, value ValueFunc) *NativeSymbol {
 	if name == "" {
 		panic("module: empty symbol name")
 	}
@@ -58,21 +53,17 @@ func NewSymbol(name string, check CheckFunc, emit EmitFunc, value ValueFunc) Sym
 	if emit == nil {
 		panic("module: nil emit function for " + name)
 	}
-	symbol := &funcSymbol{name: name, check: check, emit: emit}
-	if value == nil {
-		return symbol
-	}
-	return &valueSymbol{funcSymbol: symbol, value: value}
+	return &NativeSymbol{name: name, check: check, emit: emit, value: value}
 }
 
-// NewNative builds a native Module from its symbols, preserving registration
-// order. Duplicate names panic because silently replacing extension behavior is
-// a configuration error.
-func NewNative(name string, symbols ...Symbol) Module {
+// NewNative builds a native module from its symbols, preserving registration
+// order. Invalid definitions panic because this constructor is used to declare
+// static native catalogues during startup.
+func NewNative(name string, symbols ...Symbol) *NativeModule {
 	if name == "" {
 		panic("module: empty module name")
 	}
-	m := &nativeModule{
+	m := &NativeModule{
 		name:    name,
 		symbols: make(map[string]Symbol, len(symbols)),
 		names:   make([]string, 0, len(symbols)),
@@ -82,6 +73,9 @@ func NewNative(name string, symbols ...Symbol) Module {
 			panic("module: nil symbol in " + name)
 		}
 		symbolName := symbol.Name()
+		if symbolName == "" {
+			panic("module: empty symbol name in " + name)
+		}
 		if _, exists := m.symbols[symbolName]; exists {
 			panic(fmt.Sprintf("module: duplicate symbol %s.%s", name, symbolName))
 		}
@@ -91,23 +85,36 @@ func NewNative(name string, symbols ...Symbol) Module {
 	return m
 }
 
-func (s *funcSymbol) Name() string { return s.name }
+// Name returns the registered symbol name.
+func (s *NativeSymbol) Name() string { return s.name }
 
-func (s *funcSymbol) Check(c Checker, args []ast.Expr, pos token.Pos) types.Type {
+// Check applies the symbol's static call rule.
+func (s *NativeSymbol) Check(c Checker, args []ast.Expr, pos token.Pos) types.Type {
 	return s.check(c, args, pos)
 }
 
-func (s *funcSymbol) Emit(e Emitter, args []ast.Expr) { s.emit(e, args) }
+// Emit lowers a checked call to the symbol.
+func (s *NativeSymbol) Emit(e Emitter, args []ast.Expr) { s.emit(e, args) }
 
-func (s *valueSymbol) Value(r Runtime) vmtypes.Value { return s.value(r) }
-
-func (m *nativeModule) Name() string { return m.name }
-
-func (m *nativeModule) Symbol(name string) (Symbol, bool) {
-	s, ok := m.symbols[name]
-	return s, ok
+// RuntimeValue returns the symbol's runtime value and whether one is present.
+func (s *NativeSymbol) RuntimeValue(r Runtime) (vmtypes.Value, bool) {
+	if s.value == nil {
+		return nil, false
+	}
+	value := s.value(r)
+	return value, value != nil
 }
 
-func (m *nativeModule) Names() []string {
+// Name returns the registered module name.
+func (m *NativeModule) Name() string { return m.name }
+
+// Symbol looks up a symbol by name.
+func (m *NativeModule) Symbol(name string) (Symbol, bool) {
+	symbol, ok := m.symbols[name]
+	return symbol, ok
+}
+
+// Names returns symbol names in registration order.
+func (m *NativeModule) Names() []string {
 	return append([]string(nil), m.names...)
 }

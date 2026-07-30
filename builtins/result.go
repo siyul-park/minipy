@@ -113,6 +113,101 @@ func chrResult(args []types.Type) (types.Type, bool) {
 	return types.Invalid, false
 }
 
+func sortedResult(args []types.Type) (types.Type, bool) {
+	if len(args) == 1 {
+		if list, ok := args[0].(*types.List); ok && comparable(list.Elem) {
+			return args[0], true
+		}
+	}
+	return types.Invalid, false
+}
+
+func reversedResult(args []types.Type) (types.Type, bool) {
+	if len(args) == 1 {
+		if _, ok := args[0].(*types.List); ok {
+			return args[0], true
+		}
+	}
+	return types.Invalid, false
+}
+
+func sumResult(args []types.Type) (types.Type, bool) {
+	if len(args) == 1 {
+		if list, ok := args[0].(*types.List); ok {
+			if types.Equal(list.Elem, types.Int) || types.Equal(list.Elem, types.Float) {
+				return list.Elem, true
+			}
+		}
+	}
+	return types.Invalid, false
+}
+
+func anyAllResult(args []types.Type) (types.Type, bool) {
+	if len(args) == 1 {
+		if list, ok := args[0].(*types.List); ok {
+			if types.Equal(list.Elem, types.Bool) {
+				return types.Bool, true
+			}
+		}
+	}
+	return types.Invalid, false
+}
+
+func roundResult(args []types.Type) (types.Type, bool) {
+	if len(args) == 1 && types.Equal(args[0], types.Float) {
+		return types.Int, true
+	}
+	if len(args) == 2 && types.Equal(args[0], types.Float) && types.Equal(args[1], types.Int) {
+		return types.Float, true
+	}
+	return types.Invalid, false
+}
+
+func divmodResult(args []types.Type) (types.Type, bool) {
+	if len(args) == 2 {
+		if types.Equal(args[0], types.Int) && types.Equal(args[1], types.Int) {
+			return types.NewTuple(types.Int, types.Int), true
+		}
+		if types.Equal(args[0], types.Float) && types.Equal(args[1], types.Float) {
+			return types.NewTuple(types.Float, types.Float), true
+		}
+	}
+	return types.Invalid, false
+}
+
+func powResult(args []types.Type) (types.Type, bool) {
+	if len(args) == 2 {
+		a, b := args[0], args[1]
+		if types.Equal(a, types.Int) && types.Equal(b, types.Int) {
+			return types.Int, true
+		}
+		if (types.Equal(a, types.Int) || types.Equal(a, types.Float)) &&
+			(types.Equal(b, types.Int) || types.Equal(b, types.Float)) {
+			return types.Float, true
+		}
+	}
+	return types.Invalid, false
+}
+
+func hexOctBinResult(args []types.Type) (types.Type, bool) {
+	if len(args) == 1 && types.Equal(args[0], types.Int) {
+		return types.Str, true
+	}
+	return types.Invalid, false
+}
+
+func reprResult(args []types.Type) (types.Type, bool) {
+	if len(args) == 1 && types.Printable(args[0]) {
+		return types.Str, true
+	}
+	return types.Invalid, false
+}
+
+func comparable(t types.Type) bool {
+	return types.Equal(t, types.Int) || types.Equal(t, types.Float) ||
+		types.Equal(t, types.Str) || types.Equal(t, types.Bool)
+}
+
 func convertible(t types.Type) bool {
 	return types.Equal(t, types.Int) || types.Equal(t, types.Float) ||
 		types.Equal(t, types.Bool) || types.Equal(t, types.Str)

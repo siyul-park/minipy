@@ -1,6 +1,8 @@
 package operator
 
 import (
+	"fmt"
+
 	"github.com/siyul-park/minipy/ast"
 	"github.com/siyul-park/minipy/module"
 	"github.com/siyul-park/minipy/token"
@@ -9,66 +11,125 @@ import (
 	"github.com/siyul-park/minivm/instr"
 )
 
-// EmitBinary lowers a binary operation. pushLeft/pushRight push the operands; the
-// operator and operand types decide the opcode sequence. The handful of ops that
-// need more than one opcode or a host call are special-cased; the rest map to a
-// single opcode via simpleBinOp.
+// EmitBinary lowers a checked binary operation. pushLeft and pushRight evaluate
+// the operands exactly once; this package owns the complete opcode/host lowering
+// selected by the checker rules in BinaryType.
 func EmitBinary(e module.Emitter, op token.Type, left, right types.Type, pushLeft, pushRight func()) {
 	switch op {
-	case token.SLASH: // true division always yields float
+	case token.SLASH:
 		pushLeft()
-		if left == types.Int {
+		if types.Equal(types.Erase(left), types.Int) {
 			e.Emit(instr.I64_TO_F64_S)
 		}
 		pushRight()
-		if left == types.Int {
+		if types.Equal(types.Erase(right), types.Int) {
 			e.Emit(instr.I64_TO_F64_S)
 		}
 		e.Emit(instr.F64_DIV)
 	case token.DOUBLESLASH:
-		pushLeft()
-		pushRight()
-		if left == types.Int {
-			e.Emit(instr.I64_DIV_S)
-		} else {
-			e.Emit(instr.F64_DIV)
-			e.Emit(instr.F64_FLOOR)
+		if types.Equal(types.Erase(left), types.Int) && types.Equal(types.Erase(right), types.Int) {
+			emitIntDivMod(e, pushLeft, pushRight, true)
+			return
 		}
+		// Mixed or float: promote int operand and use float floor division.
+		pushLeft()
+		if types.Equal(types.Erase(left), types.Int) {
+			e.Emit(instr.I64_TO_F64_S)
+		}
+		pushRight()
+		if types.Equal(types.Erase(right), types.Int) {
+			e.Emit(instr.I64_TO_F64_S)
+		}
+		e.Emit(instr.F64_DIV)
+		e.Emit(instr.F64_FLOOR)
 	case token.PERCENT:
-		pushLeft()
-		pushRight()
-		if left == types.Int {
-			e.Emit(instr.I64_REM_S)
-		} else {
-			e.Emit(instr.F64_MOD)
+		if types.Equal(types.Erase(left), types.Int) && types.Equal(types.Erase(right), types.Int) {
+			emitIntDivMod(e, pushLeft, pushRight, false)
+			return
 		}
+		// Mixed or float: promote int operand and use float modulo.
+		pushLeft()
+		if types.Equal(types.Erase(left), types.Int) {
+			e.Emit(instr.I64_TO_F64_S)
+		}
+		pushRight()
+		if types.Equal(types.Erase(right), types.Int) {
+			e.Emit(instr.I64_TO_F64_S)
+		}
+		e.Emit(instr.F64_MOD)
 	case token.DOUBLESTAR:
 		pushLeft()
-		pushRight()
-		if left == types.Int {
+		if types.Equal(types.Erase(left), types.Int) && types.Equal(types.Erase(right), types.Int) {
+			pushRight()
 			e.CallHost(powInt())
 		} else {
+			if types.Equal(types.Erase(left), types.Int) {
+				e.Emit(instr.I64_TO_F64_S)
+			}
+			pushRight()
+			if types.Equal(types.Erase(right), types.Int) {
+				e.Emit(instr.I64_TO_F64_S)
+			}
 			e.CallHost(powFloat())
 		}
 	case token.PLUS:
 		pushLeft()
 		pushRight()
-		if left == types.Str {
-			e.Emit(instr.STRING_CONCAT)
-		} else if left == types.Bytes {
-			e.CallHost(bytesConcat())
+		el := types.Erase(left)
+		switch el.(type) {
+		case *types.List:
+			emitListConcat(e, el)
+		default:
+			switch {
+			case types.Equal(el, types.Str):
+				e.Emit(instr.STRING_CONCAT)
+			case types.Equal(el, types.Bytes):
+				e.CallHost(bytesConcat())
+			default:
+				// For mixed int/float, promote the int operand.
+				if isMixedNumeric(left, right) {
+					emitMixedArith(e, op, left, right)
+				} else {
+					e.Emit(simpleBinOp(op, el))
+				}
+			}
+		}
+	case token.STAR:
+		pushLeft()
+		pushRight()
+		el, er := types.Erase(left), types.Erase(right)
+		if _, ok := el.(*types.List); ok {
+			e.CallHost(listRepeat(el))
+		} else if _, ok := er.(*types.List); ok {
+			e.Emit(instr.SWAP)
+			e.CallHost(listRepeat(er))
+		} else if types.Equal(el, types.Str) {
+			e.Emit(instr.SWAP)
+			e.CallHost(stringRepeat())
+		} else if types.Equal(er, types.Str) {
+			e.CallHost(stringRepeat())
+		} else if isMixedNumeric(left, right) {
+			emitMixedArith(e, op, left, right)
 		} else {
-			e.Emit(simpleBinOp(op, left))
+			e.Emit(simpleBinOp(op, el))
+		}
+	case token.MINUS:
+		pushLeft()
+		pushRight()
+		if isMixedNumeric(left, right) {
+			emitMixedArith(e, op, left, right)
+		} else {
+			e.Emit(simpleBinOp(op, types.Erase(left)))
 		}
 	default:
 		pushLeft()
 		pushRight()
-		e.Emit(simpleBinOp(op, left))
+		e.Emit(simpleBinOp(op, types.Erase(left)))
 	}
 }
 
-// EmitCompareStack lowers a single comparison whose operands are already on the
-// stack (left then right). Membership and identity have dedicated lowerings.
+// EmitCompareStack lowers a checked comparison whose operands are already on
+// the stack, left then right.
 func EmitCompareStack(e module.Emitter, op token.Type, left, right types.Type) {
 	if op == token.IN || op == token.NOTIN {
 		e.Emit(instr.SWAP)
@@ -89,50 +150,34 @@ func EmitCompareStack(e module.Emitter, op token.Type, left, right types.Type) {
 		}
 		return
 	}
-	if left == types.Bytes || right == types.Bytes {
-		// The checker restricts bytes comparisons to == and != (docs/spec/04),
-		// so op is guaranteed to be one of those here. != is == negated
-		// in-line rather than a second host function: a same-signature sibling
-		// host function is indistinguishable from bytesEqual once interned,
-		// since the constant pool dedups host functions by their
-		// (Params, Returns) signature string alone (module.Emitter's CallHost
-		// -> lowerer.constOf -> program.Builder.Const), not by closure
-		// identity — two host functions sharing a signature collide into one
-		// constant slot.
+	if types.Equal(left, types.Bytes) || types.Equal(right, types.Bytes) {
+		// The checker admits only bytes equality here. Keep != as an inversion
+		// because minivm currently interns host functions by signature rather
+		// than semantic identity.
 		e.CallHost(bytesEqual())
 		if op == token.NE {
 			e.Emit(instr.I32_EQZ)
 		}
 		return
 	}
-	e.Emit(cmpOpcode(op, left))
-}
-
-func emitContains(e module.Emitter, op token.Type, needle, haystack types.Type) {
-	switch haystack.(type) {
-	case *types.Dict:
-		e.Emit(instr.MAP_LOOKUP)
-		e.Emit(instr.SWAP)
-		e.Emit(instr.DROP)
-		// MAP_LOOKUP's presence flag is i32; normalize to i1 so membership is
-		// uniformly bool-kinded like the list/str contains helpers.
-		e.Emit(instr.I32_CONST, 0)
-		e.Emit(instr.I32_NE)
-	case *types.List:
-		e.CallHost(listContains(needle, haystack))
-	default:
-		if types.Equal(haystack, types.Str) {
-			e.CallHost(strContains())
-		} else if types.Equal(haystack, types.Bytes) {
-			e.CallHost(bytesContains())
+	// Mixed int/float comparisons: promote the int operand to f64.
+	if isMixedNumeric(left, right) {
+		if types.Equal(types.Erase(left), types.Int) {
+			// Stack: [int, float] -- promote int (second from top).
+			e.Emit(instr.SWAP)
+			e.Emit(instr.I64_TO_F64_S)
+			e.Emit(instr.SWAP)
+		} else {
+			// Stack: [float, int] -- promote int (top of stack).
+			e.Emit(instr.I64_TO_F64_S)
 		}
+		e.Emit(CmpOpcode(op, types.Float))
+		return
 	}
-	if op == token.NOTIN {
-		e.Emit(instr.I32_EQZ)
-	}
+	e.Emit(CmpOpcode(op, types.Erase(left)))
 }
 
-// EmitUnary lowers a unary operation on the given operand expression.
+// EmitUnary lowers a checked unary operation on arg.
 func EmitUnary(e module.Emitter, op token.Type, arg ast.Expr) {
 	switch op {
 	case token.NOT:
@@ -141,7 +186,7 @@ func EmitUnary(e module.Emitter, op token.Type, arg ast.Expr) {
 	case token.PLUS:
 		e.Expr(arg)
 	case token.MINUS:
-		if e.Type(arg) == types.Float {
+		if types.Equal(types.Erase(e.Type(arg)), types.Float) {
 			e.Expr(arg)
 			e.Emit(instr.F64_NEG)
 		} else {
@@ -156,43 +201,11 @@ func EmitUnary(e module.Emitter, op token.Type, arg ast.Expr) {
 	}
 }
 
-// simpleBinOp returns the single opcode for an operator that maps directly to
-// one (`+ - *` for int/float; `& | ^ << >>` for int).
-func simpleBinOp(op token.Type, t types.Type) instr.Opcode {
-	if t == types.Float {
-		switch op {
-		case token.PLUS:
-			return instr.F64_ADD
-		case token.MINUS:
-			return instr.F64_SUB
-		case token.STAR:
-			return instr.F64_MUL
-		}
-		return instr.NOP
-	}
-	switch op {
-	case token.PLUS:
-		return instr.I64_ADD
-	case token.MINUS:
-		return instr.I64_SUB
-	case token.STAR:
-		return instr.I64_MUL
-	case token.AMP:
-		return instr.I64_AND
-	case token.PIPE:
-		return instr.I64_OR
-	case token.CARET:
-		return instr.I64_XOR
-	case token.LSHIFT:
-		return instr.I64_SHL
-	case token.RSHIFT:
-		return instr.I64_SHR_S
-	}
-	return instr.NOP
-}
-
-func cmpOpcode(op token.Type, t types.Type) instr.Opcode {
-	switch t {
+// CmpOpcode returns the direct comparison opcode used by ordinary comparisons
+// and pattern matching. Unsupported inputs indicate a checker/lowerer invariant
+// violation and panic rather than silently emitting NOP.
+func CmpOpcode(op token.Type, typ types.Type) instr.Opcode {
+	switch typ {
 	case types.Float:
 		switch op {
 		case token.EQ:
@@ -238,24 +251,212 @@ func cmpOpcode(op token.Type, t types.Type) instr.Opcode {
 		case token.GE:
 			return instr.I32_GE_S
 		}
-	default: // Int
-		switch op {
-		case token.EQ:
-			return instr.I64_EQ
-		case token.NE:
-			return instr.I64_NE
-		case token.LT:
-			return instr.I64_LT_S
-		case token.LE:
-			return instr.I64_LE_S
-		case token.GT:
-			return instr.I64_GT_S
-		case token.GE:
-			return instr.I64_GE_S
+	case types.None:
+		if op == token.EQ {
+			return instr.REF_EQ
+		}
+	default:
+		if types.Equal(typ, types.Int) {
+			switch op {
+			case token.EQ:
+				return instr.I64_EQ
+			case token.NE:
+				return instr.I64_NE
+			case token.LT:
+				return instr.I64_LT_S
+			case token.LE:
+				return instr.I64_LE_S
+			case token.GT:
+				return instr.I64_GT_S
+			case token.GE:
+				return instr.I64_GE_S
+			}
 		}
 	}
-	return instr.NOP
+	panic(fmt.Sprintf("operator: no comparison opcode for %s and %v", op, typ))
 }
 
-// CmpOpcode exposes the comparison opcode table for pattern-match codegen.
-func CmpOpcode(op token.Type, t types.Type) instr.Opcode { return cmpOpcode(op, t) }
+func emitContains(e module.Emitter, op token.Type, needle, haystack types.Type) {
+	switch haystack.(type) {
+	case *types.Dict, *types.Set:
+		e.Emit(instr.MAP_LOOKUP)
+		e.Emit(instr.SWAP)
+		e.Emit(instr.DROP)
+		e.Emit(instr.I32_CONST, 0)
+		e.Emit(instr.I32_NE)
+	case *types.List:
+		e.CallHost(listContains(needle, haystack))
+	default:
+		if types.Equal(haystack, types.Str) {
+			e.CallHost(strContains())
+		} else if types.Equal(haystack, types.Bytes) {
+			e.CallHost(bytesContains())
+		}
+	}
+	if op == token.NOTIN {
+		e.Emit(instr.I32_EQZ)
+	}
+}
+
+func emitListConcat(e module.Emitter, list types.Type) {
+	rightSlot := e.Tmp()
+	leftSlot := e.Tmp()
+	resultSlot := e.Tmp()
+
+	e.Emit(instr.GLOBAL_SET, uint64(rightSlot))
+	e.Emit(instr.GLOBAL_SET, uint64(leftSlot))
+	e.Emit(instr.I32_CONST, 0)
+	e.Emit(instr.ARRAY_NEW_DEFAULT, e.TypeIndex(list))
+	e.Emit(instr.GLOBAL_SET, uint64(resultSlot))
+
+	emitListAppend(e, resultSlot, leftSlot)
+	emitListAppend(e, resultSlot, rightSlot)
+	e.Emit(instr.GLOBAL_GET, uint64(resultSlot))
+}
+
+func emitListAppend(e module.Emitter, resultSlot, sourceSlot int) {
+	indexSlot := e.Tmp()
+	top := e.Label()
+	done := e.Label()
+
+	e.Emit(instr.I32_CONST, 0)
+	e.Emit(instr.GLOBAL_SET, uint64(indexSlot))
+	e.Bind(top)
+	e.Emit(instr.GLOBAL_GET, uint64(indexSlot))
+	e.Emit(instr.GLOBAL_GET, uint64(sourceSlot))
+	e.Emit(instr.ARRAY_LEN)
+	e.Emit(instr.I32_LT_S)
+	e.Emit(instr.I32_EQZ)
+	e.BrIf(done)
+
+	e.Emit(instr.GLOBAL_GET, uint64(resultSlot))
+	e.Emit(instr.GLOBAL_GET, uint64(sourceSlot))
+	e.Emit(instr.GLOBAL_GET, uint64(indexSlot))
+	e.Emit(instr.ARRAY_GET)
+	e.Emit(instr.I32_CONST, 1)
+	e.Emit(instr.ARRAY_APPEND)
+	e.Emit(instr.DROP)
+
+	e.Emit(instr.GLOBAL_GET, uint64(indexSlot))
+	e.Emit(instr.I32_CONST, 1)
+	e.Emit(instr.I32_ADD)
+	e.Emit(instr.GLOBAL_SET, uint64(indexSlot))
+	e.Br(top)
+	e.Bind(done)
+}
+
+// isMixedNumeric reports whether one operand is int and the other is float.
+// Literal wrappers are erased so that a Literal[1,2]-typed operand is still
+// recognized as int for promotion purposes.
+func isMixedNumeric(left, right types.Type) bool {
+	l, r := types.Erase(left), types.Erase(right)
+	return (types.Equal(l, types.Int) && types.Equal(r, types.Float)) ||
+		(types.Equal(l, types.Float) && types.Equal(r, types.Int))
+}
+
+// emitMixedArith handles PLUS, MINUS, STAR for mixed int/float operands.
+// The operands are already on the stack (left then right). The int operand is
+// promoted in-place, then the float operation is emitted.
+func emitMixedArith(e module.Emitter, op token.Type, left, right types.Type) {
+	if types.Equal(types.Erase(left), types.Int) {
+		// Stack: [int, float] -- need to promote the int (second from top).
+		e.Emit(instr.SWAP)
+		e.Emit(instr.I64_TO_F64_S)
+		e.Emit(instr.SWAP)
+	} else {
+		// Stack: [float, int] -- promote the int (top of stack).
+		e.Emit(instr.I64_TO_F64_S)
+	}
+	e.Emit(simpleBinOp(op, types.Float))
+}
+
+// emitIntDivMod implements Python's floor quotient and divisor-signed remainder
+// from minivm's truncating signed remainder. Operands are evaluated once.
+func emitIntDivMod(e module.Emitter, pushLeft, pushRight func(), quotient bool) {
+	leftSlot := e.Tmp()
+	rightSlot := e.Tmp()
+	remainderSlot := e.Tmp()
+
+	pushLeft()
+	e.Emit(instr.GLOBAL_SET, uint64(leftSlot))
+	pushRight()
+	e.Emit(instr.GLOBAL_SET, uint64(rightSlot))
+
+	var quotientSlot int
+	if quotient {
+		quotientSlot = e.Tmp()
+		e.Emit(instr.GLOBAL_GET, uint64(leftSlot))
+		e.Emit(instr.GLOBAL_GET, uint64(rightSlot))
+		e.Emit(instr.I64_DIV_S)
+		e.Emit(instr.GLOBAL_SET, uint64(quotientSlot))
+	}
+
+	e.Emit(instr.GLOBAL_GET, uint64(leftSlot))
+	e.Emit(instr.GLOBAL_GET, uint64(rightSlot))
+	e.Emit(instr.I64_REM_S)
+	e.Emit(instr.GLOBAL_SET, uint64(remainderSlot))
+
+	// adjustment = remainder != 0 && operands have opposite signs.
+	e.Emit(instr.GLOBAL_GET, uint64(remainderSlot))
+	e.Emit(instr.I64_CONST, 0)
+	e.Emit(instr.I64_NE)
+	e.Emit(instr.GLOBAL_GET, uint64(leftSlot))
+	e.Emit(instr.GLOBAL_GET, uint64(rightSlot))
+	e.Emit(instr.I64_XOR)
+	e.Emit(instr.I64_CONST, 0)
+	e.Emit(instr.I64_LT_S)
+	e.Emit(instr.I32_AND)
+	e.Emit(instr.I32_TO_I64_S)
+
+	if quotient {
+		e.Emit(instr.GLOBAL_GET, uint64(quotientSlot))
+		e.Emit(instr.SWAP)
+		e.Emit(instr.I64_SUB)
+		return
+	}
+
+	// Python remainder = truncating remainder + divisor * adjustment.
+	e.Emit(instr.GLOBAL_GET, uint64(rightSlot))
+	e.Emit(instr.I64_MUL)
+	e.Emit(instr.GLOBAL_GET, uint64(remainderSlot))
+	e.Emit(instr.I64_ADD)
+}
+
+func simpleBinOp(op token.Type, typ types.Type) instr.Opcode {
+	// Augmented attribute assignment currently omits the checked receiver type
+	// at its compiler call site. Preserve its established integer lowering until
+	// that out-of-scope caller can pass the checker-owned type explicitly.
+	if typ == nil {
+		typ = types.Int
+	}
+	if types.Equal(typ, types.Float) {
+		switch op {
+		case token.PLUS:
+			return instr.F64_ADD
+		case token.MINUS:
+			return instr.F64_SUB
+		case token.STAR:
+			return instr.F64_MUL
+		}
+	} else if types.Equal(typ, types.Int) {
+		switch op {
+		case token.PLUS:
+			return instr.I64_ADD
+		case token.MINUS:
+			return instr.I64_SUB
+		case token.STAR:
+			return instr.I64_MUL
+		case token.AMP:
+			return instr.I64_AND
+		case token.PIPE:
+			return instr.I64_OR
+		case token.CARET:
+			return instr.I64_XOR
+		case token.LSHIFT:
+			return instr.I64_SHL
+		case token.RSHIFT:
+			return instr.I64_SHR_S
+		}
+	}
+	panic(fmt.Sprintf("operator: no binary opcode for %s and %v", op, typ))
+}

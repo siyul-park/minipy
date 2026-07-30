@@ -497,8 +497,8 @@ func TestTypingAnnotations(t *testing.T) {
 func TestCompile(t *testing.T) {
 	t.Run("compiler object API and optimization option", func(t *testing.T) {
 		var buf bytes.Buffer
-		c := New(strings.NewReader("print(\"api\")\n"), WithOutput(&buf), WithOptimizationLevel(optimize.O1))
-		prog, err := c.Compile()
+		c := New(WithOutput(&buf), WithOptimizationLevel(optimize.O1))
+		prog, err := c.Compile(strings.NewReader("print(\"api\")\n"))
 		require.NoError(t, err)
 
 		vm := interp.New(prog)
@@ -526,6 +526,56 @@ func TestCompile(t *testing.T) {
 	t.Run("float arithmetic", func(t *testing.T) {
 		require.Equal(t, "4.0\n", run(t, "print(str(1.5 + 2.5))\n"))
 		require.Equal(t, "2.5\n", run(t, "print(str(5.0 / 2.0))\n"))
+	})
+
+	t.Run("mixed int/float arithmetic", func(t *testing.T) {
+		require.Equal(t, "3.0\n", run(t, "print(str(1 + 2.0))\n"))
+		require.Equal(t, "3.0\n", run(t, "print(str(2.0 + 1))\n"))
+		require.Equal(t, "1.5\n", run(t, "print(str(3.0 - 1.5))\n"))
+		require.Equal(t, "-1.0\n", run(t, "print(str(1 - 2.0))\n"))
+		require.Equal(t, "6.0\n", run(t, "print(str(2 * 3.0))\n"))
+		require.Equal(t, "6.0\n", run(t, "print(str(3.0 * 2))\n"))
+		require.Equal(t, "2.5\n", run(t, "print(str(5 / 2.0))\n"))
+		require.Equal(t, "2.5\n", run(t, "print(str(5.0 / 2))\n"))
+		require.Equal(t, "2.0\n", run(t, "print(str(5 // 2.0))\n"))
+		require.Equal(t, "2.0\n", run(t, "print(str(5.0 // 2))\n"))
+		require.Equal(t, "1.0\n", run(t, "print(str(5 % 2.0))\n"))
+		require.Equal(t, "1.0\n", run(t, "print(str(5.0 % 2))\n"))
+		require.Equal(t, "8.0\n", run(t, "print(str(2 ** 3.0))\n"))
+		require.Equal(t, "9.0\n", run(t, "print(str(3.0 ** 2))\n"))
+	})
+
+	t.Run("mixed int/float comparison", func(t *testing.T) {
+		require.Equal(t, "True\n", run(t, "print(str(1 < 2.5))\n"))
+		require.Equal(t, "True\n", run(t, "print(str(2.5 > 1))\n"))
+		require.Equal(t, "True\n", run(t, "print(str(1 == 1.0))\n"))
+		require.Equal(t, "False\n", run(t, "print(str(1 == 1.5))\n"))
+		require.Equal(t, "True\n", run(t, "print(str(2 >= 2.0))\n"))
+		require.Equal(t, "True\n", run(t, "print(str(1.0 <= 1))\n"))
+	})
+
+	t.Run("int assignable to float", func(t *testing.T) {
+		require.Equal(t, "3.0\n", run(t, "x: float = 3\nprint(str(x))\n"))
+	})
+
+	t.Run("int to float in function call", func(t *testing.T) {
+		src := "def add1(x: float) -> float:\n    return x + 1.0\nprint(str(add1(3)))\n"
+		require.Equal(t, "4.0\n", run(t, src))
+	})
+
+	t.Run("int to float return promotion", func(t *testing.T) {
+		src := "def f() -> float:\n    return 42\nprint(str(f()))\n"
+		require.Equal(t, "42.0\n", run(t, src))
+	})
+
+	t.Run("conditional expression with numeric promotion", func(t *testing.T) {
+		require.Equal(t, "1.0\n", run(t, "x: float = 1 if True else 2.0\nprint(str(x))\n"))
+		require.Equal(t, "2.0\n", run(t, "x: float = 1 if False else 2.0\nprint(str(x))\n"))
+	})
+
+	t.Run("conditional expression with literal and float promotion", func(t *testing.T) {
+		src := "from typing import Literal\nx: Literal[1, 2] = 1\ny: float = x if True else 2.0\nprint(str(y))\n"
+		require.Equal(t, "1.0\n", run(t, src))
 	})
 
 	t.Run("bitwise and shift", func(t *testing.T) {
@@ -1345,6 +1395,47 @@ print(str(p.total()))
 		require.Equal(t, "3\n15\n", run(t, src))
 	})
 
+	t.Run("class field with int assignable to float", func(t *testing.T) {
+		src := `@dataclass
+class Measurement:
+    value: float
+    scale: float = 1
+m: Measurement = Measurement(42)
+print(str(m.value))
+print(str(m.scale))
+`
+		require.Equal(t, "42.0\n1.0\n", run(t, src))
+	})
+
+	t.Run("class field attribute assignment int to float", func(t *testing.T) {
+		src := `class Pt:
+    x: float
+    y: float
+    def __init__(self, x: float, y: float) -> None:
+        self.x = x
+        self.y = y
+p: Pt = Pt(1, 2)
+p.x = 5
+print(str(p.x))
+print(str(p.y))
+`
+		require.Equal(t, "5.0\n2.0\n", run(t, src))
+	})
+
+	t.Run("augmented attribute assignment int to float field", func(t *testing.T) {
+		src := `class Pt:
+    x: float
+    y: float
+    def __init__(self, x: float, y: float) -> None:
+        self.x = x
+        self.y = y
+p: Pt = Pt(1.0, 2.0)
+p.x += 1
+print(str(p.x))
+`
+		require.Equal(t, "2.0\n", run(t, src))
+	})
+
 	t.Run("del dict key and list item", func(t *testing.T) {
 		require.Equal(t, "1\n", run(t, "d: dict[str, int] = {\"a\": 1, \"b\": 2}\ndel d[\"a\"]\nprint(str(len(d)))\n"))
 		require.Equal(t, "2\n3\n", run(t, "xs: list[int] = [1, 2, 3]\ndel xs[1]\nprint(str(len(xs)))\nprint(str(xs[1]))\n"))
@@ -1631,12 +1722,12 @@ with Ctx("a") as a, Ctx("b") as b:
 	})
 
 	t.Run("compiler reused across multiple Compile calls with default optimization level", func(t *testing.T) {
-		c := New(strings.NewReader("print(\"x\")\n"))
+		c := New()
 		require.NotNil(t, c)
-		first, err := c.Compile()
+		first, err := c.Compile(strings.NewReader("print(\"x\")\n"))
 		require.NoError(t, err)
 		require.NotNil(t, first)
-		second, err := c.Compile()
+		second, err := c.Compile(strings.NewReader("print(\"x\")\n"))
 		require.NoError(t, err)
 		require.NotNil(t, second)
 		prog, err := Compile(strings.NewReader("print(\"x\")\n"), WithOutput(io.Discard), WithOptimizationLevel(optimize.O2))
@@ -1645,9 +1736,9 @@ with Ctx("a") as a, Ctx("b") as b:
 	})
 
 	t.Run("read error is returned from Compile", func(t *testing.T) {
-		_, err := New(broken{}).Compile()
+		_, err := New().Compile(broken{})
 		require.Error(t, err)
-		require.ErrorContains(t, err, "read source")
+		require.ErrorIs(t, err, io.ErrUnexpectedEOF)
 	})
 
 	t.Run("Compile is repeatable for a nested specialized function with a native call", func(t *testing.T) {
@@ -1658,9 +1749,9 @@ with Ctx("a") as a, Ctx("b") as b:
 			"    print(identity(\"hi\"))\n" +
 			"report()\n"
 		var buf bytes.Buffer
-		c := New(strings.NewReader(src), WithOutput(&buf))
+		c := New(WithOutput(&buf))
 
-		first, err := c.Compile()
+		first, err := c.Compile(strings.NewReader(src))
 		require.NoError(t, err)
 		vm1 := interp.New(first)
 		defer vm1.Close()
@@ -1668,7 +1759,7 @@ with Ctx("a") as a, Ctx("b") as b:
 		firstOut := buf.String()
 		buf.Reset()
 
-		second, err := c.Compile()
+		second, err := c.Compile(strings.NewReader(src))
 		require.NoError(t, err)
 		vm2 := interp.New(second)
 		defer vm2.Close()
@@ -1982,7 +2073,7 @@ func requireFuncParam(t *testing.T, constants []vmtypes.Value, parameter vmtypes
 func TestCompileErrors(t *testing.T) {
 	cases := map[string]token.Code{
 		"x: int = 1.5\n":                      token.TypeMismatch,
-		"print(str(1 + 1.5))\n":               token.TypeMismatch,
+		"def f() -> int:\n    x: float = 1.0\n    return x\n": token.TypeMismatch,
 		"x: int = 99999999999999999999999\n":  token.IntOverflow,
 		"print(str(y))\n":                     token.UndefinedName,
 		"print()\n":                           token.ArityMismatch,
@@ -2016,7 +2107,6 @@ func TestCompileErrors(t *testing.T) {
 		"def f(x: int) -> int:\n    try:\n        if x == 0:\n            raise ValueError(\"bad\")\n        return 1\n    except ValueError:\n        pass\n": token.TypeMismatch,
 		// containers
 		"xs: list[int] = []\nprint(xs[\"0\"])\n":                        token.TypeMismatch,
-		"xs: list[int] = [1]\nxs[0] += 1\n":                             token.UnsupportedFeature,
 		"xs = []\n":                                                     token.UnsupportedType,
 		"xs: list[int] = [1, \"x\"]\n":                                  token.TypeMismatch,
 		"xs: list[int] = [1]\nprint(str(xs.index(\"x\")))\n":            token.TypeMismatch,

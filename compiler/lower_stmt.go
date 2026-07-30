@@ -20,14 +20,20 @@ func (c *lowerer) stmt(s ast.Stmt) {
 		}
 		if n.Value != nil {
 			c.expr(n.Value)
+			c.promoteIntToFloat(c.types[n.Value], c.typ(n.Target.Name))
 			c.set(n.Target.Name)
 		}
 	case *ast.Assign:
-		if name, ok := n.Target.(*ast.Name); ok {
-			c.expr(n.Value)
-			c.set(name.Name)
+		if len(n.Targets) == 0 {
+			if name, ok := n.Target.(*ast.Name); ok {
+				c.expr(n.Value)
+				c.promoteIntToFloat(c.types[n.Value], c.typ(name.Name))
+				c.set(name.Name)
+			} else {
+				c.assignTarget(n.Target, n.Value)
+			}
 		} else {
-			c.assignTarget(n.Target, n.Value)
+			c.chainedAssign(n)
 		}
 	case *ast.AugAssign:
 		if name, ok := n.Target.(*ast.Name); ok {
@@ -36,6 +42,8 @@ func (c *lowerer) stmt(s ast.Stmt) {
 				func() { c.get(name.Name) },
 				func() { c.expr(n.Value) })
 			c.set(name.Name)
+		} else if sub, ok := n.Target.(*ast.Subscript); ok {
+			c.augAssignSubscript(n, sub)
 		} else {
 			c.augAssignAttribute(n)
 		}
@@ -675,6 +683,62 @@ func (c *lowerer) emitClassTest(pat *ast.ClassPattern, slot int, typ types.Type,
 	}
 }
 
+func (c *lowerer) chainedAssign(n *ast.Assign) {
+	c.expr(n.Value)
+	targets := append([]ast.Expr{n.Target}, n.Targets...)
+	for i, target := range targets {
+		if i < len(targets)-1 {
+			c.emit(instr.DUP)
+		}
+		if name, ok := target.(*ast.Name); ok {
+			c.promoteIntToFloat(c.types[n.Value], c.typ(name.Name))
+			c.set(name.Name)
+		} else {
+			slot := c.tmp()
+			c.emit(instr.GLOBAL_SET, uint64(slot))
+			c.assignTargetFromTemp(target, slot)
+		}
+	}
+}
+
+func (c *lowerer) assignTargetFromTemp(target ast.Expr, slot int) {
+	switch t := target.(type) {
+	case *ast.Subscript:
+		c.expr(t.X)
+		c.expr(t.Index)
+		c.emit(instr.GLOBAL_GET, uint64(slot))
+		switch recv := c.types[t.X].(type) {
+		case *types.List:
+			c.emit(instr.SWAP)
+			c.emit(instr.I64_TO_I32)
+			c.emit(instr.SWAP)
+			c.emit(instr.ARRAY_SET)
+		case *types.Dict:
+			c.emit(instr.MAP_SET)
+		case *types.Class:
+			owner, m := c.methodOwner(recv.Name, "__setitem__")
+			c.funcValue(m, owner.methodBody["__setitem__"])
+			c.emit(instr.CALL)
+			c.emit(instr.DROP)
+		default:
+			c.fail(fmt.Errorf("chained assign subscript: unsupported receiver %T", c.types[t.X]))
+		}
+	case *ast.Attribute:
+		if key := c.attrSym[t]; key != "" {
+			c.emit(instr.GLOBAL_GET, uint64(slot))
+			c.promoteIntToFloat(c.types[t], c.globals[key].typ)
+			c.emit(instr.GLOBAL_SET, uint64(c.globals[key].index))
+			return
+		}
+		c.expr(t.X)
+		c.emit(instr.I32_CONST, uint64(c.fieldIndex(t)))
+		c.emit(instr.GLOBAL_GET, uint64(slot))
+		c.emit(instr.STRUCT_SET)
+	default:
+		c.fail(fmt.Errorf("chained assign target %T: unsupported", target))
+	}
+}
+
 func (c *lowerer) assignTarget(target ast.Expr, value ast.Expr) {
 	switch t := target.(type) {
 	case *ast.Subscript:
@@ -711,15 +775,66 @@ func (c *lowerer) assignTarget(target ast.Expr, value ast.Expr) {
 	case *ast.Attribute:
 		if key := c.attrSym[t]; key != "" {
 			c.expr(value)
+			c.promoteIntToFloat(c.types[value], c.globals[key].typ)
 			c.emit(instr.GLOBAL_SET, uint64(c.globals[key].index))
 			return
 		}
 		c.expr(t.X)
 		c.emit(instr.I32_CONST, uint64(c.fieldIndex(t)))
 		c.expr(value)
+		fieldType := c.fieldType(t)
+		c.promoteIntToFloat(c.types[value], fieldType)
 		c.emit(instr.STRUCT_SET)
 	default:
 		c.fail(fmt.Errorf("lower assignment target %T: unsupported", target))
+	}
+}
+
+func (c *lowerer) augAssignSubscript(n *ast.AugAssign, sub *ast.Subscript) {
+	// Save receiver in a temporary slot.
+	c.expr(sub.X)
+	recvSlot := c.tmp()
+	c.emit(instr.GLOBAL_SET, uint64(recvSlot))
+
+	// Save index/key in a temporary slot.
+	c.expr(sub.Index)
+	indexSlot := c.tmp()
+	c.emit(instr.GLOBAL_SET, uint64(indexSlot))
+
+	// Emit binary op: load old value, compute new value.
+	switch c.types[sub.X].(type) {
+	case *types.List:
+		c.emitBinary(n.Op, c.types[sub], c.types[n.Value],
+			func() {
+				c.emit(instr.GLOBAL_GET, uint64(recvSlot))
+				c.emit(instr.GLOBAL_GET, uint64(indexSlot))
+				c.emit(instr.I64_TO_I32)
+				c.emit(instr.ARRAY_GET)
+			},
+			func() { c.expr(n.Value) })
+		// Stack: [result]. Store back: need [receiver, i32_index, result].
+		c.emit(instr.GLOBAL_GET, uint64(recvSlot))
+		c.emit(instr.SWAP)
+		c.emit(instr.GLOBAL_GET, uint64(indexSlot))
+		c.emit(instr.I64_TO_I32)
+		c.emit(instr.SWAP)
+		c.emit(instr.ARRAY_SET)
+	case *types.Dict:
+		c.emitBinary(n.Op, c.types[sub], c.types[n.Value],
+			func() {
+				c.emit(instr.GLOBAL_GET, uint64(recvSlot))
+				c.emit(instr.GLOBAL_GET, uint64(indexSlot))
+				c.emit(instr.MAP_GET)
+			},
+			func() { c.expr(n.Value) })
+		// Stack: [result]. Store back: need [receiver, key, result].
+		c.emit(instr.GLOBAL_GET, uint64(recvSlot))
+		c.emit(instr.SWAP)
+		c.emit(instr.GLOBAL_GET, uint64(indexSlot))
+		c.emit(instr.SWAP)
+		c.emit(instr.MAP_SET)
+	default:
+		c.fail(fmt.Errorf("augmented subscript assignment for %T not supported", c.types[sub.X]))
 	}
 }
 
@@ -994,6 +1109,15 @@ func (c *lowerer) typ(name string) types.Type {
 		}
 	}
 	return c.globals[c.symbol(name)].typ
+}
+
+// promoteIntToFloat emits I64_TO_F64_S if the value on the stack is int but
+// the target slot expects float. This implements implicit numeric widening at
+// the VM level matching the checker's AssignableTo(int, float) rule.
+func (c *lowerer) promoteIntToFloat(src, dst types.Type) {
+	if types.Equal(types.Erase(src), types.Int) && types.Equal(dst, types.Float) {
+		c.emit(instr.I64_TO_F64_S)
+	}
 }
 
 // emitIf lowers `if`/`elif`/`else`: invert the condition and branch over the
@@ -1369,6 +1493,9 @@ func (c *lowerer) emitCapture(cap *capture) {
 func (c *lowerer) returnStmt(n *ast.Return) {
 	if n.Value != nil {
 		c.expr(n.Value)
+		if c.current != nil {
+			c.promoteIntToFloat(c.types[n.Value], c.current.result)
+		}
 	} else {
 		c.emit(instr.REF_NULL)
 	}

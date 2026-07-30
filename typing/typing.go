@@ -11,7 +11,7 @@ import (
 // Name is the module's registered name.
 const Name = "typing"
 
-var names = []string{
+var annotationNames = [...]string{
 	"Any",
 	"Annotated",
 	"Callable",
@@ -24,15 +24,15 @@ var names = []string{
 
 // New builds the typing native module. Its symbols are valid only in annotation
 // context; value use is rejected by the checker before lowering.
-func New() module.Module {
-	symbols := make([]module.Symbol, len(names))
-	for i, name := range names {
-		symbols[i] = annotationSymbol(name)
+func New() *module.NativeModule {
+	symbols := make([]module.Symbol, len(annotationNames))
+	for index, name := range annotationNames {
+		symbols[index] = annotationSymbol(name)
 	}
 	return module.NewNative(Name, symbols...)
 }
 
-func annotationSymbol(name string) module.Symbol {
+func annotationSymbol(name string) *module.NativeSymbol {
 	return module.NewSymbol(name,
 		func(c module.Checker, args []ast.Expr, pos token.Pos) types.Type {
 			for _, arg := range args {

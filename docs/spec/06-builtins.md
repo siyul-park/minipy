@@ -76,6 +76,25 @@ Implemented builtin functions:
 | `isinstance(x, T)` | 2 | value plus supported type/class expression | `bool` |
 | `ord(s)` | 1 | `str` (exactly one codepoint) | `int` |
 | `chr(n)` | 1 | `int` (`0 <= n <= 0x10FFFF`) | `str` |
+| `sorted(xs)` | 1 | `list[T]` where T is comparable (`int`, `float`, `str`, `bool`) | `list[T]` |
+| `reversed(xs)` | 1 | `list[T]` | `list[T]` |
+| `min(a, b, ...)` | 2+ | same comparable type (`int`, `float`, `str`, `bool`) | `T` |
+| `min(xs)` | 1 | `list[T]` where T is comparable | `T` |
+| `max(a, b, ...)` | 2+ | same comparable type (`int`, `float`, `str`, `bool`) | `T` |
+| `max(xs)` | 1 | `list[T]` where T is comparable | `T` |
+| `sum(xs)` | 1 | `list[int]` or `list[float]` | element type |
+| `any(xs)` | 1 | `list[bool]` | `bool` |
+| `all(xs)` | 1 | `list[bool]` | `bool` |
+| `round(x)` | 1 | `float` | `int` |
+| `round(x, n)` | 2 | `float`, `int` | `float` |
+| `divmod(a, b)` | 2 | `int`, `int` or `float`, `float` | `tuple[T, T]` |
+| `pow(base, exp)` | 2 | `int`/`float` combinations | `int` (both int) or `float` |
+| `hex(n)` | 1 | `int` | `str` |
+| `oct(n)` | 1 | `int` | `str` |
+| `bin(n)` | 1 | `int` | `str` |
+| `repr(x)` | 1 | printable values | `str` |
+| `map(fn, xs)` | 2 | `Callable[[T], R]`, `list[T]` | `list[R]` |
+| `filter(fn, xs)` | 2 | `Callable[[T], bool]`, `list[T]` | `list[T]` |
 
 `print` and `str` render supported lists, tuples, dictionaries, and sets recursively using Python-style delimiters and quoted nested strings.
 
@@ -184,12 +203,129 @@ Supported homogeneous `list[T]` methods:
 | `insert(index, value)` | 2 | `int`, `T` | `None` |
 | `extend(values)` | 1 | `list[T]` | `None` |
 | `reverse()` | 0 | none | `None` |
+| `sort()` | 0 | none | `None` |
+| `copy()` | 0 | none | `list[T]` |
+| `count(value)` | 1 | `T` | `int` |
+| `clear()` | 0 | none | `None` |
+| `remove(value)` | 1 | `T` | `None` |
 
 `index` returns the first equal element position and raises `ValueError` when no
 element matches. `insert` normalizes negative indexes relative to the current
 length, clamps indexes below zero to `0`, and clamps indexes above the current
 length to `len(list)`. `extend` snapshots the source length before mutation, so
 `xs.extend(xs)` appends the original contents once. `reverse` mutates in place.
+`sort` sorts the list in place; element type must be comparable (`int`, `float`,
+`str`, or `bool`). `copy` returns a shallow copy. `count` returns the number of
+occurrences of a value. `clear` removes all elements. `remove` deletes the first
+occurrence of a value and raises `ValueError` if not found.
+
+## String Methods
+
+Supported `str` methods:
+
+| Method | Arity | Accepted argument types | Result |
+|---|---:|---|---|
+| `upper()` | 0 | none | `str` |
+| `lower()` | 0 | none | `str` |
+| `split()` | 0 | none | `list[str]` |
+| `split(sep)` | 1 | `str` | `list[str]` |
+| `join(parts)` | 1 | `list[str]` | `str` |
+| `find(sub)` | 1 | `str` | `int` |
+| `strip()` | 0 | none | `str` |
+| `strip(chars)` | 1 | `str` | `str` |
+| `lstrip()` | 0 | none | `str` |
+| `lstrip(chars)` | 1 | `str` | `str` |
+| `rstrip()` | 0 | none | `str` |
+| `rstrip(chars)` | 1 | `str` | `str` |
+| `startswith(prefix)` | 1 | `str` | `bool` |
+| `endswith(suffix)` | 1 | `str` | `bool` |
+| `replace(old, new)` | 2 | `str`, `str` | `str` |
+| `replace(old, new, count)` | 3 | `str`, `str`, `int` | `str` |
+| `count(sub)` | 1 | `str` | `int` |
+| `isdigit()` | 0 | none | `bool` |
+| `isalpha()` | 0 | none | `bool` |
+| `isalnum()` | 0 | none | `bool` |
+| `isspace()` | 0 | none | `bool` |
+| `capitalize()` | 0 | none | `str` |
+| `title()` | 0 | none | `str` |
+| `swapcase()` | 0 | none | `str` |
+| `center(width)` | 1 | `int` | `str` |
+| `center(width, fill)` | 2 | `int`, `str` | `str` |
+| `ljust(width)` | 1 | `int` | `str` |
+| `ljust(width, fill)` | 2 | `int`, `str` | `str` |
+| `rjust(width)` | 1 | `int` | `str` |
+| `rjust(width, fill)` | 2 | `int`, `str` | `str` |
+| `zfill(width)` | 1 | `int` | `str` |
+| `encode()` | 0 | none | `bytes` |
+| `format(*args)` | 0+ | printable | `str` |
+
+`strip`/`lstrip`/`rstrip` without arguments strip whitespace; with a `chars`
+argument they strip any character present in that string. `startswith`/`endswith`
+test for a fixed prefix/suffix. `replace` replaces all occurrences by default;
+with the optional `count` argument it replaces at most that many. `count` returns
+the number of non-overlapping occurrences of the substring. The `is*` predicates
+return `False` for empty strings. `capitalize` uppercases the first character and
+lowercases the rest. `title` uppercases the first letter of each word. `swapcase`
+swaps upper/lower case. `center`/`ljust`/`rjust` pad to the given width with a
+fill character (default space). `zfill` pads with leading zeros, preserving a
+leading sign character. `encode` returns the UTF-8 byte representation as
+`bytes`. `format` substitutes positional arguments into `{}` or `{N}` placeholders
+in the format string; `{{` and `}}` produce literal braces.
+
+## Dict Methods
+
+Supported homogeneous `dict[K, V]` methods:
+
+| Method | Arity | Accepted argument types | Result |
+|---|---:|---|---|
+| `get(key)` | 1 | `K` | `V` |
+| `get(key, default)` | 2 | `K`, `V` | `V` |
+| `keys()` | 0 | none | `list[K]` |
+| `values()` | 0 | none | `list[V]` |
+| `items()` | 0 | none | `list[tuple[K, V]]` |
+| `pop(key)` | 1 | `K` | `V` |
+| `pop(key, default)` | 2 | `K`, `V` | `V` |
+| `update(other)` | 1 | `dict[K, V]` | `None` |
+| `setdefault(key, default)` | 2 | `K`, `V` | `V` |
+| `clear()` | 0 | none | `None` |
+| `copy()` | 0 | none | `dict[K, V]` |
+
+`get` returns the value for key if present, otherwise the default (or the
+zero value of `V` when no default is given). `pop` removes the key and returns
+its value; raises `KeyError` if the key is not found and no default is given.
+When a default argument is provided, `pop` returns the default instead of raising
+`KeyError` for missing keys. `update` merges all entries
+from the argument dict into the receiver, overwriting existing keys. `setdefault`
+returns the value for key if present; otherwise inserts key with the default value
+and returns it. `clear` removes all entries. `copy` returns a shallow copy.
+
+## Set Methods
+
+Supported homogeneous `set[T]` methods:
+
+| Method | Arity | Accepted argument types | Result |
+|---|---:|---|---|
+| `add(elem)` | 1 | `T` | `None` |
+| `remove(elem)` | 1 | `T` | `None` |
+| `discard(elem)` | 1 | `T` | `None` |
+| `pop()` | 0 | none | `T` |
+| `clear()` | 0 | none | `None` |
+| `union(other)` | 1 | `set[T]` | `set[T]` |
+| `intersection(other)` | 1 | `set[T]` | `set[T]` |
+| `difference(other)` | 1 | `set[T]` | `set[T]` |
+| `issubset(other)` | 1 | `set[T]` | `bool` |
+| `issuperset(other)` | 1 | `set[T]` | `bool` |
+| `copy()` | 0 | none | `set[T]` |
+
+`add` inserts an element; duplicates are silently ignored. `remove` deletes an
+element and raises `KeyError` if not found. `discard` deletes an element silently
+(no error if missing). `pop` removes and returns an arbitrary element; raises
+`KeyError` on an empty set. `clear` removes all elements. `union` returns a new
+set with elements from both sets. `intersection` returns a new set with elements
+common to both. `difference` returns a new set with elements in the receiver but
+not in the other. `issubset` returns `True` if all elements of the receiver are
+in the other set. `issuperset` returns `True` if all elements of the other set
+are in the receiver. `copy` returns a shallow copy.
 
 ## Exceptions
 

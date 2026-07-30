@@ -44,10 +44,13 @@ type AnnAssign struct {
 }
 
 // Assign is a plain assignment `target = value`.
+// For chained assignments like `a = b = expr`, Targets holds the additional
+// targets beyond the first (which is stored in Target).
 type Assign struct {
 	Base
-	Target Expr
-	Value  Expr
+	Target  Expr
+	Targets []Expr
+	Value   Expr
 }
 
 // AugAssign is an augmented assignment `target <op>= value`; Op is the base
