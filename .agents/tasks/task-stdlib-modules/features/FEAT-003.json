@@ -1,0 +1,28 @@
+{
+  "id": "FEAT-003",
+  "type": "feat",
+  "description": "Implement the `functools` native module providing the `reduce` function: reduce(fn, xs) where fn is Callable[[T,T],T] and xs is list[T], returning T. Also reduce(fn, xs, initial) with a 3-arg variant. Supports dynamic (Any) typed arguments following the existing map/filter pattern in builtins/mapfilter.go.",
+  "status": "pending",
+  "steps": [
+    "Create directory functools/ with functools.go containing const Name = \"functools\" and func New() *module.NativeModule.",
+    "Implement the reduce symbol with a custom check function (not the simple spec pattern) that: validates 2 or 3 args; uses CheckWithHint(args[0], Callable[[T,T],T]) for lambda inference (following builtins/mapfilter.go pattern); checks arg[1] is list[T]; optional arg[2] matches T; returns T. When inputs are Any/dynamic, return Any.",
+    "Implement the reduce emitter following the pattern used by map/filter in builtins/mapfilter.go: emit a host-function call that iterates the list and applies the accumulator function. For dynamic arguments, use dynamic dispatch paths.",
+    "Implement the reduce host function that takes a list and function reference and reduces them.",
+    "Create functools/functools_test.go testing New() returns reduce symbol and testing type validation.",
+    "Register functools in compiler/module.go defaultRegistry().",
+    "Add compiler integration tests in compiler/functools_test.go: `from functools import reduce\\nresult: int = reduce(lambda a, b: a + b, [1, 2, 3, 4])\\nprint(str(result))` outputs 10. Also test 3-arg reduce with initial value.",
+    "Update docs/spec/06-builtins.md, docs/compatibility.md, docs/roadmap.md."
+  ],
+  "acceptance_criteria": [
+    "go test ./functools passes",
+    "go test ./compiler passes with reduce integration tests",
+    "go vet ./... passes cleanly",
+    "A minipy program using reduce with a lambda and list produces correct output"
+  ],
+  "verification": [
+    "go vet ./...",
+    "go test ./functools ./compiler"
+  ],
+  "blocked_reason": null,
+  "findings": ""
+}

@@ -1,0 +1,27 @@
+{
+  "id": "FEAT-002",
+  "type": "feat",
+  "description": "Implement the `string` native module providing string constants: ascii_lowercase, ascii_uppercase, ascii_letters, digits, hexdigits, octdigits, punctuation, whitespace, and printable. These use the ConstantSymbol interface from FEAT-001 to expose string constants accessible as module attributes.",
+  "status": "pending",
+  "steps": [
+    "Create directory stringmod/ (Go package name `stringmod` to avoid conflict with Go's `string` package) with stringmod.go containing const Name = \"string\" and func New() *module.NativeModule.",
+    "Implement each constant symbol (ascii_lowercase, ascii_uppercase, ascii_letters, digits, hexdigits, octdigits, punctuation, whitespace, printable) using module.NewConstant with types.Str. Each emit function allocates the constant string on the heap (using the Emitter to push a string constant).",
+    "Create stringmod/stringmod_test.go testing New() returns expected symbols and verifying they satisfy the ConstantSymbol interface.",
+    "Register the string module in compiler/module.go defaultRegistry() with import of the stringmod package.",
+    "Add compiler integration tests in compiler/string_module_test.go verifying `import string\\nprint(string.digits)` outputs '0123456789' and `from string import ascii_lowercase\\nprint(ascii_lowercase)` works.",
+    "Update docs/spec/06-builtins.md with a string module section.",
+    "Update docs/compatibility.md and docs/roadmap.md."
+  ],
+  "acceptance_criteria": [
+    "go test ./stringmod passes",
+    "go test ./compiler passes including new integration tests for import string",
+    "go vet ./... passes cleanly",
+    "A minipy program `import string\\nprint(string.ascii_lowercase)` outputs 'abcdefghijklmnopqrstuvwxyz'"
+  ],
+  "verification": [
+    "go vet ./...",
+    "go test ./stringmod ./compiler"
+  ],
+  "blocked_reason": null,
+  "findings": ""
+}

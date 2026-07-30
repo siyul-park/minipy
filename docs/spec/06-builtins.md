@@ -413,13 +413,72 @@ Native modules may be imported explicitly:
 ```python
 import operator
 import typing
+import math
 from builtins import len
 from typing import Literal
+from math import pi, sqrt
 ```
 
 The imported module object is still compile-time-only; it may be used as an
-attribute receiver (`operator.add(1, 2)`, `typing.Literal[1]` in an annotation)
-but not stored or passed as a runtime value.
+attribute receiver (`operator.add(1, 2)`, `typing.Literal[1]` in an annotation,
+`math.sqrt(4.0)`) but not stored or passed as a runtime value.
+
+## `math`
+
+The `math` module provides mathematical constants and functions. Constants are
+`ConstantSymbol` instances that emit inline values; functions are callable symbols
+backed by host functions.
+
+### Constants
+
+| Name | Value | Type |
+|---|---|---|
+| `pi` | 3.141592653589793 | `float` |
+| `e` | 2.718281828459045 | `float` |
+| `tau` | 6.283185307179586 | `float` |
+| `inf` | positive infinity | `float` |
+| `nan` | not-a-number | `float` |
+
+Constants can be accessed as values (`x: float = math.pi`) or via
+`from math import pi`. They are not callable.
+
+### Functions
+
+| Function | Arity | Accepted argument types | Result |
+|---|---:|---|---|
+| `ceil(x)` | 1 | `int`, `float` | `float` |
+| `floor(x)` | 1 | `int`, `float` | `float` |
+| `sqrt(x)` | 1 | `int`, `float` | `float` |
+| `log(x)` | 1 | `int`, `float` | `float` |
+| `log2(x)` | 1 | `int`, `float` | `float` |
+| `log10(x)` | 1 | `int`, `float` | `float` |
+| `exp(x)` | 1 | `int`, `float` | `float` |
+| `sin(x)` | 1 | `int`, `float` | `float` |
+| `cos(x)` | 1 | `int`, `float` | `float` |
+| `tan(x)` | 1 | `int`, `float` | `float` |
+| `asin(x)` | 1 | `int`, `float` | `float` |
+| `acos(x)` | 1 | `int`, `float` | `float` |
+| `atan(x)` | 1 | `int`, `float` | `float` |
+| `fabs(x)` | 1 | `int`, `float` | `float` |
+| `trunc(x)` | 1 | `int`, `float` | `float` |
+| `degrees(x)` | 1 | `int`, `float` | `float` |
+| `radians(x)` | 1 | `int`, `float` | `float` |
+| `atan2(y, x)` | 2 | `int`/`float` | `float` |
+| `fmod(x, y)` | 2 | `int`/`float` | `float` |
+| `copysign(x, y)` | 2 | `int`/`float` | `float` |
+| `pow(x, y)` | 2 | `int`/`float` | `float` |
+| `isnan(x)` | 1 | `int`, `float` | `bool` |
+| `isinf(x)` | 1 | `int`, `float` | `bool` |
+| `isfinite(x)` | 1 | `int`, `float` | `bool` |
+| `gcd(a, b)` | 2 | `int`, `int` | `int` |
+| `factorial(n)` | 1 | `int` | `int` |
+
+Integer arguments are promoted to float before computation (except `gcd` and
+`factorial` which operate on integers directly). `factorial` raises `ValueError`
+for negative inputs at runtime.
+
+When any argument has type `Any`, the result type is `Any` and runtime dispatch
+is used.
 
 ## Related Docs
 

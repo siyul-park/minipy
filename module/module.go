@@ -45,6 +45,13 @@ type RuntimeSymbol interface {
 	RuntimeValue(r Runtime) (vmtypes.Value, bool)
 }
 
+// ConstantSymbol marks a native symbol that can be accessed as a value (not
+// only called). Constants expose a static type and emit their value inline.
+type ConstantSymbol interface {
+	Symbol
+	ConstantType() types.Type
+}
+
 // Checker is the type-checking surface a Symbol may use during static analysis.
 type Checker interface {
 	// Check type-checks a sub-expression and returns its type.

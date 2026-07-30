@@ -79,6 +79,12 @@ owned by `docs/spec/`; compatibility status is summarized in
   exceptions.
 - `operator`: syntax operator semantics and native `operator.*` functions share
   one implementation.
+- `math`: constants (`pi`, `e`, `tau`, `inf`, `nan`) and functions (`ceil`,
+  `floor`, `sqrt`, `log`, `log2`, `log10`, `exp`, `sin`, `cos`, `tan`, `asin`,
+  `acos`, `atan`, `atan2`, `fabs`, `fmod`, `copysign`, `pow`, `trunc`,
+  `degrees`, `radians`, `isnan`, `isinf`, `isfinite`, `gcd`, `factorial`).
+  Constants are `ConstantSymbol` values that emit inline; integer args are
+  promoted to float where applicable.
 
 ## Current Explicit Restrictions
 

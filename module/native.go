@@ -28,6 +28,15 @@ type NativeSymbol struct {
 	value ValueFunc
 }
 
+// NativeConstant is a native symbol that represents a module-level constant
+// value. It satisfies both Symbol and ConstantSymbol. Calling it directly is
+// a static error; its Emit function emits the constant's inline value.
+type NativeConstant struct {
+	name string
+	typ  types.Type
+	emit EmitFunc
+}
+
 // NativeModule is an immutable in-memory module whose symbol order is the
 // registration order.
 type NativeModule struct {
@@ -37,8 +46,9 @@ type NativeModule struct {
 }
 
 var (
-	_ RuntimeSymbol = (*NativeSymbol)(nil)
-	_ Module        = (*NativeModule)(nil)
+	_ RuntimeSymbol  = (*NativeSymbol)(nil)
+	_ Module         = (*NativeModule)(nil)
+	_ ConstantSymbol = (*NativeConstant)(nil)
 )
 
 // NewSymbol builds a native symbol from its type-check, emit, and optional
@@ -54,6 +64,21 @@ func NewSymbol(name string, check CheckFunc, emit EmitFunc, value ValueFunc) *Na
 		panic("module: nil emit function for " + name)
 	}
 	return &NativeSymbol{name: name, check: check, emit: emit, value: value}
+}
+
+// NewConstant builds a native constant symbol with a static type and an emit
+// function that pushes the constant's value onto the stack.
+func NewConstant(name string, typ types.Type, emit EmitFunc) *NativeConstant {
+	if name == "" {
+		panic("module: empty constant name")
+	}
+	if typ == nil {
+		panic("module: nil type for constant " + name)
+	}
+	if emit == nil {
+		panic("module: nil emit function for constant " + name)
+	}
+	return &NativeConstant{name: name, typ: typ, emit: emit}
 }
 
 // NewNative builds a native module from its symbols, preserving registration
@@ -118,3 +143,18 @@ func (m *NativeModule) Symbol(name string) (Symbol, bool) {
 func (m *NativeModule) Names() []string {
 	return append([]string(nil), m.names...)
 }
+
+// Name returns the registered constant name.
+func (c *NativeConstant) Name() string { return c.name }
+
+// Check rejects direct calls to a constant symbol.
+func (c *NativeConstant) Check(ch Checker, args []ast.Expr, pos token.Pos) types.Type {
+	ch.Error(pos, token.TypeMismatch, "%s is not callable", c.name)
+	return types.Invalid
+}
+
+// Emit emits the constant's inline value.
+func (c *NativeConstant) Emit(e Emitter, args []ast.Expr) { c.emit(e, args) }
+
+// ConstantType returns the static type of the constant.
+func (c *NativeConstant) ConstantType() types.Type { return c.typ }

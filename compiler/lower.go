@@ -118,6 +118,7 @@ type lowerer struct {
 	attrSym    map[*ast.Attribute]string
 	attrMod    map[*ast.Attribute]string
 	attrNative map[*ast.Attribute]module.Symbol
+	nameNative map[*ast.Name]module.Symbol
 	lambdas    map[*ast.LambdaExpr]*function
 	genExprs   map[*ast.GeneratorExp]*function
 	callSpec   map[*ast.CallExpr]*specialization
@@ -162,6 +163,7 @@ func newLowerer(b *program.Builder, checked *checkedProgram, native *nativeRunti
 		attrSym:    checked.attrSym,
 		attrMod:    checked.attrMod,
 		attrNative: checked.attrNative,
+		nameNative: checked.nameNative,
 		reg:        checked.reg,
 		lambdas:    checked.lambdas,
 		genExprs:   checked.genExprs,

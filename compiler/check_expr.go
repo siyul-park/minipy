@@ -370,6 +370,10 @@ func (c *checker) fieldType(n *ast.Attribute, receiver types.Type) types.Type {
 			c.attrMod[n] = res.module
 			return types.NewModule(res.module)
 		case "native":
+			if sym, ok := res.native.(module.ConstantSymbol); ok {
+				c.attrNative[n] = res.native
+				return sym.ConstantType()
+			}
 			c.attrNative[n] = res.native
 			c.errs.Add(n.Pos(), token.UnsupportedFeature, "native function %q is not a first-class value", nativeDisplay(res.key))
 			return types.Invalid
@@ -481,6 +485,10 @@ func (c *checker) nameType(n *ast.Name) types.Type {
 	case "module":
 		return types.NewModule(res.module)
 	case "native":
+		if sym, ok := res.native.(module.ConstantSymbol); ok {
+			c.nameNative[n] = res.native
+			return sym.ConstantType()
+		}
 		c.errs.Add(n.Pos(), token.UnsupportedFeature, "native function %q is not a first-class value", nativeDisplay(res.key))
 		return types.Invalid
 	case "function":

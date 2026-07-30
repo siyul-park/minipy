@@ -25,6 +25,7 @@ type checkedProgram struct {
 	attrSym    map[*ast.Attribute]string
 	attrMod    map[*ast.Attribute]string
 	attrNative map[*ast.Attribute]module.Symbol
+	nameNative map[*ast.Name]module.Symbol
 	lenDunder  map[*ast.CallExpr]bool
 }
 
@@ -45,6 +46,7 @@ func (c *checker) result(entry *moduleInfo) *checkedProgram {
 		attrSym:    c.attrSym,
 		attrMod:    c.attrMod,
 		attrNative: c.attrNative,
+		nameNative: c.nameNative,
 		lenDunder:  c.lenDunder,
 	}
 }
