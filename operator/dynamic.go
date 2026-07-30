@@ -91,7 +91,7 @@ func DynStr() *interp.HostFunction {
 			Returns: []vmtypes.Type{vmtypes.TypeString},
 		},
 		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
-			s := hostabi.FormatScalar(i, params[0])
+			s := hostabi.FormatDynamic(i, params[0])
 			return hostabi.AllocString(i, s)
 		},
 	)
@@ -104,7 +104,7 @@ func DynPrint(out interface{ Write([]byte) (int, error) }) *interp.HostFunction 
 			Params: []vmtypes.Type{vmtypes.TypeRef},
 		},
 		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
-			s := hostabi.FormatScalar(i, params[0])
+			s := hostabi.FormatDynamic(i, params[0])
 			_, err := fmt.Fprintln(out, s)
 			return nil, err
 		},
@@ -317,6 +317,9 @@ func intBinary(left, right int64, op token.Type) (vmtypes.Boxed, error) {
 		}
 		return vmtypes.BoxI64(pyMod(left, right)), nil
 	case token.DOUBLESTAR:
+		if right < 0 {
+			return vmtypes.BoxF64(math.Pow(float64(left), float64(right))), nil
+		}
 		return vmtypes.BoxI64(intPow(left, right)), nil
 	case token.AMP:
 		return vmtypes.BoxI64(left & right), nil
@@ -665,11 +668,8 @@ func pyMod(a, b int64) int64 {
 	return r
 }
 
-// intPow computes integer exponentiation.
+// intPow computes integer exponentiation for non-negative exponents.
 func intPow(base, exp int64) int64 {
-	if exp < 0 {
-		return 0
-	}
 	result := int64(1)
 	for exp > 0 {
 		if exp&1 == 1 {

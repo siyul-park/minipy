@@ -381,6 +381,183 @@ func (f formatter) object(value vmtypes.Boxed) (vmtypes.Value, vmtypes.Ref, erro
 	return object, ref, nil
 }
 
+// FormatDynamic renders a boxed value without a compile-time source type.
+// It probes the runtime representation to discover strings, arrays, and maps,
+// producing Python-compatible output (e.g. "[1, 2, 3]", "{'a': 1}").
+func FormatDynamic(i *interp.Interpreter, v vmtypes.Boxed) string {
+	f := formatter{interpreter: i, seen: map[vmtypes.Ref]bool{}}
+	s, err := f.dynamicValue(v, false)
+	if err != nil {
+		return FormatScalar(i, v)
+	}
+	return s
+}
+
+// dynamicValue renders a single boxed value using runtime probing only.
+func (f formatter) dynamicValue(v vmtypes.Boxed, nested bool) (string, error) {
+	switch v.Kind() {
+	case vmtypes.KindI1:
+		if v.I32() != 0 {
+			return "True", nil
+		}
+		return "False", nil
+	case vmtypes.KindI64:
+		return fmt.Sprint(v.I64()), nil
+	case vmtypes.KindF32:
+		return PyFloat(float64(v.F32())), nil
+	case vmtypes.KindF64:
+		return PyFloat(v.F64()), nil
+	case vmtypes.KindRef:
+		if v.Ref() == 0 {
+			return "None", nil
+		}
+	default:
+		return "None", nil
+	}
+	// Non-null ref: load and probe.
+	obj, ref, err := f.object(v)
+	if err != nil {
+		return "None", nil
+	}
+	// String
+	if s, ok := obj.(vmtypes.String); ok {
+		if nested {
+			return ReprString(string(s), false), nil
+		}
+		return string(s), nil
+	}
+	// Array/list
+	if elems := f.dynamicArrayElems(obj); elems != nil {
+		if f.seen[ref] {
+			return "[...]", nil
+		}
+		f.seen[ref] = true
+		defer delete(f.seen, ref)
+		parts := make([]string, len(elems))
+		for idx, elem := range elems {
+			parts[idx], err = f.dynamicValue(elem, true)
+			if err != nil {
+				return "", err
+			}
+		}
+		return "[" + strings.Join(parts, ", ") + "]", nil
+	}
+	// Map (dict/set)
+	if keys, values := f.dynamicMapEntries(obj); keys != nil {
+		if f.seen[ref] {
+			return "{...}", nil
+		}
+		f.seen[ref] = true
+		defer delete(f.seen, ref)
+		parts := make([]string, len(keys))
+		for idx := range keys {
+			k, kErr := f.dynamicValue(keys[idx], true)
+			if kErr != nil {
+				return "", kErr
+			}
+			val, vErr := f.dynamicValue(values[idx], true)
+			if vErr != nil {
+				return "", vErr
+			}
+			parts[idx] = k + ": " + val
+		}
+		sort.Strings(parts)
+		return "{" + strings.Join(parts, ", ") + "}", nil
+	}
+	return obj.String(), nil
+}
+
+// dynamicArrayElems extracts elements from any array representation.
+func (f formatter) dynamicArrayElems(obj vmtypes.Value) []vmtypes.Boxed {
+	switch a := obj.(type) {
+	case *vmtypes.Array:
+		return append([]vmtypes.Boxed(nil), a.Elems...)
+	case vmtypes.TypedArray[bool]:
+		out := make([]vmtypes.Boxed, len(a))
+		for i, v := range a {
+			out[i] = vmtypes.BoxI1(v)
+		}
+		return out
+	case vmtypes.TypedArray[int8]:
+		out := make([]vmtypes.Boxed, len(a))
+		for i, v := range a {
+			out[i] = vmtypes.BoxI32(int32(v))
+		}
+		return out
+	case vmtypes.TypedArray[int32]:
+		out := make([]vmtypes.Boxed, len(a))
+		for i, v := range a {
+			out[i] = vmtypes.BoxI32(v)
+		}
+		return out
+	case vmtypes.TypedArray[int64]:
+		out := make([]vmtypes.Boxed, len(a))
+		for i, v := range a {
+			out[i] = vmtypes.BoxI64(v)
+		}
+		return out
+	case vmtypes.TypedArray[float32]:
+		out := make([]vmtypes.Boxed, len(a))
+		for i, v := range a {
+			out[i] = vmtypes.BoxF32(v)
+		}
+		return out
+	case vmtypes.TypedArray[float64]:
+		out := make([]vmtypes.Boxed, len(a))
+		for i, v := range a {
+			out[i] = vmtypes.BoxF64(v)
+		}
+		return out
+	default:
+		return nil
+	}
+}
+
+// dynamicMapEntries extracts keys and values from any map representation.
+func (f formatter) dynamicMapEntries(obj vmtypes.Value) ([]vmtypes.Boxed, []vmtypes.Boxed) {
+	var keys, values []vmtypes.Boxed
+	switch m := obj.(type) {
+	case *vmtypes.TypedMap[bool]:
+		m.Range(func(k bool, v vmtypes.Boxed) {
+			keys = append(keys, vmtypes.BoxI1(k))
+			values = append(values, v)
+		})
+	case *vmtypes.TypedMap[int8]:
+		m.Range(func(k int8, v vmtypes.Boxed) {
+			keys = append(keys, vmtypes.BoxI32(int32(k)))
+			values = append(values, v)
+		})
+	case *vmtypes.TypedMap[int32]:
+		m.Range(func(k int32, v vmtypes.Boxed) {
+			keys = append(keys, vmtypes.BoxI32(k))
+			values = append(values, v)
+		})
+	case *vmtypes.TypedMap[int64]:
+		m.Range(func(k int64, v vmtypes.Boxed) {
+			keys = append(keys, vmtypes.BoxI64(k))
+			values = append(values, v)
+		})
+	case *vmtypes.TypedMap[float32]:
+		m.Range(func(k float32, v vmtypes.Boxed) {
+			keys = append(keys, vmtypes.BoxF32(k))
+			values = append(values, v)
+		})
+	case *vmtypes.TypedMap[float64]:
+		m.Range(func(k float64, v vmtypes.Boxed) {
+			keys = append(keys, vmtypes.BoxF64(k))
+			values = append(values, v)
+		})
+	case *vmtypes.Map:
+		m.Range(func(_ vmtypes.MapKey, entry vmtypes.MapEntry) {
+			keys = append(keys, entry.Key)
+			values = append(values, entry.Value)
+		})
+	default:
+		return nil, nil
+	}
+	return keys, values
+}
+
 // ReprString quotes and escapes a string using Python-style repr rules.
 func ReprString(s string, ascii bool) string {
 	quote := byte('\'')

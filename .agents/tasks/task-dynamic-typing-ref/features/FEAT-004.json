@@ -1,0 +1,26 @@
+{
+  "id": "FEAT-004",
+  "type": "fix",
+  "description": "Fix 2 issues from review-v2: (1) DynStr/DynPrint returns 'None' for container refs instead of Python representation, (2) intPow returns 0 for negative exponents instead of a float.",
+  "status": "in_progress",
+  "steps": [
+    "Step 1 - Add FormatDynamic to hostabi that renders any boxed value without requiring a source type, probing containers at runtime",
+    "Step 2 - Update DynStr and DynPrint in operator/dynamic.go to use FormatDynamic instead of FormatScalar",
+    "Step 3 - Fix intBinary to return BoxF64(math.Pow(float64(left), float64(right))) when op == DOUBLESTAR && right < 0",
+    "Step 4 - Add tests for str/print on containers and negative exponents"
+  ],
+  "acceptance_criteria": [
+    "go vet ./... passes",
+    "go test ./... passes",
+    "str() on Any-typed list renders as '[1, 2, 3]' not 'None'",
+    "print() on Any-typed dict renders as '{1: 2}' not 'None'",
+    "2 ** -1 on Any-typed values returns 0.5 not 0"
+  ],
+  "verification": [
+    "go vet ./...",
+    "go test ./...",
+    "go test -run TestCompileDynamic ./compiler"
+  ],
+  "blocked_reason": null,
+  "findings": null
+}

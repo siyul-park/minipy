@@ -232,6 +232,36 @@ func TestCompileDynamic(t *testing.T) {
 		err := runError(t, src)
 		require.True(t, errors.Is(err, interp.ErrTypeMismatch))
 	})
+
+	t.Run("str on Any list renders Python representation", func(t *testing.T) {
+		src := "xs: Any = [1, 2, 3]\nprint(str(xs))\n"
+		require.Equal(t, "[1, 2, 3]\n", run(t, src))
+	})
+
+	t.Run("print on Any list renders Python representation", func(t *testing.T) {
+		src := "xs: Any = [10, 20]\nprint(xs)\n"
+		require.Equal(t, "[10, 20]\n", run(t, src))
+	})
+
+	t.Run("str on Any dict renders Python representation", func(t *testing.T) {
+		src := "d: Any = {1: 2, 3: 4}\nprint(str(d))\n"
+		require.Equal(t, "{1: 2, 3: 4}\n", run(t, src))
+	})
+
+	t.Run("print on Any dict renders Python representation", func(t *testing.T) {
+		src := "d: Any = {1: 10}\nprint(d)\n"
+		require.Equal(t, "{1: 10}\n", run(t, src))
+	})
+
+	t.Run("negative exponent on Any int values returns float", func(t *testing.T) {
+		src := "x: Any = 2\ny: Any = -1\nprint(str(x ** y))\n"
+		require.Equal(t, "0.5\n", run(t, src))
+	})
+
+	t.Run("negative exponent on Any int values returns float (4**-2)", func(t *testing.T) {
+		src := "x: Any = 4\ny: Any = -2\nprint(str(x ** y))\n"
+		require.Equal(t, "0.0625\n", run(t, src))
+	})
 }
 
 // runError compiles and runs src, expecting a runtime error. Returns the error.
