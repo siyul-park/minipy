@@ -79,6 +79,26 @@ owned by `docs/spec/`; compatibility status is summarized in
   exceptions.
 - `operator`: syntax operator semantics and native `operator.*` functions share
   one implementation.
+- `math`: constants (`pi`, `e`, `tau`, `inf`, `nan`) and functions (`ceil`,
+  `floor`, `sqrt`, `log`, `log2`, `log10`, `exp`, `sin`, `cos`, `tan`, `asin`,
+  `acos`, `atan`, `atan2`, `fabs`, `fmod`, `copysign`, `pow`, `trunc`,
+  `degrees`, `radians`, `isnan`, `isinf`, `isfinite`, `gcd`, `factorial`).
+  Constants are `ConstantSymbol` values that emit inline; integer args are
+  promoted to float where applicable.
+- `string`: constants (`ascii_lowercase`, `ascii_uppercase`, `ascii_letters`,
+  `digits`, `hexdigits`, `octdigits`, `punctuation`, `whitespace`, `printable`).
+  Constants are `ConstantSymbol` values that emit inline via the constant pool.
+- `functools`: higher-order function utilities (`reduce`). Inline-emitted
+  iteration loop with lambda type inference for the accumulator function.
+  Supports static types and dynamic/Any fallback.
+- `random`: pseudo-random number generation (`random`, `randint`, `randrange`,
+  `uniform`, `choice`, `shuffle`, `seed`). All functions backed by host
+  functions using Go's `math/rand/v2`. Supports static types and dynamic/Any
+  fallback.
+- `sys`: system constants (`maxsize`, `platform`, `version`, `byteorder`) and
+  functions (`getrecursionlimit`, `exit`). Constants are `ConstantSymbol` values
+  that emit inline; `exit` halts the VM with UNREACHABLE. Supports static types
+  and dynamic/Any fallback.
 
 ## Current Explicit Restrictions
 

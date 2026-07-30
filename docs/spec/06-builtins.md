@@ -413,13 +413,202 @@ Native modules may be imported explicitly:
 ```python
 import operator
 import typing
+import math
+import string
+import functools
+import sys
 from builtins import len
 from typing import Literal
+from math import pi, sqrt
+from string import ascii_lowercase
+from functools import reduce
+from sys import maxsize
 ```
 
 The imported module object is still compile-time-only; it may be used as an
-attribute receiver (`operator.add(1, 2)`, `typing.Literal[1]` in an annotation)
-but not stored or passed as a runtime value.
+attribute receiver (`operator.add(1, 2)`, `typing.Literal[1]` in an annotation,
+`math.sqrt(4.0)`, `string.digits`) but not stored or passed as a runtime value.
+
+## `math`
+
+The `math` module provides mathematical constants and functions. Constants are
+`ConstantSymbol` instances that emit inline values; functions are callable symbols
+backed by host functions.
+
+### Constants
+
+| Name | Value | Type |
+|---|---|---|
+| `pi` | 3.141592653589793 | `float` |
+| `e` | 2.718281828459045 | `float` |
+| `tau` | 6.283185307179586 | `float` |
+| `inf` | positive infinity | `float` |
+| `nan` | not-a-number | `float` |
+
+Constants can be accessed as values (`x: float = math.pi`) or via
+`from math import pi`. They are not callable.
+
+### Functions
+
+| Function | Arity | Accepted argument types | Result |
+|---|---:|---|---|
+| `ceil(x)` | 1 | `int`, `float` | `float` |
+| `floor(x)` | 1 | `int`, `float` | `float` |
+| `sqrt(x)` | 1 | `int`, `float` | `float` |
+| `log(x)` | 1 | `int`, `float` | `float` |
+| `log2(x)` | 1 | `int`, `float` | `float` |
+| `log10(x)` | 1 | `int`, `float` | `float` |
+| `exp(x)` | 1 | `int`, `float` | `float` |
+| `sin(x)` | 1 | `int`, `float` | `float` |
+| `cos(x)` | 1 | `int`, `float` | `float` |
+| `tan(x)` | 1 | `int`, `float` | `float` |
+| `asin(x)` | 1 | `int`, `float` | `float` |
+| `acos(x)` | 1 | `int`, `float` | `float` |
+| `atan(x)` | 1 | `int`, `float` | `float` |
+| `fabs(x)` | 1 | `int`, `float` | `float` |
+| `trunc(x)` | 1 | `int`, `float` | `float` |
+| `degrees(x)` | 1 | `int`, `float` | `float` |
+| `radians(x)` | 1 | `int`, `float` | `float` |
+| `atan2(y, x)` | 2 | `int`/`float` | `float` |
+| `fmod(x, y)` | 2 | `int`/`float` | `float` |
+| `copysign(x, y)` | 2 | `int`/`float` | `float` |
+| `pow(x, y)` | 2 | `int`/`float` | `float` |
+| `isnan(x)` | 1 | `int`, `float` | `bool` |
+| `isinf(x)` | 1 | `int`, `float` | `bool` |
+| `isfinite(x)` | 1 | `int`, `float` | `bool` |
+| `gcd(a, b)` | 2 | `int`, `int` | `int` |
+| `factorial(n)` | 1 | `int` | `int` |
+
+Integer arguments are promoted to float before computation (except `gcd` and
+`factorial` which operate on integers directly). `factorial` raises `ValueError`
+for negative inputs at runtime.
+
+When any argument has type `Any`, the result type is `Any` and runtime dispatch
+is used.
+
+## `string`
+
+The `string` module provides string constants matching Python's `string` module.
+Constants are `ConstantSymbol` instances that emit their value inline via the
+constant pool.
+
+### Constants
+
+| Name | Value | Type |
+|---|---|---|
+| `ascii_lowercase` | `"abcdefghijklmnopqrstuvwxyz"` | `str` |
+| `ascii_uppercase` | `"ABCDEFGHIJKLMNOPQRSTUVWXYZ"` | `str` |
+| `ascii_letters` | `ascii_lowercase + ascii_uppercase` | `str` |
+| `digits` | `"0123456789"` | `str` |
+| `hexdigits` | `"0123456789abcdefABCDEF"` | `str` |
+| `octdigits` | `"01234567"` | `str` |
+| `punctuation` | `"!\"#$%&'()*+,-./:;<=>?@[\\]^_` `` ` `` `{|}~"` | `str` |
+| `whitespace` | `" \t\n\r\x0b\x0c"` | `str` |
+| `printable` | `digits + ascii_letters + punctuation + whitespace` | `str` |
+
+Constants can be accessed as values (`x: str = string.digits`) or via
+`from string import ascii_lowercase`. They are not callable.
+
+## `functools`
+
+The `functools` module provides higher-order functions that act on or return
+other callables. Currently it exposes the `reduce` function.
+
+### Functions
+
+| Function | Arity | Accepted argument types | Result |
+|---|---:|---|---|
+| `reduce(fn, xs)` | 2 | `Callable[[T, T], T]`, `list[T]` | `T` |
+| `reduce(fn, xs, initial)` | 3 | `Callable[[T, T], T]`, `list[T]`, `T` | `T` |
+
+`reduce` applies `fn` of two arguments cumulatively to the items of `xs`, from
+left to right, so as to reduce the iterable to a single value. With the 2-arg
+form, the first element of `xs` is used as the initial accumulator; if `xs` is
+empty, a `TypeError` is raised at runtime. With the 3-arg form, `initial` is
+placed before the items of the iterable in the reduction, and serves as a default
+when the iterable is empty.
+
+The function argument benefits from lambda type inference: when `xs` has element
+type `T`, the hint `Callable[[T, T], T]` is provided so inline lambdas can infer
+their parameter types without explicit annotation.
+
+When any argument has type `Any` or is dynamic, the result type is `Any` and
+runtime dispatch is used.
+
+## `random`
+
+The `random` module provides pseudo-random number generation functions. All
+functions are backed by host functions that use Go's `math/rand/v2` package
+internally. The module maintains a shared RNG state that can be seeded for
+deterministic output.
+
+### Functions
+
+| Function | Arity | Accepted argument types | Result |
+|---|---:|---|---|
+| `random()` | 0 | (none) | `float` |
+| `randint(a, b)` | 2 | `int`, `int` | `int` |
+| `randrange(stop)` | 1 | `int` | `int` |
+| `randrange(start, stop)` | 2 | `int`, `int` | `int` |
+| `uniform(a, b)` | 2 | `int`/`float` | `float` |
+| `choice(xs)` | 1 | `list[T]` | `T` |
+| `shuffle(xs)` | 1 | `list[T]` | `None` |
+| `seed(n)` | 1 | `int` | `None` |
+
+`random()` returns a random float in `[0.0, 1.0)`.
+
+`randint(a, b)` returns a random integer in `[a, b]` inclusive.
+
+`randrange(stop)` returns a random integer in `[0, stop)`. `randrange(start,
+stop)` returns a random integer in `[start, stop)`. Raises an error at runtime
+if the range is empty.
+
+`uniform(a, b)` returns a random float in `[a, b]`. Integer arguments are
+promoted to float before computation.
+
+`choice(xs)` returns a random element from the list. Raises an error at runtime
+if the list is empty. When `xs` has type `list[T]`, the result is `T`; when `xs`
+is `Any`, the result is `Any`.
+
+`shuffle(xs)` shuffles the list in place and returns `None`.
+
+`seed(n)` re-seeds the RNG for deterministic output.
+
+When any argument has type `Any` or is dynamic, the result type is `Any` (except
+for `shuffle` and `seed` which always return `None`).
+
+## `sys`
+
+The `sys` module provides system constants and limited system functions. Constants
+are `ConstantSymbol` instances that emit inline; functions are callable symbols
+that emit bytecode directly without host functions.
+
+### Constants
+
+| Name | Value | Type |
+|---|---|---|
+| `maxsize` | 9223372036854775807 (max signed 64-bit integer) | `int` |
+| `platform` | OS identifier from `runtime.GOOS` (e.g. `"linux"`) | `str` |
+| `version` | `"0.1.0 (minipy)"` | `str` |
+| `byteorder` | `"little"` | `str` |
+
+Constants can be accessed as values (`x: int = sys.maxsize`) or via
+`from sys import maxsize`. They are not callable.
+
+### Functions
+
+| Function | Arity | Accepted argument types | Result |
+|---|---:|---|---|
+| `getrecursionlimit()` | 0 | (none) | `int` |
+| `exit(code)` | 1 | `int` | `None` |
+
+`getrecursionlimit()` returns the fixed recursion limit of 1000.
+
+`exit(code)` halts the VM unconditionally. The code argument is evaluated for
+side effects and then discarded; the VM executes an UNREACHABLE instruction.
+
+When any argument has type `Any` or is dynamic, the result type is `None` and
+runtime dispatch is used.
 
 ## Related Docs
 

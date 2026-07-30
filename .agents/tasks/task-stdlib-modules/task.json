@@ -1,0 +1,7 @@
+{
+  "task_id": "task-stdlib-modules",
+  "task_description": "Implement Python standard library native modules for minipy: math, string, functools, random, and sys. This requires extending the native module contract to support constant (non-callable) symbols, then implementing each module following existing patterns. Static types are preferred but dynamic/Any types are supported where applicable.",
+  "status": "in_progress",
+  "feature_order": ["FEAT-001", "FEAT-002", "FEAT-003", "FEAT-004", "FEAT-005"],
+  "blocked_reason": null
+}

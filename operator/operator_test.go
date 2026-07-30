@@ -12,6 +12,7 @@ import (
 
 	"github.com/siyul-park/minivm/instr"
 	"github.com/siyul-park/minivm/interp"
+	vmtypes "github.com/siyul-park/minivm/types"
 	"github.com/stretchr/testify/require"
 )
 
@@ -36,6 +37,7 @@ func (e *stubEmitter) Emit(op instr.Opcode, _ ...uint64)      { e.ops = append(e
 func (*stubEmitter) Expr(ast.Expr)                            {}
 func (*stubEmitter) Type(ast.Expr) types.Type                 { return types.Invalid }
 func (*stubEmitter) TypeIndex(types.Type) uint64              { return 0 }
+func (*stubEmitter) ConstGet(vmtypes.Value)                   {}
 func (*stubEmitter) CallHost(*interp.HostFunction)            {}
 func (*stubEmitter) CallHostVoid(*interp.HostFunction)        {}
 func (*stubEmitter) Host(string, string) *interp.HostFunction { return nil }

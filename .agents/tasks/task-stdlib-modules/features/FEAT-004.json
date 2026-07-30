@@ -1,0 +1,32 @@
+{
+  "id": "FEAT-004",
+  "type": "feat",
+  "description": "Implement the `random` native module providing pseudo-random number generation functions: random() -> float, randint(a, b) -> int, randrange(stop) -> int, randrange(start, stop) -> int, uniform(a, b) -> float, choice(xs) -> T for list[T] (or Any for dynamic lists), shuffle(xs) -> None for list[T], seed(n) -> None. Static types preferred but Any/dynamic accepted where applicable.",
+  "status": "completed",
+  "steps": [
+    "Create directory random/ (Go package name `random`) with random.go containing const Name = \"random\" and func New() *module.NativeModule.",
+    "Implement random() - takes 0 args, returns float. Host function uses Go's math/rand/v2.",
+    "Implement randint(a, b) - takes 2 int args (or Any), returns int. Host function generates random int in [a, b] inclusive. When args are Any, return Any.",
+    "Implement randrange - 1 or 2 int args, returns int. randrange(stop) gives [0, stop), randrange(start, stop) gives [start, stop). Accept dynamic args returning int.",
+    "Implement uniform(a, b) - takes 2 float args (or Any), returns float.",
+    "Implement choice(xs) - takes list[T], returns T. For dynamic list or Any, returns Any. Host function picks random index.",
+    "Implement shuffle(xs) - takes list[T], returns None. Host function shuffles in place.",
+    "Implement seed(n) - takes int, returns None. Host function seeds the RNG.",
+    "Create random/random_test.go testing New() returns expected symbols and result type validation.",
+    "Register random in compiler/module.go defaultRegistry().",
+    "Add compiler integration tests in compiler/random_test.go: verify types are correct and programs compile/run without error. Test `import random\\nx: int = random.randint(1, 10)\\nprint(str(x))` compiles and runs. Test `from random import random\\ny: float = random()\\nprint(str(y))` compiles and runs.",
+    "Update docs/spec/06-builtins.md, docs/compatibility.md, docs/roadmap.md."
+  ],
+  "acceptance_criteria": [
+    "go test ./random passes",
+    "go test ./compiler passes with random integration tests",
+    "go vet ./... passes cleanly",
+    "A minipy program `import random\\nx: int = random.randint(1, 10)\\nprint(str(x))` compiles and runs"
+  ],
+  "verification": [
+    "go vet ./...",
+    "go test ./random ./compiler"
+  ],
+  "blocked_reason": null,
+  "findings": "TypedArray[T] (not *Array) is used for primitive element lists at runtime. Shuffle in-place requires type-switching on all TypedArray variants. Host function Params must use the exact list VM type (ArrayType) for the VM call to succeed. CallHostVoid pushes REF_NULL (None) onto the stack after the call."
+}

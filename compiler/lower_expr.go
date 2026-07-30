@@ -7,6 +7,7 @@ import (
 
 	"github.com/siyul-park/minipy/ast"
 	"github.com/siyul-park/minipy/hostabi"
+	"github.com/siyul-park/minipy/module"
 	"github.com/siyul-park/minipy/operator"
 	"github.com/siyul-park/minipy/token"
 	"github.com/siyul-park/minipy/types"
@@ -37,6 +38,8 @@ func (c *lowerer) expr(n ast.Expr) {
 	case *ast.Name:
 		if x.Name == "Ellipsis" && types.Equal(c.types[x], types.Ellipsis) {
 			c.constGet(ellipsisValue)
+		} else if native := c.nameNative[x]; native != nil {
+			native.Emit(c, nil)
 		} else {
 			c.get(x.Name)
 			c.narrowCast(x)
@@ -485,6 +488,12 @@ func (c *lowerer) sliceBound(x ast.Expr) {
 }
 
 func (c *lowerer) attribute(x *ast.Attribute) {
+	if native := c.attrNative[x]; native != nil {
+		if _, ok := native.(module.ConstantSymbol); ok {
+			native.Emit(c, nil)
+			return
+		}
+	}
 	if key, ok := c.attrSym[x]; ok {
 		c.emit(instr.GLOBAL_GET, uint64(c.globals[key].index))
 		return

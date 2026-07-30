@@ -46,6 +46,7 @@ type checker struct {
 	attrSym    map[*ast.Attribute]string
 	attrMod    map[*ast.Attribute]string
 	attrNative map[*ast.Attribute]module.Symbol
+	nameNative map[*ast.Name]module.Symbol
 	// lenDunder marks len() call sites whose argument is a class instance, so
 	// the compiler lowers them to a direct obj.__len__() call instead of the
 	// native len builtin.
@@ -77,6 +78,7 @@ func newChecker(ld *loader) *checker {
 		attrSym:    map[*ast.Attribute]string{},
 		attrMod:    map[*ast.Attribute]string{},
 		attrNative: map[*ast.Attribute]module.Symbol{},
+		nameNative: map[*ast.Name]module.Symbol{},
 		lenDunder:  map[*ast.CallExpr]bool{},
 		checked:    map[*moduleInfo]bool{},
 	}
