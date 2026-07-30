@@ -251,6 +251,30 @@ fill character (default space). `zfill` pads with leading zeros, preserving a
 leading sign character. `encode` returns the UTF-8 byte representation as
 `bytes`.
 
+## Dict Methods
+
+Supported homogeneous `dict[K, V]` methods:
+
+| Method | Arity | Accepted argument types | Result |
+|---|---:|---|---|
+| `get(key)` | 1 | `K` | `V` |
+| `get(key, default)` | 2 | `K`, `V` | `V` |
+| `keys()` | 0 | none | `list[K]` |
+| `values()` | 0 | none | `list[V]` |
+| `items()` | 0 | none | `list[tuple[K, V]]` |
+| `pop(key)` | 1 | `K` | `V` |
+| `update(other)` | 1 | `dict[K, V]` | `None` |
+| `setdefault(key, default)` | 2 | `K`, `V` | `V` |
+| `clear()` | 0 | none | `None` |
+| `copy()` | 0 | none | `dict[K, V]` |
+
+`get` returns the value for key if present, otherwise the default (or the
+zero value of `V` when no default is given). `pop` removes the key and returns
+its value; raises `KeyError` if the key is not found. `update` merges all entries
+from the argument dict into the receiver, overwriting existing keys. `setdefault`
+returns the value for key if present; otherwise inserts key with the default value
+and returns it. `clear` removes all entries. `copy` returns a shallow copy.
+
 ## Exceptions
 
 `builtins` also provides the builtin exception hierarchy used by the checker and

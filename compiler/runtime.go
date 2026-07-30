@@ -69,6 +69,142 @@ func (c *lowerer) dictItems(receiver, result types.Type) *interp.HostFunction {
 	)
 }
 
+func (c *lowerer) dictPop(receiver, result types.Type) *interp.HostFunction {
+	dict := receiver.(*types.Dict)
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: []vmtypes.Type{receiver.VM(), dict.Key.VM()}, Returns: []vmtypes.Type{result.VM()}},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			val, err := i.Load(params[0].Ref())
+			if err != nil {
+				return nil, err
+			}
+			value, ok := mapDelete(val, params[1])
+			if !ok {
+				return nil, errDictKeyError
+			}
+			return []vmtypes.Boxed{value}, nil
+		},
+	)
+}
+
+func (c *lowerer) dictUpdate(receiver types.Type) *interp.HostFunction {
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: []vmtypes.Type{receiver.VM(), receiver.VM()}},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			dst, err := i.Load(params[0].Ref())
+			if err != nil {
+				return nil, err
+			}
+			keys, vals, err := mapEntries(i, params[1])
+			if err != nil {
+				return nil, err
+			}
+			for idx, key := range keys {
+				if err := retainBoxes(i, []vmtypes.Boxed{key}); err != nil {
+					return nil, err
+				}
+				if err := retainBoxes(i, []vmtypes.Boxed{vals[idx]}); err != nil {
+					return nil, err
+				}
+				if err := mapSet(dst, key, vals[idx]); err != nil {
+					return nil, err
+				}
+			}
+			return nil, nil
+		},
+	)
+}
+
+func (c *lowerer) dictSetDefault(receiver, result types.Type) *interp.HostFunction {
+	dict := receiver.(*types.Dict)
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: []vmtypes.Type{receiver.VM(), dict.Key.VM(), dict.Value.VM()}, Returns: []vmtypes.Type{result.VM()}},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			val, ok, err := mapGet(i, params[0], params[1])
+			if err != nil {
+				return nil, err
+			}
+			if ok {
+				return []vmtypes.Boxed{val}, nil
+			}
+			dst, err := i.Load(params[0].Ref())
+			if err != nil {
+				return nil, err
+			}
+			if err := retainBoxes(i, []vmtypes.Boxed{params[1]}); err != nil {
+				return nil, err
+			}
+			if err := retainBoxes(i, []vmtypes.Boxed{params[2]}); err != nil {
+				return nil, err
+			}
+			if err := mapSet(dst, params[1], params[2]); err != nil {
+				return nil, err
+			}
+			return []vmtypes.Boxed{params[2]}, nil
+		},
+	)
+}
+
+func (c *lowerer) dictClear(receiver types.Type) *interp.HostFunction {
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: []vmtypes.Type{receiver.VM()}},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			val, err := i.Load(params[0].Ref())
+			if err != nil {
+				return nil, err
+			}
+			switch m := val.(type) {
+			case *vmtypes.TypedMap[bool]:
+				m.Clear(func(v vmtypes.Boxed) {})
+			case *vmtypes.TypedMap[int32]:
+				m.Clear(func(v vmtypes.Boxed) {})
+			case *vmtypes.TypedMap[int64]:
+				m.Clear(func(v vmtypes.Boxed) {})
+			case *vmtypes.TypedMap[float32]:
+				m.Clear(func(v vmtypes.Boxed) {})
+			case *vmtypes.TypedMap[float64]:
+				m.Clear(func(v vmtypes.Boxed) {})
+			case *vmtypes.Map:
+				m.Clear(func(e vmtypes.MapEntry) {})
+			default:
+				return nil, interp.ErrTypeMismatch
+			}
+			return nil, nil
+		},
+	)
+}
+
+func (c *lowerer) dictCopy(receiver types.Type) *interp.HostFunction {
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: []vmtypes.Type{receiver.VM()}, Returns: []vmtypes.Type{receiver.VM()}},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			src, err := i.Load(params[0].Ref())
+			if err != nil {
+				return nil, err
+			}
+			mt, ok := src.Type().(*vmtypes.MapType)
+			if !ok {
+				return nil, interp.ErrTypeMismatch
+			}
+			keys, vals, err := mapEntries(i, params[0])
+			if err != nil {
+				return nil, err
+			}
+			out := vmtypes.NewMapForType(mt, len(keys))
+			for idx, key := range keys {
+				if err := mapSet(out, key, vals[idx]); err != nil {
+					return nil, err
+				}
+			}
+			addr, err := i.Alloc(out)
+			if err != nil {
+				return nil, err
+			}
+			return []vmtypes.Boxed{vmtypes.BoxRef(addr)}, nil
+		},
+	)
+}
+
 // dictRest returns a new dict holding receiver minus the keys in the second
 // argument. It backs mapping-pattern `**rest` captures.
 func (c *lowerer) dictRest(receiver types.Type) *interp.HostFunction {
@@ -140,6 +276,28 @@ func mapSet(m vmtypes.Value, key, val vmtypes.Boxed) error {
 		return interp.ErrTypeMismatch
 	}
 	return nil
+}
+
+// mapDelete removes a key from a map value and returns the associated value.
+// It returns (value, true) when the key existed, or (zero, false) otherwise.
+func mapDelete(m vmtypes.Value, key vmtypes.Boxed) (vmtypes.Boxed, bool) {
+	switch mm := m.(type) {
+	case *vmtypes.TypedMap[bool]:
+		return mm.Delete(key.Bool())
+	case *vmtypes.TypedMap[int32]:
+		return mm.Delete(key.I32())
+	case *vmtypes.TypedMap[int64]:
+		return mm.Delete(key.I64())
+	case *vmtypes.TypedMap[float32]:
+		return mm.Delete(key.F32())
+	case *vmtypes.TypedMap[float64]:
+		return mm.Delete(key.F64())
+	case *vmtypes.Map:
+		entry, ok := mm.Delete(mapKey(key))
+		return entry.Value, ok
+	default:
+		return 0, false
+	}
 }
 
 // arraySlice builds `receiver[a:b:c]` for any array-backed VM type (list or
@@ -1194,6 +1352,8 @@ func (c *lowerer) exc() *interp.HostFunction {
 							errors.Is(exc.Unwrap(), builtins.ErrChrValue),
 							errors.Is(exc.Unwrap(), pyoperator.ErrNegativeExponent):
 							class = classID("ValueError")
+						case errors.Is(exc.Unwrap(), errDictKeyError):
+							class = classID("KeyError")
 						case errors.Is(exc.Unwrap(), pyoperator.ErrRepeatOverflow):
 							class = classID("OverflowError")
 						}

@@ -902,16 +902,25 @@ func (c *lowerer) methodCall(x *ast.CallExpr, attr *ast.Attribute) {
 		c.callHost(c.dictValues(recvType, c.types[x]))
 	case "items":
 		c.callHost(c.dictItems(recvType, c.types[x]))
+	case "update":
+		c.callHost(c.dictUpdate(recvType))
+		c.emit(instr.REF_NULL)
+	case "setdefault":
+		c.callHost(c.dictSetDefault(recvType, c.types[x]))
 	case "append":
 		c.emit(instr.I32_CONST, 1)
 		c.emit(instr.ARRAY_APPEND)
 		c.emit(instr.DROP)
 		c.emit(instr.REF_NULL)
 	case "pop":
-		if len(x.Args) == 0 {
-			c.emit(instr.I64_CONST, ^uint64(0))
+		if _, ok := recvType.(*types.Dict); ok {
+			c.callHost(c.dictPop(recvType, c.types[x]))
+		} else {
+			if len(x.Args) == 0 {
+				c.emit(instr.I64_CONST, ^uint64(0))
+			}
+			c.emitArrayDelete()
 		}
-		c.emitArrayDelete()
 	case "index":
 		c.callHost(c.listIndex(recvType))
 	case "insert":
@@ -927,7 +936,11 @@ func (c *lowerer) methodCall(x *ast.CallExpr, attr *ast.Attribute) {
 		c.callHost(c.listSort(recvType))
 		c.emit(instr.REF_NULL)
 	case "copy":
-		c.callHost(c.listCopy(recvType))
+		if _, ok := recvType.(*types.Dict); ok {
+			c.callHost(c.dictCopy(recvType))
+		} else {
+			c.callHost(c.listCopy(recvType))
+		}
 	case "count":
 		if _, ok := recvType.(*types.List); ok {
 			c.callHost(c.listCount(recvType))
@@ -935,8 +948,13 @@ func (c *lowerer) methodCall(x *ast.CallExpr, attr *ast.Attribute) {
 			c.callHost(c.strCount())
 		}
 	case "clear":
-		c.callHost(c.listClear(recvType))
-		c.emit(instr.REF_NULL)
+		if _, ok := recvType.(*types.Dict); ok {
+			c.callHost(c.dictClear(recvType))
+			c.emit(instr.REF_NULL)
+		} else {
+			c.callHost(c.listClear(recvType))
+			c.emit(instr.REF_NULL)
+		}
 	case "remove":
 		c.callHost(c.listRemove(recvType))
 		c.emit(instr.REF_NULL)

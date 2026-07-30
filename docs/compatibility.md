@@ -139,6 +139,7 @@ full CPython compatibility.
 | List literals | ✅ | Homogeneous; empty needs hint. |
 | List methods | ◐ | `append`, `pop`, `index`, `insert`, `extend`, `reverse`, `sort`, `copy`, `count`, `clear`, `remove`; statically typed homogeneous lists only. |
 | String methods | ◐ | `upper`, `lower`, `split`, `join`, `find`, `strip`, `lstrip`, `rstrip`, `startswith`, `endswith`, `replace`, `count`, `isdigit`, `isalpha`, `isalnum`, `isspace`, `capitalize`, `title`, `swapcase`, `center`, `ljust`, `rjust`, `zfill`, `encode`; statically typed. |
+| Dict methods | ◐ | `get`, `keys`, `values`, `items`, `pop`, `update`, `setdefault`, `clear`, `copy`; statically typed homogeneous dicts only. |
 | Dict literals | ✅ | Homogeneous; empty needs hint; scalar hashable keys. |
 | Set literals | ✅ | Homogeneous; empty needs hint; scalar hashable elements. |
 | Tuple literals | ✅ | Fixed arity, heterogeneous. |

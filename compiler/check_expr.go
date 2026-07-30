@@ -1313,6 +1313,36 @@ func (c *checker) methodCallType(n *ast.CallExpr, attr *ast.Attribute) types.Typ
 			if len(args) == 0 {
 				return types.NewList(types.NewTuple(t.Key, t.Value))
 			}
+		case "pop":
+			if len(args) != 1 || !types.AssignableTo(args[0], t.Key) {
+				c.errs.Add(n.Pos(), token.TypeMismatch, "dict.pop expects exactly 1 key argument")
+				return types.Invalid
+			}
+			return t.Value
+		case "update":
+			if len(args) != 1 || !types.Equal(args[0], t) {
+				c.errs.Add(n.Pos(), token.TypeMismatch, "dict.update expects a dict of the same type")
+				return types.Invalid
+			}
+			return types.None
+		case "setdefault":
+			if len(args) != 2 || !types.AssignableTo(args[0], t.Key) || !types.AssignableTo(args[1], t.Value) {
+				c.errs.Add(n.Pos(), token.TypeMismatch, "dict.setdefault expects (key, default)")
+				return types.Invalid
+			}
+			return t.Value
+		case "clear":
+			if len(args) != 0 {
+				c.errs.Add(n.Pos(), token.ArityMismatch, "dict.clear takes no arguments (%d given)", len(args))
+				return types.Invalid
+			}
+			return types.None
+		case "copy":
+			if len(args) != 0 {
+				c.errs.Add(n.Pos(), token.ArityMismatch, "dict.copy takes no arguments (%d given)", len(args))
+				return types.Invalid
+			}
+			return t
 		}
 	default:
 		args := c.positionalMethodArgs(n)
