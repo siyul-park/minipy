@@ -427,7 +427,8 @@ func (c *checker) fstringPart(part ast.FStringPart) {
 }
 
 // ifExpType types the conditional expression `body if cond else orelse`: cond
-// must be bool and the two arms must share a type (docs/spec/04-static-semantics.md).
+// must be bool and the two arms are joined via types.Join, allowing compatible
+// types such as int and float to produce a promoted result (e.g., float).
 func (c *checker) ifExpType(n *ast.IfExp) types.Type {
 	c.condition(n.Cond)
 	bt := c.expr(n.Body)
@@ -435,11 +436,7 @@ func (c *checker) ifExpType(n *ast.IfExp) types.Type {
 	if bt == types.Invalid || et == types.Invalid {
 		return types.Invalid
 	}
-	if !types.Equal(bt, et) {
-		c.errs.Add(n.Pos(), token.TypeMismatch, "conditional expression arms have different types: %s and %s", bt, et)
-		return types.Invalid
-	}
-	return bt
+	return types.Join(bt, et)
 }
 
 func (c *checker) nameType(n *ast.Name) types.Type {

@@ -495,6 +495,13 @@ func (c *lowerer) fieldIndex(x *ast.Attribute) int {
 	return c.classes[cls.Name].fieldIndex[x.Name]
 }
 
+func (c *lowerer) fieldType(x *ast.Attribute) types.Type {
+	cls := c.types[x.X].(*types.Class)
+	info := c.classes[cls.Name]
+	idx := info.fieldIndex[x.Name]
+	return info.fields[idx].typ
+}
+
 // fstringConcat lowers a sequence of f-string parts into a left-associated
 // STRING_CONCAT chain seeded with the empty string. It is reused both for the
 // whole f-string and for a nested format spec (f"{x:{w}.{p}f}").
@@ -573,16 +580,20 @@ func staticFStringFormat(parts []ast.FStringPart) (string, bool) {
 
 // ifExp lowers the conditional expression `body if cond else orelse`
 // (docs/spec/05-codegen.md): branch to the true arm when the condition holds,
-// else fall through to the false arm.
+// else fall through to the false arm. Each arm is promoted to the joined
+// result type when numeric widening applies.
 func (c *lowerer) ifExp(x *ast.IfExp) {
+	resultType := c.types[x]
 	c.expr(x.Cond)
 	trueL := c.label()
 	end := c.label()
 	c.brIf(trueL)
 	c.expr(x.Orelse)
+	c.promoteIntToFloat(c.types[x.Orelse], resultType)
 	c.br(end)
 	c.bind(trueL)
 	c.expr(x.Body)
+	c.promoteIntToFloat(c.types[x.Body], resultType)
 	c.bind(end)
 }
 
@@ -677,8 +688,12 @@ func (c *lowerer) call(x *ast.CallExpr) {
 			return
 		}
 		if info, ok := c.functions[sym]; ok {
-			for _, arg := range c.functionCallArgs(x, info) {
+			args := c.functionCallArgs(x, info)
+			for i, arg := range args {
 				c.expr(arg)
+				if i < len(info.params) {
+					c.promoteIntToFloat(c.types[arg], info.params[i].typ)
+				}
 			}
 			if spec := c.callSpec[x]; spec != nil {
 				c.emit(instr.CONST_GET, uint64(c.specs[spec]))
@@ -791,8 +806,12 @@ func (c *lowerer) construct(x *ast.CallExpr, cls *class) {
 	args := c.checkedArgs(x)
 	if init := cls.methods["__init__"]; init != nil {
 		c.emit(instr.DUP)
-		for _, arg := range args {
+		for i, arg := range args {
 			c.expr(arg)
+			// Promote int to float when the parameter expects float.
+			if i+1 < len(init.params) {
+				c.promoteIntToFloat(c.types[arg], init.params[i+1].typ)
+			}
 		}
 		c.funcValue(init, cls.methodBody["__init__"])
 		c.emit(instr.CALL)
@@ -803,6 +822,7 @@ func (c *lowerer) construct(x *ast.CallExpr, cls *class) {
 		c.emit(instr.DUP)
 		c.emit(instr.I32_CONST, uint64(cls.fields[i].index))
 		c.expr(arg)
+		c.promoteIntToFloat(c.types[arg], cls.fields[i].typ)
 		c.emit(instr.STRUCT_SET)
 	}
 }
@@ -822,6 +842,7 @@ func (c *lowerer) applyFieldDefaults(cls *class) {
 		c.emit(instr.DUP)
 		c.emit(instr.I32_CONST, uint64(field.index))
 		c.expr(field.value)
+		c.promoteIntToFloat(c.types[field.value], field.typ)
 		c.emit(instr.STRUCT_SET)
 	}
 }

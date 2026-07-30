@@ -90,7 +90,7 @@ func TestAssignable(t *testing.T) {
 	require.True(t, AssignableTo(NewIterator(Int), NewIterator(Int)))
 	require.True(t, AssignableTo(NewClass("Point", nil), NewClass("Point", []Field{{Name: "x", Type: Int}})))
 	require.False(t, AssignableTo(Bool, Int))  // bool is not int
-	require.False(t, AssignableTo(Int, Float)) // no implicit widening
+	require.True(t, AssignableTo(Int, Float))  // int widens to float (Python semantics)
 	require.True(t, AssignableTo(Ellipsis, Ellipsis))
 	require.False(t, AssignableTo(Ellipsis, None))
 	require.False(t, AssignableTo(NewList(Int), NewList(Str)))
@@ -187,6 +187,9 @@ func TestJoin(t *testing.T) {
 	require.Equal(t, Any, Join(Int, Any))
 	require.True(t, Equal(NewUnion(Int, Str), Join(Int, Str)))
 	require.True(t, Equal(NewUnion(Int, Str, None), Join(NewUnion(Int, Str), None)))
+	require.Equal(t, Float, Join(Int, Float))   // numeric promotion
+	require.Equal(t, Float, Join(Float, Int))   // numeric promotion (reverse)
+	require.Equal(t, Float, Join(Float, Float)) // same type
 }
 
 func TestNarrowWithout(t *testing.T) {

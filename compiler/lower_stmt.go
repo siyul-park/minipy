@@ -20,11 +20,13 @@ func (c *lowerer) stmt(s ast.Stmt) {
 		}
 		if n.Value != nil {
 			c.expr(n.Value)
+			c.promoteIntToFloat(c.types[n.Value], c.typ(n.Target.Name))
 			c.set(n.Target.Name)
 		}
 	case *ast.Assign:
 		if name, ok := n.Target.(*ast.Name); ok {
 			c.expr(n.Value)
+			c.promoteIntToFloat(c.types[n.Value], c.typ(name.Name))
 			c.set(name.Name)
 		} else {
 			c.assignTarget(n.Target, n.Value)
@@ -711,12 +713,15 @@ func (c *lowerer) assignTarget(target ast.Expr, value ast.Expr) {
 	case *ast.Attribute:
 		if key := c.attrSym[t]; key != "" {
 			c.expr(value)
+			c.promoteIntToFloat(c.types[value], c.globals[key].typ)
 			c.emit(instr.GLOBAL_SET, uint64(c.globals[key].index))
 			return
 		}
 		c.expr(t.X)
 		c.emit(instr.I32_CONST, uint64(c.fieldIndex(t)))
 		c.expr(value)
+		fieldType := c.fieldType(t)
+		c.promoteIntToFloat(c.types[value], fieldType)
 		c.emit(instr.STRUCT_SET)
 	default:
 		c.fail(fmt.Errorf("lower assignment target %T: unsupported", target))
@@ -994,6 +999,15 @@ func (c *lowerer) typ(name string) types.Type {
 		}
 	}
 	return c.globals[c.symbol(name)].typ
+}
+
+// promoteIntToFloat emits I64_TO_F64_S if the value on the stack is int but
+// the target slot expects float. This implements implicit numeric widening at
+// the VM level matching the checker's AssignableTo(int, float) rule.
+func (c *lowerer) promoteIntToFloat(src, dst types.Type) {
+	if types.Equal(types.Erase(src), types.Int) && types.Equal(dst, types.Float) {
+		c.emit(instr.I64_TO_F64_S)
+	}
 }
 
 // emitIf lowers `if`/`elif`/`else`: invert the condition and branch over the
@@ -1369,6 +1383,9 @@ func (c *lowerer) emitCapture(cap *capture) {
 func (c *lowerer) returnStmt(n *ast.Return) {
 	if n.Value != nil {
 		c.expr(n.Value)
+		if c.current != nil {
+			c.promoteIntToFloat(c.types[n.Value], c.current.result)
+		}
 	} else {
 		c.emit(instr.REF_NULL)
 	}

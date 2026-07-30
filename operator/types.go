@@ -53,6 +53,11 @@ func BinaryType(c module.Checker, left types.Type, op token.Type, right types.Ty
 		if types.Equal(left, types.Float) && types.Equal(right, types.Float) {
 			return types.Float
 		}
+		// Mixed int/float division: promote to float.
+		if (types.Equal(left, types.Int) && types.Equal(right, types.Float)) ||
+			(types.Equal(left, types.Float) && types.Equal(right, types.Int)) {
+			return types.Float
+		}
 		return mismatch(c, op, left, right, pos)
 	case token.AMP, token.PIPE, token.CARET, token.LSHIFT, token.RSHIFT:
 		if types.Equal(left, types.Int) && types.Equal(right, types.Int) {
@@ -69,6 +74,11 @@ func arith(c module.Checker, left types.Type, op token.Type, right types.Type, p
 		return types.Int
 	}
 	if types.Equal(left, types.Float) && types.Equal(right, types.Float) {
+		return types.Float
+	}
+	// Mixed int/float: promote to float (standard Python semantics).
+	if (types.Equal(left, types.Int) && types.Equal(right, types.Float)) ||
+		(types.Equal(left, types.Float) && types.Equal(right, types.Int)) {
 		return types.Float
 	}
 	return mismatch(c, op, left, right, pos)
@@ -150,6 +160,11 @@ func Comparable(c module.Checker, op token.Type, left, right types.Type, pos tok
 		return
 	}
 	if !types.Equal(left, right) {
+		// Allow mixed int/float comparisons (standard Python semantics).
+		if (types.Equal(left, types.Int) && types.Equal(right, types.Float)) ||
+			(types.Equal(left, types.Float) && types.Equal(right, types.Int)) {
+			return
+		}
 		c.Error(pos, token.NotComparable, "'%s' not supported between instances of %s and %s", op, left, right)
 	}
 }

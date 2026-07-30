@@ -528,6 +528,51 @@ func TestCompile(t *testing.T) {
 		require.Equal(t, "2.5\n", run(t, "print(str(5.0 / 2.0))\n"))
 	})
 
+	t.Run("mixed int/float arithmetic", func(t *testing.T) {
+		require.Equal(t, "3.0\n", run(t, "print(str(1 + 2.0))\n"))
+		require.Equal(t, "3.0\n", run(t, "print(str(2.0 + 1))\n"))
+		require.Equal(t, "1.5\n", run(t, "print(str(3.0 - 1.5))\n"))
+		require.Equal(t, "-1.0\n", run(t, "print(str(1 - 2.0))\n"))
+		require.Equal(t, "6.0\n", run(t, "print(str(2 * 3.0))\n"))
+		require.Equal(t, "6.0\n", run(t, "print(str(3.0 * 2))\n"))
+		require.Equal(t, "2.5\n", run(t, "print(str(5 / 2.0))\n"))
+		require.Equal(t, "2.5\n", run(t, "print(str(5.0 / 2))\n"))
+		require.Equal(t, "2.0\n", run(t, "print(str(5 // 2.0))\n"))
+		require.Equal(t, "2.0\n", run(t, "print(str(5.0 // 2))\n"))
+		require.Equal(t, "1.0\n", run(t, "print(str(5 % 2.0))\n"))
+		require.Equal(t, "1.0\n", run(t, "print(str(5.0 % 2))\n"))
+		require.Equal(t, "8.0\n", run(t, "print(str(2 ** 3.0))\n"))
+		require.Equal(t, "9.0\n", run(t, "print(str(3.0 ** 2))\n"))
+	})
+
+	t.Run("mixed int/float comparison", func(t *testing.T) {
+		require.Equal(t, "True\n", run(t, "print(str(1 < 2.5))\n"))
+		require.Equal(t, "True\n", run(t, "print(str(2.5 > 1))\n"))
+		require.Equal(t, "True\n", run(t, "print(str(1 == 1.0))\n"))
+		require.Equal(t, "False\n", run(t, "print(str(1 == 1.5))\n"))
+		require.Equal(t, "True\n", run(t, "print(str(2 >= 2.0))\n"))
+		require.Equal(t, "True\n", run(t, "print(str(1.0 <= 1))\n"))
+	})
+
+	t.Run("int assignable to float", func(t *testing.T) {
+		require.Equal(t, "3.0\n", run(t, "x: float = 3\nprint(str(x))\n"))
+	})
+
+	t.Run("int to float in function call", func(t *testing.T) {
+		src := "def add1(x: float) -> float:\n    return x + 1.0\nprint(str(add1(3)))\n"
+		require.Equal(t, "4.0\n", run(t, src))
+	})
+
+	t.Run("int to float return promotion", func(t *testing.T) {
+		src := "def f() -> float:\n    return 42\nprint(str(f()))\n"
+		require.Equal(t, "42.0\n", run(t, src))
+	})
+
+	t.Run("conditional expression with numeric promotion", func(t *testing.T) {
+		require.Equal(t, "1.0\n", run(t, "x: float = 1 if True else 2.0\nprint(str(x))\n"))
+		require.Equal(t, "2.0\n", run(t, "x: float = 1 if False else 2.0\nprint(str(x))\n"))
+	})
+
 	t.Run("bitwise and shift", func(t *testing.T) {
 		require.Equal(t, "6\n", run(t, "print(str(2 | 4))\n"))
 		require.Equal(t, "8\n", run(t, "print(str(1 << 3))\n"))
@@ -1345,6 +1390,33 @@ print(str(p.total()))
 		require.Equal(t, "3\n15\n", run(t, src))
 	})
 
+	t.Run("class field with int assignable to float", func(t *testing.T) {
+		src := `@dataclass
+class Measurement:
+    value: float
+    scale: float = 1
+m: Measurement = Measurement(42)
+print(str(m.value))
+print(str(m.scale))
+`
+		require.Equal(t, "42.0\n1.0\n", run(t, src))
+	})
+
+	t.Run("class field attribute assignment int to float", func(t *testing.T) {
+		src := `class Pt:
+    x: float
+    y: float
+    def __init__(self, x: float, y: float) -> None:
+        self.x = x
+        self.y = y
+p: Pt = Pt(1, 2)
+p.x = 5
+print(str(p.x))
+print(str(p.y))
+`
+		require.Equal(t, "5.0\n2.0\n", run(t, src))
+	})
+
 	t.Run("del dict key and list item", func(t *testing.T) {
 		require.Equal(t, "1\n", run(t, "d: dict[str, int] = {\"a\": 1, \"b\": 2}\ndel d[\"a\"]\nprint(str(len(d)))\n"))
 		require.Equal(t, "2\n3\n", run(t, "xs: list[int] = [1, 2, 3]\ndel xs[1]\nprint(str(len(xs)))\nprint(str(xs[1]))\n"))
@@ -1982,7 +2054,6 @@ func requireFuncParam(t *testing.T, constants []vmtypes.Value, parameter vmtypes
 func TestCompileErrors(t *testing.T) {
 	cases := map[string]token.Code{
 		"x: int = 1.5\n":                      token.TypeMismatch,
-		"print(str(1 + 1.5))\n":               token.TypeMismatch,
 		"x: int = 99999999999999999999999\n":  token.IntOverflow,
 		"print(str(y))\n":                     token.UndefinedName,
 		"print()\n":                           token.ArityMismatch,

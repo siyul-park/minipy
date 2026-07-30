@@ -55,7 +55,20 @@ func TestBinaryType(t *testing.T) {
 	}{
 		{"int add", types.Int, types.Int, token.PLUS, types.Int, false},
 		{"float add", types.Float, types.Float, token.PLUS, types.Float, false},
-		{"mixed add", types.Int, types.Float, token.PLUS, types.Invalid, true},
+		{"mixed add", types.Int, types.Float, token.PLUS, types.Float, false},
+		{"mixed add reverse", types.Float, types.Int, token.PLUS, types.Float, false},
+		{"mixed sub", types.Int, types.Float, token.MINUS, types.Float, false},
+		{"mixed sub reverse", types.Float, types.Int, token.MINUS, types.Float, false},
+		{"mixed mul", types.Int, types.Float, token.STAR, types.Float, false},
+		{"mixed mul reverse", types.Float, types.Int, token.STAR, types.Float, false},
+		{"mixed truediv", types.Int, types.Float, token.SLASH, types.Float, false},
+		{"mixed truediv reverse", types.Float, types.Int, token.SLASH, types.Float, false},
+		{"mixed floordiv", types.Int, types.Float, token.DOUBLESLASH, types.Float, false},
+		{"mixed floordiv reverse", types.Float, types.Int, token.DOUBLESLASH, types.Float, false},
+		{"mixed mod", types.Int, types.Float, token.PERCENT, types.Float, false},
+		{"mixed mod reverse", types.Float, types.Int, token.PERCENT, types.Float, false},
+		{"mixed pow", types.Int, types.Float, token.DOUBLESTAR, types.Float, false},
+		{"mixed pow reverse", types.Float, types.Int, token.DOUBLESTAR, types.Float, false},
 		{"str concat", types.Str, types.Str, token.PLUS, types.Str, false},
 		{"str repeat", types.Str, types.Int, token.STAR, types.Str, false},
 		{"bytes concat", types.Bytes, types.Bytes, token.PLUS, types.Bytes, false},
@@ -84,6 +97,9 @@ func TestComparable(t *testing.T) {
 	}{
 		{"eq int", token.EQ, types.Int, types.Int, false},
 		{"eq mismatch", token.EQ, types.Int, types.Str, true},
+		{"int float eq", token.EQ, types.Int, types.Float, false},
+		{"int float lt", token.LT, types.Int, types.Float, false},
+		{"float int ge", token.GE, types.Float, types.Int, false},
 		{"in list", token.IN, types.Int, types.NewList(types.Int), false},
 		{"in non-container", token.IN, types.Int, types.Int, true},
 		{"bytes eq", token.EQ, types.Bytes, types.Bytes, false},
@@ -127,6 +143,18 @@ func TestEmitCompareStack(t *testing.T) {
 			require.Equal(t, tt.want, e.ops)
 		})
 	}
+
+	t.Run("mixed int float lt", func(t *testing.T) {
+		e := &stubEmitter{}
+		operator.EmitCompareStack(e, token.LT, types.Int, types.Float)
+		require.Equal(t, []instr.Opcode{instr.SWAP, instr.I64_TO_F64_S, instr.SWAP, instr.F64_LT}, e.ops)
+	})
+
+	t.Run("mixed float int gt", func(t *testing.T) {
+		e := &stubEmitter{}
+		operator.EmitCompareStack(e, token.GT, types.Float, types.Int)
+		require.Equal(t, []instr.Opcode{instr.I64_TO_F64_S, instr.F64_GT}, e.ops)
+	})
 }
 
 func TestContainsType(t *testing.T) {

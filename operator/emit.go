@@ -27,28 +27,49 @@ func EmitBinary(e module.Emitter, op token.Type, left, right types.Type, pushLef
 		}
 		e.Emit(instr.F64_DIV)
 	case token.DOUBLESLASH:
-		if types.Equal(left, types.Int) {
+		if types.Equal(left, types.Int) && types.Equal(right, types.Int) {
 			emitIntDivMod(e, pushLeft, pushRight, true)
 			return
 		}
+		// Mixed or float: promote int operand and use float floor division.
 		pushLeft()
+		if types.Equal(left, types.Int) {
+			e.Emit(instr.I64_TO_F64_S)
+		}
 		pushRight()
+		if types.Equal(right, types.Int) {
+			e.Emit(instr.I64_TO_F64_S)
+		}
 		e.Emit(instr.F64_DIV)
 		e.Emit(instr.F64_FLOOR)
 	case token.PERCENT:
-		if types.Equal(left, types.Int) {
+		if types.Equal(left, types.Int) && types.Equal(right, types.Int) {
 			emitIntDivMod(e, pushLeft, pushRight, false)
 			return
 		}
+		// Mixed or float: promote int operand and use float modulo.
 		pushLeft()
+		if types.Equal(left, types.Int) {
+			e.Emit(instr.I64_TO_F64_S)
+		}
 		pushRight()
+		if types.Equal(right, types.Int) {
+			e.Emit(instr.I64_TO_F64_S)
+		}
 		e.Emit(instr.F64_MOD)
 	case token.DOUBLESTAR:
 		pushLeft()
-		pushRight()
-		if types.Equal(left, types.Int) {
+		if types.Equal(left, types.Int) && types.Equal(right, types.Int) {
+			pushRight()
 			e.CallHost(powInt())
 		} else {
+			if types.Equal(left, types.Int) {
+				e.Emit(instr.I64_TO_F64_S)
+			}
+			pushRight()
+			if types.Equal(right, types.Int) {
+				e.Emit(instr.I64_TO_F64_S)
+			}
 			e.CallHost(powFloat())
 		}
 	case token.PLUS:
@@ -64,7 +85,12 @@ func EmitBinary(e module.Emitter, op token.Type, left, right types.Type, pushLef
 			case types.Equal(left, types.Bytes):
 				e.CallHost(bytesConcat())
 			default:
-				e.Emit(simpleBinOp(op, left))
+				// For mixed int/float, promote the int operand.
+				if isMixedNumeric(left, right) {
+					emitMixedArith(e, op, left, right)
+				} else {
+					e.Emit(simpleBinOp(op, left))
+				}
 			}
 		}
 	case token.STAR:
@@ -80,6 +106,16 @@ func EmitBinary(e module.Emitter, op token.Type, left, right types.Type, pushLef
 			e.CallHost(stringRepeat())
 		} else if types.Equal(right, types.Str) {
 			e.CallHost(stringRepeat())
+		} else if isMixedNumeric(left, right) {
+			emitMixedArith(e, op, left, right)
+		} else {
+			e.Emit(simpleBinOp(op, left))
+		}
+	case token.MINUS:
+		pushLeft()
+		pushRight()
+		if isMixedNumeric(left, right) {
+			emitMixedArith(e, op, left, right)
 		} else {
 			e.Emit(simpleBinOp(op, left))
 		}
@@ -120,6 +156,20 @@ func EmitCompareStack(e module.Emitter, op token.Type, left, right types.Type) {
 		if op == token.NE {
 			e.Emit(instr.I32_EQZ)
 		}
+		return
+	}
+	// Mixed int/float comparisons: promote the int operand to f64.
+	if isMixedNumeric(left, right) {
+		if types.Equal(left, types.Int) {
+			// Stack: [int, float] -- promote int (second from top).
+			e.Emit(instr.SWAP)
+			e.Emit(instr.I64_TO_F64_S)
+			e.Emit(instr.SWAP)
+		} else {
+			// Stack: [float, int] -- promote int (top of stack).
+			e.Emit(instr.I64_TO_F64_S)
+		}
+		e.Emit(CmpOpcode(op, types.Float))
 		return
 	}
 	e.Emit(CmpOpcode(op, left))
@@ -291,6 +341,28 @@ func emitListAppend(e module.Emitter, resultSlot, sourceSlot int) {
 	e.Emit(instr.GLOBAL_SET, uint64(indexSlot))
 	e.Br(top)
 	e.Bind(done)
+}
+
+// isMixedNumeric reports whether one operand is int and the other is float.
+func isMixedNumeric(left, right types.Type) bool {
+	return (types.Equal(left, types.Int) && types.Equal(right, types.Float)) ||
+		(types.Equal(left, types.Float) && types.Equal(right, types.Int))
+}
+
+// emitMixedArith handles PLUS, MINUS, STAR for mixed int/float operands.
+// The operands are already on the stack (left then right). The int operand is
+// promoted in-place, then the float operation is emitted.
+func emitMixedArith(e module.Emitter, op token.Type, left, right types.Type) {
+	if types.Equal(left, types.Int) {
+		// Stack: [int, float] -- need to promote the int (second from top).
+		e.Emit(instr.SWAP)
+		e.Emit(instr.I64_TO_F64_S)
+		e.Emit(instr.SWAP)
+	} else {
+		// Stack: [float, int] -- promote the int (top of stack).
+		e.Emit(instr.I64_TO_F64_S)
+	}
+	e.Emit(simpleBinOp(op, types.Float))
 }
 
 // emitIntDivMod implements Python's floor quotient and divisor-signed remainder
