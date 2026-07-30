@@ -2,13 +2,13 @@
   "task_id": "task-dynamic-typing-ref",
   "task_description": "Implement Python dynamic typing features using minivm's ref system. Enable operations (arithmetic, comparison, truthiness, str, len, iteration, indexing) on Any-typed and union-typed values via runtime type dispatch through host functions using REF_TEST/REF_CAST. When types become statically known through inference, narrowing, or specialization, use existing static paths for maximum performance.",
   "status": "in_progress",
-  "feature_order": ["FEAT-001", "FEAT-002"],
+  "feature_order": ["FEAT-001", "FEAT-002", "FEAT-003"],
   "blocked_reason": null,
   "verification": {
     "build": "pass",
     "tests": "pass",
     "test_quality": "pass",
     "docker_build": "skipped",
-    "summary": "go vet ./... passes, go test ./... passes (all 11 packages), 26 new TestCompileDynamic tests cover all dynamic operations (arithmetic, comparison, truthiness, str, len, iteration, indexing), existing TestCompileUnions tests pass confirming narrowing/specialization paths are preserved."
+    "summary": "go vet ./... passes, go test ./... passes (all 11 packages), 30+ TestCompileDynamic tests cover all dynamic operations including error paths, dict/set operations, unary operators, and cross-kind comparisons."
   }
 }

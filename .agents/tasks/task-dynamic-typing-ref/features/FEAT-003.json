@@ -2,7 +2,7 @@
   "id": "FEAT-003",
   "type": "fix",
   "description": "Fix all 7 issues identified in the 2025-07-13-review-v1.md: (1) cross-kind comparison bug, (2) dict/set missing from dynamic dispatch, (3) TypedArray truthiness gap, (4) isDynamic predicate duplication, (5) error-path test coverage, (6) iterableElem duplication, (7) unary operators not dynamicized.",
-  "status": "in_progress",
+  "status": "completed",
   "steps": [
     "Step 1 - Fix cross-kind comparison: add type-homogeneity guard in dynCmp before numeric catch-all",
     "Step 2 - Add dict/set support to dynamic dispatch functions (dynLength, dynIterator, dynIndex, dynIn, dynTruth)",
@@ -29,5 +29,5 @@
     "go test -run TestCompileDynamic ./compiler"
   ],
   "blocked_reason": null,
-  "findings": null
+  "findings": "All 7 issues fixed. Key decisions: (1) mapGet in operator/dynamic.go uses type-switch on all TypedMap variants rather than depending on compiler/runtime.go's private mapGet (avoids import cycle). (2) dynTruth probes ArrayElems first (catches both *Array and TypedArray), then falls through to Load for strings and maps. (3) types.IsDynamic and types.IterableElem are the canonical definitions; local wrappers remain as thin delegates to satisfy package-local usage without changing call sites. (4) Empty container truthiness tests use slicing to create empty typed arrays since minipy requires type annotations for empty literals."
 }
