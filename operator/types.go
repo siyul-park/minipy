@@ -106,10 +106,7 @@ func mismatch(c module.Checker, op token.Type, left, right types.Type, pos token
 
 // isDynamic reports whether a type requires runtime dispatch (Any or Union).
 func isDynamic(t types.Type) bool {
-	if _, ok := t.(*types.Union); ok {
-		return true
-	}
-	return types.IsAny(t)
+	return types.IsDynamic(t)
 }
 
 // UnaryType applies the unary operator typing rules for the operand expression.
@@ -120,6 +117,9 @@ func UnaryType(c module.Checker, op token.Type, arg ast.Expr) types.Type {
 		if t.IsNumeric() {
 			return t
 		}
+		if isDynamic(t) {
+			return types.Any
+		}
 		if t != types.Invalid {
 			c.Error(arg.Pos(), token.TypeMismatch, "bad operand type for unary %s: %s", op, t)
 		}
@@ -128,11 +128,17 @@ func UnaryType(c module.Checker, op token.Type, arg ast.Expr) types.Type {
 		if types.Equal(t, types.Int) {
 			return types.Int
 		}
+		if isDynamic(t) {
+			return types.Any
+		}
 		if t != types.Invalid {
 			c.Error(arg.Pos(), token.TypeMismatch, "bad operand type for unary ~: %s", t)
 		}
 		return types.Invalid
 	case token.NOT:
+		if isDynamic(t) {
+			return types.Bool
+		}
 		if !types.Equal(t, types.Bool) && t != types.Invalid {
 			c.Error(arg.Pos(), token.TypeMismatch, "'not' requires bool, got %s", t)
 		}

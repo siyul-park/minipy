@@ -1,8 +1,13 @@
 package compiler
 
 import (
+	"context"
+	"errors"
+	"io"
+	"strings"
 	"testing"
 
+	"github.com/siyul-park/minivm/interp"
 	"github.com/stretchr/testify/require"
 )
 
@@ -55,6 +60,11 @@ func TestCompileDynamic(t *testing.T) {
 		require.Equal(t, "True\nFalse\n", run(t, src))
 	})
 
+	t.Run("cross-kind equality returns False", func(t *testing.T) {
+		src := "x: Any = \"abc\"\ny: Any = 0\nprint(str(x == y))\nprint(str(x != y))\n"
+		require.Equal(t, "False\nTrue\n", run(t, src))
+	})
+
 	t.Run("truthiness of Any values", func(t *testing.T) {
 		src := "a: Any = 0\nb: Any = 1\nc: Any = \"\"\nd: Any = \"hi\"\n" +
 			"print(str(bool(a)))\nprint(str(bool(b)))\n" +
@@ -65,6 +75,16 @@ func TestCompileDynamic(t *testing.T) {
 	t.Run("truthiness of None", func(t *testing.T) {
 		src := "x: Any = None\nprint(str(bool(x)))\n"
 		require.Equal(t, "False\n", run(t, src))
+	})
+
+	t.Run("truthiness of empty list", func(t *testing.T) {
+		src := "xs: list[int] = [1, 2, 3]\nx: Any = xs[3:]\nprint(str(bool(x)))\ny: Any = xs\nprint(str(bool(y)))\n"
+		require.Equal(t, "False\nTrue\n", run(t, src))
+	})
+
+	t.Run("truthiness of dict", func(t *testing.T) {
+		src := "d: dict[int, int] = {1: 2}\nx: Any = d\nprint(str(bool(x)))\n"
+		require.Equal(t, "True\n", run(t, src))
 	})
 
 	t.Run("str on Any values", func(t *testing.T) {
@@ -85,6 +105,11 @@ func TestCompileDynamic(t *testing.T) {
 
 	t.Run("len on Any list", func(t *testing.T) {
 		src := "x: Any = [1, 2, 3]\nprint(str(len(x)))\n"
+		require.Equal(t, "3\n", run(t, src))
+	})
+
+	t.Run("len on Any dict", func(t *testing.T) {
+		src := "x: Any = {1: 10, 2: 20, 3: 30}\nprint(str(len(x)))\n"
 		require.Equal(t, "3\n", run(t, src))
 	})
 
@@ -111,6 +136,16 @@ func TestCompileDynamic(t *testing.T) {
 	t.Run("negative indexing on Any list", func(t *testing.T) {
 		src := "xs: Any = [1, 2, 3]\nprint(str(xs[-1]))\n"
 		require.Equal(t, "3\n", run(t, src))
+	})
+
+	t.Run("indexing Any dict", func(t *testing.T) {
+		src := "d: Any = {1: 10, 2: 20}\nprint(str(d[1]))\nprint(str(d[2]))\n"
+		require.Equal(t, "10\n20\n", run(t, src))
+	})
+
+	t.Run("in operator on Any dict", func(t *testing.T) {
+		src := "d: Any = {1: 10, 2: 20}\nprint(str(1 in d))\nprint(str(3 in d))\n"
+		require.Equal(t, "True\nFalse\n", run(t, src))
 	})
 
 	t.Run("union arithmetic", func(t *testing.T) {
@@ -153,4 +188,58 @@ func TestCompileDynamic(t *testing.T) {
 		src := "s: Any = \"hello world\"\nprint(str(\"hello\" in s))\nprint(str(\"xyz\" in s))\n"
 		require.Equal(t, "True\nFalse\n", run(t, src))
 	})
+
+	t.Run("unary negation on Any int", func(t *testing.T) {
+		src := "x: Any = 5\nprint(str(-x))\n"
+		require.Equal(t, "-5\n", run(t, src))
+	})
+
+	t.Run("unary negation on Any float", func(t *testing.T) {
+		src := "x: Any = 2.5\nprint(str(-x))\n"
+		require.Equal(t, "-2.5\n", run(t, src))
+	})
+
+	t.Run("not on Any truthy value", func(t *testing.T) {
+		src := "x: Any = 42\nprint(str(not x))\ny: Any = 0\nprint(str(not y))\n"
+		require.Equal(t, "False\nTrue\n", run(t, src))
+	})
+
+	t.Run("not on Any string", func(t *testing.T) {
+		src := "x: Any = \"\"\nprint(str(not x))\ny: Any = \"hi\"\nprint(str(not y))\n"
+		require.Equal(t, "True\nFalse\n", run(t, src))
+	})
+
+	t.Run("division by zero on Any", func(t *testing.T) {
+		src := "x: Any = 5\ny: Any = 0\nz = x / y\n"
+		err := runError(t, src)
+		require.True(t, errors.Is(err, interp.ErrDivideByZero))
+	})
+
+	t.Run("floor division by zero on Any", func(t *testing.T) {
+		src := "x: Any = 5\ny: Any = 0\nz = x // y\n"
+		err := runError(t, src)
+		require.True(t, errors.Is(err, interp.ErrDivideByZero))
+	})
+
+	t.Run("index out of range on Any list", func(t *testing.T) {
+		src := "xs: Any = [1, 2, 3]\nz = xs[10]\n"
+		err := runError(t, src)
+		require.True(t, errors.Is(err, interp.ErrIndexOutOfRange))
+	})
+
+	t.Run("incompatible arithmetic on Any string minus int", func(t *testing.T) {
+		src := "x: Any = \"a\"\ny: Any = 1\nz = x - y\n"
+		err := runError(t, src)
+		require.True(t, errors.Is(err, interp.ErrTypeMismatch))
+	})
+}
+
+// runError compiles and runs src, expecting a runtime error. Returns the error.
+func runError(t *testing.T, src string) error {
+	t.Helper()
+	prog, err := Compile(strings.NewReader(src), WithOutput(io.Discard))
+	require.NoError(t, err)
+	vm := interp.New(prog)
+	defer vm.Close()
+	return vm.Run(context.Background())
 }

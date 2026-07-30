@@ -154,6 +154,82 @@ func DynGetItem() *interp.HostFunction {
 	)
 }
 
+// dynUnaryNeg returns a host function for unary negation (-x) on a dynamic value.
+func dynUnaryNeg() *interp.HostFunction {
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{
+			Params:  []vmtypes.Type{vmtypes.TypeRef},
+			Returns: []vmtypes.Type{vmtypes.TypeRef},
+		},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			v := params[0]
+			switch v.Kind() {
+			case vmtypes.KindI64:
+				return []vmtypes.Boxed{vmtypes.BoxI64(-v.I64())}, nil
+			case vmtypes.KindF64:
+				return []vmtypes.Boxed{vmtypes.BoxF64(-v.F64())}, nil
+			case vmtypes.KindF32:
+				return []vmtypes.Boxed{vmtypes.BoxF32(-v.F32())}, nil
+			case vmtypes.KindI1:
+				if v.I32() != 0 {
+					return []vmtypes.Boxed{vmtypes.BoxI64(-1)}, nil
+				}
+				return []vmtypes.Boxed{vmtypes.BoxI64(0)}, nil
+			default:
+				return nil, interp.ErrTypeMismatch
+			}
+		},
+	)
+}
+
+// dynUnaryPos returns a host function for unary positive (+x) on a dynamic value.
+func dynUnaryPos() *interp.HostFunction {
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{
+			Params:  []vmtypes.Type{vmtypes.TypeRef},
+			Returns: []vmtypes.Type{vmtypes.TypeRef},
+		},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			v := params[0]
+			switch v.Kind() {
+			case vmtypes.KindI64, vmtypes.KindF64, vmtypes.KindF32:
+				return []vmtypes.Boxed{v}, nil
+			case vmtypes.KindI1:
+				if v.I32() != 0 {
+					return []vmtypes.Boxed{vmtypes.BoxI64(1)}, nil
+				}
+				return []vmtypes.Boxed{vmtypes.BoxI64(0)}, nil
+			default:
+				return nil, interp.ErrTypeMismatch
+			}
+		},
+	)
+}
+
+// dynUnaryInvert returns a host function for bitwise inversion (~x) on a dynamic value.
+func dynUnaryInvert() *interp.HostFunction {
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{
+			Params:  []vmtypes.Type{vmtypes.TypeRef},
+			Returns: []vmtypes.Type{vmtypes.TypeRef},
+		},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			v := params[0]
+			switch v.Kind() {
+			case vmtypes.KindI64:
+				return []vmtypes.Boxed{vmtypes.BoxI64(^v.I64())}, nil
+			case vmtypes.KindI1:
+				if v.I32() != 0 {
+					return []vmtypes.Boxed{vmtypes.BoxI64(^int64(1))}, nil
+				}
+				return []vmtypes.Boxed{vmtypes.BoxI64(^int64(0))}, nil
+			default:
+				return nil, interp.ErrTypeMismatch
+			}
+		},
+	)
+}
+
 // dynBinary dispatches a binary operation by examining the runtime kinds.
 func dynBinary(i *interp.Interpreter, left, right vmtypes.Boxed, op token.Type) ([]vmtypes.Boxed, error) {
 	lk, rk := left.Kind(), right.Kind()
@@ -192,6 +268,12 @@ func dynBinary(i *interp.Interpreter, left, right vmtypes.Boxed, op token.Type) 
 	lf, rf := toFloat(left), toFloat(right)
 	lint, lisInt := toInt(left)
 	rint, risInt := toInt(right)
+
+	// Non-numeric ref values (string, list, dict) cannot do arithmetic
+	// beyond concatenation/repetition handled above.
+	if lk == vmtypes.KindRef || rk == vmtypes.KindRef {
+		return nil, interp.ErrTypeMismatch
+	}
 
 	// Both operands are integers: perform integer arithmetic.
 	if lisInt && risInt {
@@ -316,6 +398,18 @@ func dynCmp(i *interp.Interpreter, left, right vmtypes.Boxed, op token.Type) (bo
 		return false, fmt.Errorf("'%s' not supported with None", op)
 	}
 
+	// Cross-kind guard: if one operand is a non-null ref (string, list, dict)
+	// and the other is numeric, they are never equal in Python.
+	if lk == vmtypes.KindRef || rk == vmtypes.KindRef {
+		if op == token.EQ {
+			return false, nil
+		}
+		if op == token.NE {
+			return true, nil
+		}
+		return false, fmt.Errorf("'%s' not supported between these types", op)
+	}
+
 	// Numeric comparison (int/float/bool)
 	lf, rf := toFloat(left), toFloat(right)
 	return cmpFloats(lf, rf, op), nil
@@ -336,16 +430,22 @@ func dynTruth(i *interp.Interpreter, v vmtypes.Boxed) bool {
 		if v.Ref() == 0 {
 			return false
 		}
-		val, err := i.Load(v.Ref())
-		if err != nil {
+		// Use ArrayElems to normalize all array representations including TypedArray.
+		_, elems, err := hostabi.ArrayElems(i, v)
+		if err == nil {
+			return len(elems) > 0
+		}
+		val, lErr := i.Load(v.Ref())
+		if lErr != nil {
 			return true
 		}
 		switch obj := val.(type) {
 		case vmtypes.String:
 			return len(string(obj)) > 0
-		case *vmtypes.Array:
-			return len(obj.Elems) > 0
 		default:
+			if _, ok := obj.Type().(*vmtypes.MapType); ok {
+				return mapLen(obj) > 0
+			}
 			return true
 		}
 	default:
@@ -366,6 +466,13 @@ func dynLength(i *interp.Interpreter, v vmtypes.Boxed) (int64, error) {
 	_, elems, err := hostabi.ArrayElems(i, v)
 	if err == nil {
 		return int64(len(elems)), nil
+	}
+	// Try dict/set (map).
+	val, lErr := i.Load(v.Ref())
+	if lErr == nil {
+		if _, ok := val.Type().(*vmtypes.MapType); ok {
+			return int64(mapLen(val)), nil
+		}
 	}
 	return 0, interp.ErrTypeMismatch
 }
@@ -400,6 +507,18 @@ func dynIterator(i *interp.Interpreter, v vmtypes.Boxed) ([]vmtypes.Boxed, error
 			return nil, aErr
 		}
 		return []vmtypes.Boxed{vmtypes.BoxRef(addr)}, nil
+	}
+	// Try dict/set (map): iterate over keys.
+	val, lErr := i.Load(v.Ref())
+	if lErr == nil {
+		if _, ok := val.Type().(*vmtypes.MapType); ok {
+			keys := mapKeys(val)
+			addr, aErr := i.Alloc(hostabi.NewIterator("dict.iterator", keys))
+			if aErr != nil {
+				return nil, aErr
+			}
+			return []vmtypes.Boxed{vmtypes.BoxRef(addr)}, nil
+		}
 	}
 	return nil, interp.ErrTypeMismatch
 }
@@ -441,6 +560,17 @@ func dynIndex(i *interp.Interpreter, receiver, key vmtypes.Boxed) ([]vmtypes.Box
 		}
 		return []vmtypes.Boxed{elems[index]}, nil
 	}
+	// Try dict/set (map) indexing.
+	val, lErr := i.Load(receiver.Ref())
+	if lErr == nil {
+		if _, ok := val.Type().(*vmtypes.MapType); ok {
+			result, found := mapGet(val, key)
+			if !found {
+				return nil, interp.ErrIndexOutOfRange
+			}
+			return []vmtypes.Boxed{result}, nil
+		}
+	}
 	return nil, interp.ErrTypeMismatch
 }
 
@@ -470,6 +600,14 @@ func dynIn(i *interp.Interpreter, needle, haystack vmtypes.Boxed) (bool, error) 
 			}
 		}
 		return false, nil
+	}
+	// Try dict/set (map) key membership.
+	val, lErr := i.Load(haystack.Ref())
+	if lErr == nil {
+		if _, ok := val.Type().(*vmtypes.MapType); ok {
+			_, found := mapGet(val, needle)
+			return found, nil
+		}
 	}
 	return false, interp.ErrTypeMismatch
 }
@@ -578,5 +716,91 @@ func cmpFloats(left, right float64, op token.Type) bool {
 		return left >= right
 	default:
 		return false
+	}
+}
+
+// mapLen returns the number of entries in a map value.
+func mapLen(val vmtypes.Value) int {
+	switch m := val.(type) {
+	case *vmtypes.TypedMap[bool]:
+		return m.Len()
+	case *vmtypes.TypedMap[int32]:
+		return m.Len()
+	case *vmtypes.TypedMap[int64]:
+		return m.Len()
+	case *vmtypes.TypedMap[float32]:
+		return m.Len()
+	case *vmtypes.TypedMap[float64]:
+		return m.Len()
+	case *vmtypes.Map:
+		return m.Len()
+	default:
+		return 0
+	}
+}
+
+// mapKeys returns the keys of a map value as boxed values.
+func mapKeys(val vmtypes.Value) []vmtypes.Boxed {
+	var keys []vmtypes.Boxed
+	switch m := val.(type) {
+	case *vmtypes.TypedMap[bool]:
+		m.Range(func(k bool, _ vmtypes.Boxed) {
+			keys = append(keys, vmtypes.BoxI1(k))
+		})
+	case *vmtypes.TypedMap[int32]:
+		m.Range(func(k int32, _ vmtypes.Boxed) {
+			keys = append(keys, vmtypes.BoxI32(k))
+		})
+	case *vmtypes.TypedMap[int64]:
+		m.Range(func(k int64, _ vmtypes.Boxed) {
+			keys = append(keys, vmtypes.BoxI64(k))
+		})
+	case *vmtypes.TypedMap[float32]:
+		m.Range(func(k float32, _ vmtypes.Boxed) {
+			keys = append(keys, vmtypes.BoxF32(k))
+		})
+	case *vmtypes.TypedMap[float64]:
+		m.Range(func(k float64, _ vmtypes.Boxed) {
+			keys = append(keys, vmtypes.BoxF64(k))
+		})
+	case *vmtypes.Map:
+		m.Range(func(_ vmtypes.MapKey, entry vmtypes.MapEntry) {
+			keys = append(keys, entry.Key)
+		})
+	}
+	return keys
+}
+
+// mapGet retrieves a value from a map by key, returning (value, found).
+func mapGet(val vmtypes.Value, key vmtypes.Boxed) (vmtypes.Boxed, bool) {
+	switch m := val.(type) {
+	case *vmtypes.TypedMap[bool]:
+		return m.Get(key.Bool())
+	case *vmtypes.TypedMap[int32]:
+		return m.Get(key.I32())
+	case *vmtypes.TypedMap[int64]:
+		return m.Get(key.I64())
+	case *vmtypes.TypedMap[float32]:
+		return m.Get(key.F32())
+	case *vmtypes.TypedMap[float64]:
+		return m.Get(key.F64())
+	case *vmtypes.Map:
+		mk := vmtypes.MapKey{Kind: key.Kind(), Bits: uint64(key.Ref())}
+		switch key.Kind() {
+		case vmtypes.KindI1:
+			mk.Bits = uint64(uint32(key.I32()))
+		case vmtypes.KindI64:
+			mk.Bits = uint64(key.I64())
+		case vmtypes.KindF32:
+			mk.Bits = uint64(math.Float32bits(key.F32()))
+		case vmtypes.KindF64:
+			mk.Bits = math.Float64bits(key.F64())
+		case vmtypes.KindRef:
+			mk.Bits = uint64(key.Ref())
+		}
+		entry, ok := m.Get(mk)
+		return entry.Value, ok
+	default:
+		return 0, false
 	}
 }

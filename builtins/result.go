@@ -226,34 +226,9 @@ func isContainer(t types.Type) bool {
 }
 
 func isDynamic(t types.Type) bool {
-	if _, ok := t.(*types.Union); ok {
-		return true
-	}
-	return types.IsAny(t)
+	return types.IsDynamic(t)
 }
 
 func iterableElem(t types.Type) types.Type {
-	switch x := t.(type) {
-	case *types.List:
-		return x.Elem
-	case *types.Dict:
-		return x.Key
-	case *types.Set:
-		return x.Elem
-	case *types.Iterator:
-		return x.Elem
-	case *types.Union:
-		return types.Any
-	default:
-		if types.Equal(t, types.Str) {
-			return types.Str
-		}
-		if types.Equal(t, types.Bytes) {
-			return types.Int
-		}
-		if types.IsAny(t) {
-			return types.Any
-		}
-		return types.Invalid
-	}
+	return types.IterableElem(t)
 }

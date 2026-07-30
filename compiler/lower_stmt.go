@@ -1086,12 +1086,9 @@ func (c *lowerer) narrowCast(x *ast.Name) {
 }
 
 // refDynamic reports whether a type is represented as minivm's dynamic ref —
-// a union or Any — whose members are recovered with REF_TEST / REF_CAST.
+// a union or Any -- whose members are recovered with REF_TEST / REF_CAST.
 func refDynamic(t types.Type) bool {
-	if _, ok := t.(*types.Union); ok {
-		return true
-	}
-	return types.IsAny(t)
+	return types.IsDynamic(t)
 }
 
 func (c *lowerer) typ(name string) types.Type {

@@ -329,9 +329,5 @@ func emitNext(e module.Emitter, args []ast.Expr) {
 }
 
 func isDynamicEmit(t types.Type) bool {
-	t = types.Erase(t)
-	if _, ok := t.(*types.Union); ok {
-		return true
-	}
-	return types.IsAny(t)
+	return types.IsDynamic(types.Erase(t))
 }

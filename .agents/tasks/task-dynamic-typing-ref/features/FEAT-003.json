@@ -1,0 +1,33 @@
+{
+  "id": "FEAT-003",
+  "type": "fix",
+  "description": "Fix all 7 issues identified in the 2025-07-13-review-v1.md: (1) cross-kind comparison bug, (2) dict/set missing from dynamic dispatch, (3) TypedArray truthiness gap, (4) isDynamic predicate duplication, (5) error-path test coverage, (6) iterableElem duplication, (7) unary operators not dynamicized.",
+  "status": "in_progress",
+  "steps": [
+    "Step 1 - Fix cross-kind comparison: add type-homogeneity guard in dynCmp before numeric catch-all",
+    "Step 2 - Add dict/set support to dynamic dispatch functions (dynLength, dynIterator, dynIndex, dynIn, dynTruth)",
+    "Step 3 - Fix dynTruth TypedArray handling using hostabi.ArrayElems",
+    "Step 4 - Consolidate isDynamic into types.IsDynamic exported function",
+    "Step 5 - Add error-path tests",
+    "Step 6 - Consolidate iterableElem into one canonical location",
+    "Step 7 - Dynamicize unary operators (-x, +x, not x) on Any/Union"
+  ],
+  "acceptance_criteria": [
+    "go vet ./... passes",
+    "go test ./... passes",
+    "Cross-kind comparison 'abc' == 0 returns False",
+    "Dynamic len/iter/index/in/truth work on dicts",
+    "Empty typed arrays are falsy",
+    "isDynamic has one canonical definition",
+    "Error-path tests cover division by zero, index out of range, type-incompatible operations",
+    "iterableElem has one canonical definition",
+    "Unary -/+/not on Any-typed values work correctly"
+  ],
+  "verification": [
+    "go vet ./...",
+    "go test ./...",
+    "go test -run TestCompileDynamic ./compiler"
+  ],
+  "blocked_reason": null,
+  "findings": null
+}
