@@ -579,6 +579,12 @@ func (c *checker) lambda(n *ast.LambdaExpr, hint types.Type) types.Type {
 	}
 	c.current = prev
 	c.lambdas[n] = info
+	// When the hint's return type is Any (open inference), use the body's
+	// inferred type so callers like map() obtain the concrete return type.
+	if types.IsAny(callable.Return) && bt != types.Invalid {
+		info.result = bt
+		return types.NewCallable(callable.Params, bt)
+	}
 	return callable
 }
 

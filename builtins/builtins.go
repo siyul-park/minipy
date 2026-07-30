@@ -59,6 +59,8 @@ func New() *module.NativeModule {
 		module.NewSymbol("getattr", getAttrCheck, emitGetAttr, nil),
 		module.NewSymbol("hasattr", hasAttrCheck, emitHasAttr, nil),
 		module.NewSymbol("isinstance", isInstanceCheck, emitIsInstance, nil),
+		module.NewSymbol("map", mapCheck, emitMap, nil),
+		module.NewSymbol("filter", filterCheck, emitFilter, nil),
 	)
 }
 

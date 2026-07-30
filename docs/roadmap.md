@@ -75,7 +75,8 @@ owned by `docs/spec/`; compatibility status is summarized in
 - `builtins`: `print`, `str`, `int`, `float`, `bool`, `abs`, `len`, `enumerate`,
   `zip`, `range`, `iter`, `next`, `ord`, `chr`, `sorted`, `reversed`, `min`,
   `max`, `sum`, `any`, `all`, `round`, `divmod`, `pow`, `hex`, `oct`, `bin`,
-  `repr`, `getattr`, `hasattr`, `isinstance`, and builtin exceptions.
+  `repr`, `getattr`, `hasattr`, `isinstance`, `map`, `filter`, and builtin
+  exceptions.
 - `operator`: syntax operator semantics and native `operator.*` functions share
   one implementation.
 

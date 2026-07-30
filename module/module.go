@@ -49,6 +49,9 @@ type RuntimeSymbol interface {
 type Checker interface {
 	// Check type-checks a sub-expression and returns its type.
 	Check(ast.Expr) types.Type
+	// CheckWithHint type-checks a sub-expression with a type hint (used to
+	// infer lambda parameter types from expected Callable context).
+	CheckWithHint(ast.Expr, types.Type) types.Type
 	// SetType records the resolved type of an expression.
 	SetType(ast.Expr, types.Type)
 	// ResolveType interprets an expression as a type annotation.

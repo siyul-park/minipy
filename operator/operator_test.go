@@ -18,9 +18,10 @@ import (
 // stubChecker satisfies module.Checker for the type-level rules, counting errors.
 type stubChecker struct{ errs int }
 
-func (c *stubChecker) Check(ast.Expr) types.Type       { return types.Invalid }
-func (c *stubChecker) SetType(ast.Expr, types.Type)    {}
-func (c *stubChecker) ResolveType(ast.Expr) types.Type { return types.Invalid }
+func (c *stubChecker) Check(ast.Expr) types.Type                { return types.Invalid }
+func (c *stubChecker) CheckWithHint(ast.Expr, types.Type) types.Type { return types.Invalid }
+func (c *stubChecker) SetType(ast.Expr, types.Type)              {}
+func (c *stubChecker) ResolveType(ast.Expr) types.Type           { return types.Invalid }
 func (c *stubChecker) Error(token.Pos, token.Code, string, ...any) {
 	c.errs++
 }

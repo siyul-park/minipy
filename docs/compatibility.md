@@ -196,6 +196,7 @@ full CPython compatibility.
 | `repr` | ✅ | Printable values to `str` with quotes for strings. |
 | `getattr`, `hasattr` | ◐ | Concrete class instances and literal declared field names only; no methods, dynamic strings, defaults, or runtime lookup. |
 | `isinstance` | ✅ | Type/class checks and narrowing support. |
+| `map`, `filter` | ✅ | Static list-based versions; `map(fn, list) -> list[R]`, `filter(pred, list) -> list[T]`. Inline lambdas supported via type inference. |
 | Builtin exceptions | ✅ | Seeded class hierarchy. |
 | `operator` module | ✅ | Native functions for syntax operator semantics. |
 | `typing` module | ◐ | Annotation-only native symbols; no runtime typing objects. |

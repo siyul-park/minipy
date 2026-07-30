@@ -91,6 +91,11 @@ var _ module.Checker = (*checker)(nil)
 // Check type-checks a sub-expression and returns its type.
 func (c *checker) Check(e ast.Expr) types.Type { return c.expr(e) }
 
+// CheckWithHint type-checks a sub-expression with a type hint.
+func (c *checker) CheckWithHint(e ast.Expr, hint types.Type) types.Type {
+	return c.exprWithHint(e, hint)
+}
+
 // SetType records the resolved type of an expression.
 func (c *checker) SetType(e ast.Expr, t types.Type) { c.types[e] = t }
 

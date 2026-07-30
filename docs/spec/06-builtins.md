@@ -93,6 +93,8 @@ Implemented builtin functions:
 | `oct(n)` | 1 | `int` | `str` |
 | `bin(n)` | 1 | `int` | `str` |
 | `repr(x)` | 1 | printable values | `str` |
+| `map(fn, xs)` | 2 | `Callable[[T], R]`, `list[T]` | `list[R]` |
+| `filter(fn, xs)` | 2 | `Callable[[T], bool]`, `list[T]` | `list[T]` |
 
 `print` and `str` render supported lists, tuples, dictionaries, and sets recursively using Python-style delimiters and quoted nested strings.
 
