@@ -95,6 +95,10 @@ owned by `docs/spec/`; compatibility status is summarized in
   `uniform`, `choice`, `shuffle`, `seed`). All functions backed by host
   functions using Go's `math/rand/v2`. Supports static types and dynamic/Any
   fallback.
+- `sys`: system constants (`maxsize`, `platform`, `version`, `byteorder`) and
+  functions (`getrecursionlimit`, `exit`). Constants are `ConstantSymbol` values
+  that emit inline; `exit` halts the VM with UNREACHABLE. Supports static types
+  and dynamic/Any fallback.
 
 ## Current Explicit Restrictions
 

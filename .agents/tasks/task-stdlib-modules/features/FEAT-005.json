@@ -2,7 +2,7 @@
   "id": "FEAT-005",
   "type": "feat",
   "description": "Implement the `sys` native module providing system constants and limited functions: maxsize (int constant), platform (str constant), version (str constant), byteorder (str constant), getrecursionlimit() -> int, exit(code) -> None. Constants use the ConstantSymbol interface.",
-  "status": "pending",
+  "status": "in_progress",
   "steps": [
     "Create directory sysmod/ (Go package name `sysmod` to avoid Go's `sys` package conflict) with sysmod.go containing const Name = \"sys\" and func New() *module.NativeModule.",
     "Implement constant symbols (maxsize, platform, version, byteorder) using module.NewConstant: maxsize with types.Int emitting I64_CONST math.MaxInt64; platform with types.Str emitting the string constant based on runtime.GOOS; version with types.Str emitting a minipy version string; byteorder with types.Str emitting 'little'.",

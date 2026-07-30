@@ -416,11 +416,13 @@ import typing
 import math
 import string
 import functools
+import sys
 from builtins import len
 from typing import Literal
 from math import pi, sqrt
 from string import ascii_lowercase
 from functools import reduce
+from sys import maxsize
 ```
 
 The imported module object is still compile-time-only; it may be used as an
@@ -574,6 +576,39 @@ is `Any`, the result is `Any`.
 
 When any argument has type `Any` or is dynamic, the result type is `Any` (except
 for `shuffle` and `seed` which always return `None`).
+
+## `sys`
+
+The `sys` module provides system constants and limited system functions. Constants
+are `ConstantSymbol` instances that emit inline; functions are callable symbols
+that emit bytecode directly without host functions.
+
+### Constants
+
+| Name | Value | Type |
+|---|---|---|
+| `maxsize` | 9223372036854775807 (max signed 64-bit integer) | `int` |
+| `platform` | OS identifier from `runtime.GOOS` (e.g. `"linux"`) | `str` |
+| `version` | `"0.1.0 (minipy)"` | `str` |
+| `byteorder` | `"little"` | `str` |
+
+Constants can be accessed as values (`x: int = sys.maxsize`) or via
+`from sys import maxsize`. They are not callable.
+
+### Functions
+
+| Function | Arity | Accepted argument types | Result |
+|---|---:|---|---|
+| `getrecursionlimit()` | 0 | (none) | `int` |
+| `exit(code)` | 1 | `int` | `None` |
+
+`getrecursionlimit()` returns the fixed recursion limit of 1000.
+
+`exit(code)` halts the VM unconditionally. The code argument is evaluated for
+side effects and then discarded; the VM executes an UNREACHABLE instruction.
+
+When any argument has type `Any` or is dynamic, the result type is `None` and
+runtime dispatch is used.
 
 ## Related Docs
 
