@@ -42,16 +42,24 @@ func init() {
 	rng = rand.New(rand.NewPCG(0, 0))
 }
 
-// New builds the random native module.
+// New builds the random native module. Host functions are pre-allocated once
+// here and passed into emit closures to avoid redundant allocations per emit.
 func New() *module.NativeModule {
+	randomHF := randomHost()
+	randintHF := randintHost()
+	randrangeOneHF := randrangeOneHost()
+	randrangeTwoHF := randrangeTwoHost()
+	uniformHF := uniformHost()
+	seedHF := seedHost()
+
 	return module.NewNative(Name,
-		module.NewSymbol("random", checkRandom, emitRandom, nil),
-		module.NewSymbol("randint", checkRandint, emitRandint, nil),
-		module.NewSymbol("randrange", checkRandrange, emitRandrange, nil),
-		module.NewSymbol("uniform", checkUniform, emitUniform, nil),
+		module.NewSymbol("random", checkRandom, emitRandomFn(randomHF), nil),
+		module.NewSymbol("randint", checkRandint, emitRandintFn(randintHF), nil),
+		module.NewSymbol("randrange", checkRandrange, emitRandrangeFn(randrangeOneHF, randrangeTwoHF), nil),
+		module.NewSymbol("uniform", checkUniform, emitUniformFn(uniformHF), nil),
 		module.NewSymbol("choice", checkChoice, emitChoice, nil),
 		module.NewSymbol("shuffle", checkShuffle, emitShuffle, nil),
-		module.NewSymbol("seed", checkSeed, emitSeed, nil),
+		module.NewSymbol("seed", checkSeed, emitSeedFn(seedHF), nil),
 	)
 }
 
@@ -205,74 +213,82 @@ func checkSeed(c module.Checker, args []ast.Expr, pos token.Pos) types.Type {
 
 // --- Emit functions (callers) ---
 
-// emitRandom emits random() call.
-func emitRandom(e module.Emitter, args []ast.Expr) {
-	e.CallHost(randomHost())
-}
-
-// emitRandint emits randint(a, b) call.
-// Handles dynamic types by dispatching to a host function that unboxes refs.
-func emitRandint(e module.Emitter, args []ast.Expr) {
-	t0 := e.Type(args[0])
-	t1 := e.Type(args[1])
-	if types.IsDynamic(t0) || types.IsDynamic(t1) {
-		e.Expr(args[0])
-		e.Expr(args[1])
-		e.CallHost(dynRandintHost(t0, t1))
-		return
+// emitRandomFn emits random() call using a pre-allocated host function.
+func emitRandomFn(host *interp.HostFunction) module.EmitFunc {
+	return func(e module.Emitter, args []ast.Expr) {
+		e.CallHost(host)
 	}
-	e.Expr(args[0])
-	e.Expr(args[1])
-	e.CallHost(randintHost())
 }
 
-// emitRandrange emits randrange(stop) or randrange(start, stop) call.
-// Handles dynamic types by dispatching to host functions that unbox refs.
-func emitRandrange(e module.Emitter, args []ast.Expr) {
-	if len(args) == 1 {
-		t0 := e.Type(args[0])
-		if types.IsDynamic(t0) {
-			e.Expr(args[0])
-			e.CallHost(dynRandrangeOneHost())
-			return
-		}
-		e.Expr(args[0])
-		e.CallHost(randrangeOneHost())
-	} else {
+// emitRandintFn emits randint(a, b) call using a pre-allocated host function.
+// Handles dynamic types by dispatching to a host function that unboxes refs.
+func emitRandintFn(host *interp.HostFunction) module.EmitFunc {
+	return func(e module.Emitter, args []ast.Expr) {
 		t0 := e.Type(args[0])
 		t1 := e.Type(args[1])
 		if types.IsDynamic(t0) || types.IsDynamic(t1) {
 			e.Expr(args[0])
 			e.Expr(args[1])
-			e.CallHost(dynRandrangeTwoHost(t0, t1))
+			e.CallHost(dynRandintHost(t0, t1))
 			return
 		}
 		e.Expr(args[0])
 		e.Expr(args[1])
-		e.CallHost(randrangeTwoHost())
+		e.CallHost(host)
 	}
 }
 
-// emitUniform emits uniform(a, b) call with int-to-float promotion.
-// Handles dynamic types by dispatching to a host function that unboxes refs.
-func emitUniform(e module.Emitter, args []ast.Expr) {
-	t0 := e.Type(args[0])
-	t1 := e.Type(args[1])
-	if types.IsDynamic(t0) || types.IsDynamic(t1) {
+// emitRandrangeFn emits randrange(stop) or randrange(start, stop) call using
+// pre-allocated host functions. Handles dynamic types with runtime dispatch.
+func emitRandrangeFn(oneHost, twoHost *interp.HostFunction) module.EmitFunc {
+	return func(e module.Emitter, args []ast.Expr) {
+		if len(args) == 1 {
+			t0 := e.Type(args[0])
+			if types.IsDynamic(t0) {
+				e.Expr(args[0])
+				e.CallHost(dynRandrangeOneHost())
+				return
+			}
+			e.Expr(args[0])
+			e.CallHost(oneHost)
+		} else {
+			t0 := e.Type(args[0])
+			t1 := e.Type(args[1])
+			if types.IsDynamic(t0) || types.IsDynamic(t1) {
+				e.Expr(args[0])
+				e.Expr(args[1])
+				e.CallHost(dynRandrangeTwoHost(t0, t1))
+				return
+			}
+			e.Expr(args[0])
+			e.Expr(args[1])
+			e.CallHost(twoHost)
+		}
+	}
+}
+
+// emitUniformFn emits uniform(a, b) call with int-to-float promotion using a
+// pre-allocated host function. Handles dynamic types with runtime dispatch.
+func emitUniformFn(host *interp.HostFunction) module.EmitFunc {
+	return func(e module.Emitter, args []ast.Expr) {
+		t0 := e.Type(args[0])
+		t1 := e.Type(args[1])
+		if types.IsDynamic(t0) || types.IsDynamic(t1) {
+			e.Expr(args[0])
+			e.Expr(args[1])
+			e.CallHost(dynUniformHost(t0, t1))
+			return
+		}
 		e.Expr(args[0])
+		if types.Equal(t0, types.Int) {
+			e.Emit(instr.I64_TO_F64_S)
+		}
 		e.Expr(args[1])
-		e.CallHost(dynUniformHost(t0, t1))
-		return
+		if types.Equal(t1, types.Int) {
+			e.Emit(instr.I64_TO_F64_S)
+		}
+		e.CallHost(host)
 	}
-	e.Expr(args[0])
-	if types.Equal(t0, types.Int) {
-		e.Emit(instr.I64_TO_F64_S)
-	}
-	e.Expr(args[1])
-	if types.Equal(t1, types.Int) {
-		e.Emit(instr.I64_TO_F64_S)
-	}
-	e.CallHost(uniformHost())
 }
 
 // emitChoice emits choice(xs) call.
@@ -289,17 +305,19 @@ func emitShuffle(e module.Emitter, args []ast.Expr) {
 	e.CallHostVoid(shuffleHost(t))
 }
 
-// emitSeed emits seed(n) call (void: returns None).
-// Handles dynamic types by dispatching to a host function that unboxes refs.
-func emitSeed(e module.Emitter, args []ast.Expr) {
-	t := e.Type(args[0])
-	if types.IsDynamic(t) {
+// emitSeedFn emits seed(n) call (void: returns None) using a pre-allocated
+// host function. Handles dynamic types with runtime dispatch.
+func emitSeedFn(host *interp.HostFunction) module.EmitFunc {
+	return func(e module.Emitter, args []ast.Expr) {
+		t := e.Type(args[0])
+		if types.IsDynamic(t) {
+			e.Expr(args[0])
+			e.CallHostVoid(dynSeedHost())
+			return
+		}
 		e.Expr(args[0])
-		e.CallHostVoid(dynSeedHost())
-		return
+		e.CallHostVoid(host)
 	}
-	e.Expr(args[0])
-	e.CallHostVoid(seedHost())
 }
 
 // --- Host functions (callees) ---
@@ -322,6 +340,9 @@ func randintHost() *interp.HostFunction {
 		func(_ *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
 			a := params[0].I64()
 			b := params[1].I64()
+			if b < a {
+				return nil, ErrEmptyRange
+			}
 			rngMu.Lock()
 			// IntN gives [0, n), so we need [a, b] inclusive
 			v := a + rng.Int64N(b-a+1)
@@ -472,16 +493,16 @@ func seedHost() *interp.HostFunction {
 // the value at runtime, and perform the random operation.
 
 func dynUniformHost(t0, t1 types.Type) *interp.HostFunction {
-	p0 := vmParamType(t0)
-	p1 := vmParamType(t1)
+	p0 := hostabi.VMParamType(t0)
+	p1 := hostabi.VMParamType(t1)
 	return interp.NewHostFunction(
 		&vmtypes.FunctionType{Params: []vmtypes.Type{p0, p1}, Returns: []vmtypes.Type{vmtypes.TypeF64}},
 		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
-			a, err := unboxFloat(i, params[0])
+			a, err := hostabi.UnboxFloat(i, params[0])
 			if err != nil {
 				return nil, err
 			}
-			b, err := unboxFloat(i, params[1])
+			b, err := hostabi.UnboxFloat(i, params[1])
 			if err != nil {
 				return nil, err
 			}
@@ -494,18 +515,21 @@ func dynUniformHost(t0, t1 types.Type) *interp.HostFunction {
 }
 
 func dynRandintHost(t0, t1 types.Type) *interp.HostFunction {
-	p0 := vmParamType(t0)
-	p1 := vmParamType(t1)
+	p0 := hostabi.VMParamType(t0)
+	p1 := hostabi.VMParamType(t1)
 	return interp.NewHostFunction(
 		&vmtypes.FunctionType{Params: []vmtypes.Type{p0, p1}, Returns: []vmtypes.Type{vmtypes.TypeI64}},
 		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
-			a, err := unboxInt(i, params[0])
+			a, err := hostabi.UnboxInt(i, params[0])
 			if err != nil {
 				return nil, err
 			}
-			b, err := unboxInt(i, params[1])
+			b, err := hostabi.UnboxInt(i, params[1])
 			if err != nil {
 				return nil, err
+			}
+			if b < a {
+				return nil, ErrEmptyRange
 			}
 			rngMu.Lock()
 			v := a + rng.Int64N(b-a+1)
@@ -519,7 +543,7 @@ func dynRandrangeOneHost() *interp.HostFunction {
 	return interp.NewHostFunction(
 		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeRef}, Returns: []vmtypes.Type{vmtypes.TypeI64}},
 		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
-			stop, err := unboxInt(i, params[0])
+			stop, err := hostabi.UnboxInt(i, params[0])
 			if err != nil {
 				return nil, err
 			}
@@ -535,16 +559,16 @@ func dynRandrangeOneHost() *interp.HostFunction {
 }
 
 func dynRandrangeTwoHost(t0, t1 types.Type) *interp.HostFunction {
-	p0 := vmParamType(t0)
-	p1 := vmParamType(t1)
+	p0 := hostabi.VMParamType(t0)
+	p1 := hostabi.VMParamType(t1)
 	return interp.NewHostFunction(
 		&vmtypes.FunctionType{Params: []vmtypes.Type{p0, p1}, Returns: []vmtypes.Type{vmtypes.TypeI64}},
 		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
-			start, err := unboxInt(i, params[0])
+			start, err := hostabi.UnboxInt(i, params[0])
 			if err != nil {
 				return nil, err
 			}
-			stop, err := unboxInt(i, params[1])
+			stop, err := hostabi.UnboxInt(i, params[1])
 			if err != nil {
 				return nil, err
 			}
@@ -563,7 +587,7 @@ func dynSeedHost() *interp.HostFunction {
 	return interp.NewHostFunction(
 		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeRef}, Returns: []vmtypes.Type{}},
 		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
-			n, err := unboxInt(i, params[0])
+			n, err := hostabi.UnboxInt(i, params[0])
 			if err != nil {
 				return nil, err
 			}
@@ -573,67 +597,6 @@ func dynSeedHost() *interp.HostFunction {
 			return nil, nil
 		},
 	)
-}
-
-// unboxFloat extracts a float64 from a boxed value, promoting int if necessary.
-func unboxFloat(i *interp.Interpreter, v vmtypes.Boxed) (float64, error) {
-	switch v.Kind() {
-	case vmtypes.KindF64:
-		return v.F64(), nil
-	case vmtypes.KindI64:
-		return float64(v.I64()), nil
-	case vmtypes.KindRef:
-		if v.Ref() == 0 {
-			return 0, interp.ErrTypeMismatch
-		}
-		val, err := i.Load(v.Ref())
-		if err != nil {
-			return 0, err
-		}
-		switch n := val.(type) {
-		case vmtypes.I64:
-			return float64(n), nil
-		case vmtypes.F64:
-			return float64(n), nil
-		default:
-			return 0, interp.ErrTypeMismatch
-		}
-	default:
-		return 0, interp.ErrTypeMismatch
-	}
-}
-
-// unboxInt extracts an int64 from a boxed value.
-func unboxInt(i *interp.Interpreter, v vmtypes.Boxed) (int64, error) {
-	switch v.Kind() {
-	case vmtypes.KindI64:
-		return v.I64(), nil
-	case vmtypes.KindRef:
-		if v.Ref() == 0 {
-			return 0, interp.ErrTypeMismatch
-		}
-		val, err := i.Load(v.Ref())
-		if err != nil {
-			return 0, err
-		}
-		switch n := val.(type) {
-		case vmtypes.I64:
-			return int64(n), nil
-		default:
-			return 0, interp.ErrTypeMismatch
-		}
-	default:
-		return 0, interp.ErrTypeMismatch
-	}
-}
-
-// vmParamType returns the VM-level type for a compile-time type, mapping
-// dynamic types to TypeRef.
-func vmParamType(t types.Type) vmtypes.Type {
-	if types.IsDynamic(t) {
-		return vmtypes.TypeRef
-	}
-	return t.VM()
 }
 
 // --- Helpers ---

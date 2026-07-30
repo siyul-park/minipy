@@ -15,6 +15,7 @@ import (
 	gomath "math"
 
 	"github.com/siyul-park/minipy/ast"
+	"github.com/siyul-park/minipy/hostabi"
 	"github.com/siyul-park/minipy/module"
 	"github.com/siyul-park/minipy/token"
 	"github.com/siyul-park/minipy/types"
@@ -353,7 +354,7 @@ func dynUnaryFloatHost(fn func(float64) float64) *interp.HostFunction {
 	return interp.NewHostFunction(
 		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeRef}, Returns: []vmtypes.Type{vmtypes.TypeF64}},
 		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
-			f, err := unboxFloat(i, params[0])
+			f, err := hostabi.UnboxFloat(i, params[0])
 			if err != nil {
 				return nil, err
 			}
@@ -366,16 +367,16 @@ func dynUnaryFloatHost(fn func(float64) float64) *interp.HostFunction {
 // operations. Each argument may be either a direct numeric type (when one arg
 // is static) or a TypeRef (when dynamic). The host unboxes as needed.
 func dynBinaryFloatHost(fn func(float64, float64) float64, t0, t1 types.Type) *interp.HostFunction {
-	p0 := vmParamType(t0)
-	p1 := vmParamType(t1)
+	p0 := hostabi.VMParamType(t0)
+	p1 := hostabi.VMParamType(t1)
 	return interp.NewHostFunction(
 		&vmtypes.FunctionType{Params: []vmtypes.Type{p0, p1}, Returns: []vmtypes.Type{vmtypes.TypeF64}},
 		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
-			f0, err := unboxFloat(i, params[0])
+			f0, err := hostabi.UnboxFloat(i, params[0])
 			if err != nil {
 				return nil, err
 			}
-			f1, err := unboxFloat(i, params[1])
+			f1, err := hostabi.UnboxFloat(i, params[1])
 			if err != nil {
 				return nil, err
 			}
@@ -389,7 +390,7 @@ func dynPredicateHost(fn func(float64) bool) *interp.HostFunction {
 	return interp.NewHostFunction(
 		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeRef}, Returns: []vmtypes.Type{vmtypes.TypeI1}},
 		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
-			f, err := unboxFloat(i, params[0])
+			f, err := hostabi.UnboxFloat(i, params[0])
 			if err != nil {
 				return nil, err
 			}
@@ -400,16 +401,16 @@ func dynPredicateHost(fn func(float64) bool) *interp.HostFunction {
 
 // dynGCDHost creates a dynamic dispatch host function for gcd.
 func dynGCDHost(t0, t1 types.Type) *interp.HostFunction {
-	p0 := vmParamType(t0)
-	p1 := vmParamType(t1)
+	p0 := hostabi.VMParamType(t0)
+	p1 := hostabi.VMParamType(t1)
 	return interp.NewHostFunction(
 		&vmtypes.FunctionType{Params: []vmtypes.Type{p0, p1}, Returns: []vmtypes.Type{vmtypes.TypeI64}},
 		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
-			a, err := unboxInt(i, params[0])
+			a, err := hostabi.UnboxInt(i, params[0])
 			if err != nil {
 				return nil, err
 			}
-			b, err := unboxInt(i, params[1])
+			b, err := hostabi.UnboxInt(i, params[1])
 			if err != nil {
 				return nil, err
 			}
@@ -432,7 +433,7 @@ func dynFactorialHost() *interp.HostFunction {
 	return interp.NewHostFunction(
 		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeRef}, Returns: []vmtypes.Type{vmtypes.TypeI64}},
 		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
-			n, err := unboxInt(i, params[0])
+			n, err := hostabi.UnboxInt(i, params[0])
 			if err != nil {
 				return nil, err
 			}
@@ -446,67 +447,6 @@ func dynFactorialHost() *interp.HostFunction {
 			return []vmtypes.Boxed{vmtypes.BoxI64(result)}, nil
 		},
 	)
-}
-
-// unboxFloat extracts a float64 from a boxed value, promoting int if necessary.
-func unboxFloat(i *interp.Interpreter, v vmtypes.Boxed) (float64, error) {
-	switch v.Kind() {
-	case vmtypes.KindF64:
-		return v.F64(), nil
-	case vmtypes.KindI64:
-		return float64(v.I64()), nil
-	case vmtypes.KindRef:
-		if v.Ref() == 0 {
-			return 0, interp.ErrTypeMismatch
-		}
-		val, err := i.Load(v.Ref())
-		if err != nil {
-			return 0, err
-		}
-		switch n := val.(type) {
-		case vmtypes.I64:
-			return float64(n), nil
-		case vmtypes.F64:
-			return float64(n), nil
-		default:
-			return 0, interp.ErrTypeMismatch
-		}
-	default:
-		return 0, interp.ErrTypeMismatch
-	}
-}
-
-// unboxInt extracts an int64 from a boxed value.
-func unboxInt(i *interp.Interpreter, v vmtypes.Boxed) (int64, error) {
-	switch v.Kind() {
-	case vmtypes.KindI64:
-		return v.I64(), nil
-	case vmtypes.KindRef:
-		if v.Ref() == 0 {
-			return 0, interp.ErrTypeMismatch
-		}
-		val, err := i.Load(v.Ref())
-		if err != nil {
-			return 0, err
-		}
-		switch n := val.(type) {
-		case vmtypes.I64:
-			return int64(n), nil
-		default:
-			return 0, interp.ErrTypeMismatch
-		}
-	default:
-		return 0, interp.ErrTypeMismatch
-	}
-}
-
-// vmParamType returns the VM-level type for a compile-time type, mapping
-// dynamic types to TypeRef.
-func vmParamType(t types.Type) vmtypes.Type {
-	if types.IsDynamic(t) {
-		return vmtypes.TypeRef
-	}
-	return t.VM()
 }
 
 // --- Helpers ---

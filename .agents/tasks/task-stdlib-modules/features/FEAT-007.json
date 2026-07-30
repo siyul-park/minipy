@@ -1,0 +1,28 @@
+{
+  "id": "FEAT-007",
+  "type": "fix",
+  "description": "Address v2 code review issues: fix randint panic on inverted range, extract duplicated unbox helpers to hostabi, and pre-allocate host functions in random package.",
+  "status": "in_progress",
+  "steps": [
+    "Fix issue #1: Add guard in randintHost() and dynRandintHost() to return ErrEmptyRange when b < a",
+    "Fix issue #1: Add integration test for randint(5, 3) to verify error propagation",
+    "Fix issue #2: Extract unboxFloat, unboxInt, vmParamType to hostabi/unbox.go",
+    "Fix issue #2: Update math/math.go and random/random.go to use hostabi shared helpers",
+    "Fix issue #3: Pre-allocate host functions in random.New() and pass to emit closures"
+  ],
+  "acceptance_criteria": [
+    "randint(5, 3) returns ErrEmptyRange instead of panicking",
+    "Integration test for randint(5,3) passes",
+    "unboxFloat, unboxInt, vmParamType exist only in hostabi/unbox.go",
+    "math/math.go and random/random.go import and use hostabi versions",
+    "random host functions are pre-allocated at New() time, not per emit call",
+    "go vet ./... passes",
+    "go test ./... passes"
+  ],
+  "verification": [
+    "go vet ./...",
+    "go test ./..."
+  ],
+  "blocked_reason": null,
+  "findings": null
+}
