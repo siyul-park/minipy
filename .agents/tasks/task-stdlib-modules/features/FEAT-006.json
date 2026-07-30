@@ -2,7 +2,7 @@
   "id": "FEAT-006",
   "type": "fix",
   "description": "Address code review issues: fix dynamic-type emit gap in math/random modules, remove intBinarySymbol factory, add documentation comments, and add runtime error integration tests.",
-  "status": "in_progress",
+  "status": "completed",
   "steps": [
     "Fix issue #1: Add dynamic dispatch emit paths for math/random functions when argument type is Any (TypeRef at VM level)",
     "Fix issue #2: Remove intBinarySymbol factory, inline two separate NewSymbol calls in New()",
@@ -24,5 +24,5 @@
     "go test ./..."
   ],
   "blocked_reason": null,
-  "findings": null
+  "findings": "1. Used dynamic dispatch host functions (dynUnaryFloatHost, dynBinaryFloatHost, etc.) that accept TypeRef params and unbox at runtime, matching the pattern in operator/dynamic.go. 2. The user's steering message clarified that dynamic types should be supported (not rejected), so we kept the IsDynamic -> types.Any path in checkers and added proper emit handling. 3. Runtime error tests use the existing runError helper from dynamic_test.go. 4. The intBinarySymbol removal changed symbol ordering (factorial, gcd -> gcd, factorial) to match the test's expected order."
 }
