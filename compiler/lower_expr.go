@@ -1043,6 +1043,8 @@ func (c *lowerer) methodCall(x *ast.CallExpr, attr *ast.Attribute) {
 		c.callHost(c.strZFill())
 	case "encode":
 		c.callHost(c.strEncode())
+	case "format":
+		c.emitStrFormat(x)
 	case "add":
 		c.emit(instr.I32_CONST, 1)
 		c.emit(instr.MAP_SET)
@@ -1063,6 +1065,35 @@ func (c *lowerer) methodCall(x *ast.CallExpr, attr *ast.Attribute) {
 	default:
 		c.fail(fmt.Errorf("lower method %s on %T: unsupported", attr.Name, recvType))
 	}
+}
+
+// emitStrFormat lowers str.format(args...). At this point the stack holds
+// [receiver_str, arg0, arg1, ..., argN-1] (top). Each argument is converted to
+// a string and then all N+1 string values are passed to a host function that
+// performs the placeholder substitution.
+func (c *lowerer) emitStrFormat(x *ast.CallExpr) {
+	n := len(x.Args)
+	// Save each arg (top of stack last pushed) into a temporary slot,
+	// converting non-string args to string along the way.
+	argSlots := make([]int, n)
+	for i := n - 1; i >= 0; i-- {
+		if !types.Equal(c.types[x.Args[i]], types.Str) {
+			c.callHost(hostabi.StringFunction(c.types[x.Args[i]]))
+		}
+		slot := c.tmp()
+		argSlots[i] = slot
+		c.emit(instr.GLOBAL_SET, uint64(slot))
+	}
+	// Receiver (format string) is now on top - already a string.
+	recvSlot := c.tmp()
+	c.emit(instr.GLOBAL_SET, uint64(recvSlot))
+
+	// Push in order: format_string, arg0_str, arg1_str, ...
+	c.emit(instr.GLOBAL_GET, uint64(recvSlot))
+	for _, slot := range argSlots {
+		c.emit(instr.GLOBAL_GET, uint64(slot))
+	}
+	c.callHost(c.strFormatMethod(n))
 }
 
 // emitBool pushes a bool literal as an i1 value. There is no i1 const opcode,

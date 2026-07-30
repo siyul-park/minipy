@@ -138,7 +138,7 @@ full CPython compatibility.
 | Slice assignment/deletion | ◐ | `list[T]` contiguous slices only; omitted step or literal `1`; replacement length must match. |
 | List literals | ✅ | Homogeneous; empty needs hint. |
 | List methods | ◐ | `append`, `pop`, `index`, `insert`, `extend`, `reverse`, `sort`, `copy`, `count`, `clear`, `remove`; statically typed homogeneous lists only. |
-| String methods | ◐ | `upper`, `lower`, `split`, `join`, `find`, `strip`, `lstrip`, `rstrip`, `startswith`, `endswith`, `replace`, `count`, `isdigit`, `isalpha`, `isalnum`, `isspace`, `capitalize`, `title`, `swapcase`, `center`, `ljust`, `rjust`, `zfill`, `encode`; statically typed. |
+| String methods | ◐ | `upper`, `lower`, `split`, `join`, `find`, `strip`, `lstrip`, `rstrip`, `startswith`, `endswith`, `replace`, `count`, `isdigit`, `isalpha`, `isalnum`, `isspace`, `capitalize`, `title`, `swapcase`, `center`, `ljust`, `rjust`, `zfill`, `encode`, `format`; statically typed. |
 | Dict methods | ◐ | `get`, `keys`, `values`, `items`, `pop`, `update`, `setdefault`, `clear`, `copy`; statically typed homogeneous dicts only. |
 | Set methods | ◐ | `add`, `remove`, `discard`, `pop`, `clear`, `union`, `intersection`, `difference`, `issubset`, `issuperset`, `copy`; statically typed homogeneous sets only. |
 | Dict literals | ✅ | Homogeneous; empty needs hint; scalar hashable keys. |

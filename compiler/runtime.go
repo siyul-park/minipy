@@ -1321,6 +1321,96 @@ func (c *lowerer) strEncode() *interp.HostFunction {
 	)
 }
 
+// strFormatMethod returns a host function that applies Python str.format()
+// semantics. It takes the format string as the first parameter and argCount
+// string parameters (already converted to str by the lowerer). It handles
+// both auto-numbered {} and explicitly-numbered {0}, {1} placeholders.
+func (c *lowerer) strFormatMethod(argCount int) *interp.HostFunction {
+	params := make([]vmtypes.Type, 1+argCount)
+	params[0] = vmtypes.TypeString
+	for j := 1; j <= argCount; j++ {
+		params[j] = vmtypes.TypeString
+	}
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: params, Returns: []vmtypes.Type{vmtypes.TypeString}},
+		func(i *interp.Interpreter, ps []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			format, err := hostabi.LoadStr(i, ps[0])
+			if err != nil {
+				return nil, err
+			}
+			args := make([]string, len(ps)-1)
+			for j := 1; j < len(ps); j++ {
+				args[j-1], err = hostabi.LoadStr(i, ps[j])
+				if err != nil {
+					return nil, err
+				}
+			}
+			result := applyStrFormat(format, args)
+			return hostabi.AllocString(i, result)
+		},
+	)
+}
+
+// applyStrFormat processes a Python format string, replacing {} with the next
+// positional argument and {N} with the N-th argument. Escaped {{ and }} are
+// converted to literal { and }.
+func applyStrFormat(format string, args []string) string {
+	var b strings.Builder
+	autoIdx := 0
+	i := 0
+	for i < len(format) {
+		ch := format[i]
+		if ch == '{' {
+			if i+1 < len(format) && format[i+1] == '{' {
+				b.WriteByte('{')
+				i += 2
+				continue
+			}
+			// Find closing }
+			end := strings.IndexByte(format[i+1:], '}')
+			if end < 0 {
+				b.WriteByte(ch)
+				i++
+				continue
+			}
+			field := format[i+1 : i+1+end]
+			if field == "" {
+				// Auto-numbering: {}
+				if autoIdx < len(args) {
+					b.WriteString(args[autoIdx])
+				}
+				autoIdx++
+			} else {
+				// Explicit index: {0}, {1}, ...
+				idx := 0
+				for _, c := range field {
+					if c >= '0' && c <= '9' {
+						idx = idx*10 + int(c-'0')
+					} else {
+						break
+					}
+				}
+				if idx < len(args) {
+					b.WriteString(args[idx])
+				}
+			}
+			i += 1 + end + 1
+		} else if ch == '}' {
+			if i+1 < len(format) && format[i+1] == '}' {
+				b.WriteByte('}')
+				i += 2
+				continue
+			}
+			b.WriteByte(ch)
+			i++
+		} else {
+			b.WriteByte(ch)
+			i++
+		}
+	}
+	return b.String()
+}
+
 func (c *lowerer) exc() *interp.HostFunction {
 	excType := c.classes["BaseException"].typ.VM().(*vmtypes.StructType)
 	classID := func(name string) int64 { return int64(c.classes[name].classID) }

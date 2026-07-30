@@ -1513,6 +1513,14 @@ func (c *checker) methodCallType(n *ast.CallExpr, attr *ast.Attribute) types.Typ
 				if len(args) == 0 {
 					return types.Bytes
 				}
+			case "format":
+				for _, arg := range args {
+					if arg != types.Invalid && !types.Printable(arg) {
+						c.errs.Add(n.Pos(), token.TypeMismatch, "str.format() argument must be printable")
+						return types.Invalid
+					}
+				}
+				return types.Str
 			}
 		}
 	}

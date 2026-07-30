@@ -257,6 +257,7 @@ Supported `str` methods:
 | `rjust(width, fill)` | 2 | `int`, `str` | `str` |
 | `zfill(width)` | 1 | `int` | `str` |
 | `encode()` | 0 | none | `bytes` |
+| `format(*args)` | 0+ | printable | `str` |
 
 `strip`/`lstrip`/`rstrip` without arguments strip whitespace; with a `chars`
 argument they strip any character present in that string. `startswith`/`endswith`
@@ -268,7 +269,8 @@ lowercases the rest. `title` uppercases the first letter of each word. `swapcase
 swaps upper/lower case. `center`/`ljust`/`rjust` pad to the given width with a
 fill character (default space). `zfill` pads with leading zeros, preserving a
 leading sign character. `encode` returns the UTF-8 byte representation as
-`bytes`.
+`bytes`. `format` substitutes positional arguments into `{}` or `{N}` placeholders
+in the format string; `{{` and `}}` produce literal braces.
 
 ## Dict Methods
 
