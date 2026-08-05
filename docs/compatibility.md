@@ -141,8 +141,8 @@ full CPython compatibility.
 | String methods | ◐ | `upper`, `lower`, `split`, `join`, `find`, `strip`, `lstrip`, `rstrip`, `startswith`, `endswith`, `replace`, `count`, `isdigit`, `isalpha`, `isalnum`, `isspace`, `capitalize`, `title`, `swapcase`, `center`, `ljust`, `rjust`, `zfill`, `encode`, `format`; statically typed. |
 | Dict methods | ◐ | `get`, `keys`, `values`, `items`, `pop` (with optional default), `update`, `setdefault`, `clear`, `copy`; statically typed homogeneous dicts only. |
 | Set methods | ◐ | `add`, `remove`, `discard`, `pop`, `clear`, `union`, `intersection`, `difference`, `issubset`, `issuperset`, `copy`; statically typed homogeneous sets only. |
-| Dict literals | ✅ | Homogeneous; empty needs hint; scalar hashable keys. |
-| Set literals | ✅ | Homogeneous; empty needs hint; scalar hashable elements. |
+| Dict literals | ✅ | Homogeneous; empty needs hint; scalar hashable keys. Iteration order (`for`, `.keys()`, `.values()`, `.items()`) is unspecified and may differ between runs — unlike CPython's guaranteed insertion order since 3.7. `print`/`str` renders entries sorted by their rendered string for deterministic output, which does not track insertion order and need not match iteration order; see `docs/spec/02-types.md#iteration-order`. |
+| Set literals | ✅ | Homogeneous; empty needs hint; scalar hashable elements. Iteration order is unspecified and may differ between runs, the same as dict; `print`/`str` renders entries sorted by their rendered string for deterministic output. See `docs/spec/02-types.md#iteration-order`. |
 | Tuple literals | ✅ | Fixed arity, heterogeneous. |
 | Starred list/set elements | ◐ | Statically typed sources only. |
 | Dict unpacking in displays | ◐ | Dict sources only; dynamic call unpack still unsupported. |

@@ -103,6 +103,15 @@ compatibility matrix in `docs/compatibility.md`:
 - Keep cases small and deterministic: arithmetic, string methods, control
   flow, functions, classes, f-strings, and comprehensions over integers are
   all safe ground.
+- Corpus cases MUST NOT depend on `dict` or `set` iteration order: `for k in
+  d`, `d.keys()`, `d.values()`, `d.items()`, set iteration, and
+  comprehensions over a `dict`/`set` are not order-stable across runs (see
+  `docs/spec/02-types.md#iteration-order`). Make such a case deterministic by
+  sorting first, e.g. `for k in sorted(d.keys()):` instead of `for k in d:`,
+  and printing that sorted result. A case that prints a raw `dict` or `set`
+  value with more than one entry is invalid, except in
+  `conformance/testdata/conformance/divergent/`, where such a case may
+  exist specifically to document the ordering divergence itself.
 
 Every case file opens with a provenance comment naming the CPython test
 module its semantics were derived from, for example:

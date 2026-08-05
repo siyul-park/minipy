@@ -132,6 +132,13 @@ These are implemented with deliberate limits, not undocumented bugs.
   (arbitrary PEP 614 expressions) are not supported.
 - `except*` is parsed but ExceptionGroup semantics are not implemented.
 - Async forms parse for diagnostics but are rejected.
+- `dict` and `set` do not preserve insertion order (unlike CPython's
+  guaranteed dict order since 3.7); iteration order is unspecified and may
+  vary between runs. This follows from mapping `dict`/`set` onto minivm's map
+  types, which are backed by Go maps with randomized iteration and no
+  insertion-order tracking (`minivm/types/map.go`). A fix requires adding
+  insertion-order tracking to minivm's map types — upstream work, outside
+  this repository. See `docs/spec/02-types.md#iteration-order`.
 
 ## Remaining Work
 

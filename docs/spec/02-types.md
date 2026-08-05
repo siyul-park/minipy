@@ -245,6 +245,27 @@ containers/tuples, printable closed unions, and `Any`. `bytes` and
 `EllipsisType` are not printable. User class instances are not generally
 printable unless converted through an implemented path.
 
+## Iteration Order
+
+`dict` and `set` are **unordered** in minipy. Iteration order for `for k in d`,
+`d.keys()`, `d.values()`, `d.items()`, set iteration, and comprehensions over a
+`dict`/`set` is unspecified: it may differ between separate runs of the same
+program, and is not guaranteed to be stable even across repeated iterations
+within one run. This is a deliberate consequence of mapping `dict[K, V]` and
+`set[T]` onto minivm's map types (`docs/spec/05-codegen.md`), which are backed
+by Go maps with randomized iteration order and carry no insertion-order
+tracking. Python has guaranteed dict insertion order since 3.7; minipy does
+**not** provide that guarantee for `dict` or `set`.
+
+`print`, `str`, and f-string rendering of a `dict` or `set` value are
+nonetheless deterministic: rendered entries are sorted by their rendered
+string before being joined, purely so that printed output is reproducible.
+This sort is a display-time determinism workaround, not an ordering
+guarantee — it operates on the rendered strings, not on keys/elements or
+insertion order, so `print(d)` output order need not match `d.keys()`/`for k
+in d` order, and does not reflect CPython's insertion-order rendering. See
+`docs/compatibility.md` for the user-facing statement of this divergence.
+
 ## Related Docs
 
 - `docs/README.md` — documentation map and ownership guide.
