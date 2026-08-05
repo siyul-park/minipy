@@ -251,6 +251,46 @@ clamp bounds into `[0, len(list)]`, replace only when `len(rhs)` equals the
 normalized slice length, and store a resized array back into the receiver's heap
 slot. Length mismatch maps to `ValueError`.
 
+### Host ABI reference ownership
+
+Host functions in `builtins`, `operator`, and `compiler/runtime.go` exchange
+boxed values with the interpreter across the `hostabi` boundary, which owns
+the retain/release contract for that exchange (`docs/coding-patterns.md`
+SS7.5). Two rules cover every native symbol that reads or rebuilds a
+container:
+
+- `hostabi.ArrayElems` (and the equivalent `mapEntries`/`mapGet` helpers in
+  `compiler/runtime.go`) return **borrowed** boxes: the slice is a fresh Go
+  copy, but each element still belongs to the source array/dict/set. Reading
+  it takes no reference.
+- `hostabi.AllocArray` (and any host code that embeds a borrowed value into a
+  freshly built struct, e.g. `zip`/`enumerate`/`dict.items()` tuples, or a
+  freshly built map, e.g. `dict.copy()`/set union/`dictMerge`) **takes
+  ownership** of what it is given: it retains each ref-kind element so the
+  new container holds an independent reference, decoupled from wherever the
+  element came from.
+
+This matters because a call argument that is an unrooted temporary — an
+inline list/dict/set literal passed straight into a call, never bound to a
+name — is released by the minivm calling convention immediately after the
+host call returns, unless the returned value is that exact argument box. A
+host function that hands back or embeds a *borrowed* element (not a fresh
+allocation, not the argument itself) without retaining it first leaves a
+dangling reference once the source temporary's release cascades to its
+children — this is the shape behind `min`/`max` (return a borrowed list
+element), `zip`/`enumerate`/`dict.items()` (embed borrowed elements in a new
+struct), and `dict.copy()`/`dict.get()`/set union-style methods (surface or
+re-store borrowed entries) all needing an explicit `hostabi.RetainBoxes`
+call before the borrowed value outlives its source. Conversely, a value the
+host function already owns outright (something it just allocated, e.g. a
+freshly built struct handed to `AllocArray`) must be released with
+`hostabi.ReleaseBoxes` once its new container has taken its own retain, or
+the extra reference leaks. Named-variable arguments do not surface this
+defect: the variable's own binding keeps the source (and therefore the
+borrowed element) alive regardless of what the temporary call argument's
+reference count does, which is why regression coverage for these paths uses
+an inline literal expression, not a variable, as the call argument.
+
 ### Comprehensions and Generators
 
 List/dict/set comprehensions lower as eager construction loops. Generator
