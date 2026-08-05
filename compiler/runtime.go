@@ -2,6 +2,7 @@ package compiler
 
 import (
 	"errors"
+	"fmt"
 	"math"
 	"sort"
 	"strconv"
@@ -39,6 +40,45 @@ func (c *lowerer) dictGet(receiver, result types.Type) *interp.HostFunction {
 			return []vmtypes.Boxed{params[2]}, nil
 		},
 	)
+}
+
+// dictItem implements a dict-keyed read (`d[k]`, `d[k] += ...`, and the
+// presence probe `del d[k]` uses ahead of MAP_DELETE): unlike MAP_GET's
+// silent zero-value fallback for a missing key, it raises KeyError with the
+// key's repr, matching CPython (docs/spec/05-codegen.md, dict subscript
+// reads).
+func (c *lowerer) dictItem(receiver, result types.Type) *interp.HostFunction {
+	dict := receiver.(*types.Dict)
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: []vmtypes.Type{receiver.VM(), dict.Key.VM()}, Returns: []vmtypes.Type{result.VM()}},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			val, ok, err := mapGet(i, params[0], params[1])
+			if err != nil {
+				return nil, err
+			}
+			if !ok {
+				return nil, dictKeyError(i, params[1])
+			}
+			// val is borrowed from the dict; see dictGet above for why the
+			// caller-owned result needs its own retain.
+			if err := hostabi.RetainBoxes(i, []vmtypes.Boxed{val}); err != nil {
+				return nil, err
+			}
+			return []vmtypes.Boxed{val}, nil
+		},
+	)
+}
+
+// dictKeyError builds the Go error for a missing dict key: errDictKeyError
+// (runtime.go's c.exc() maps it to the KeyError class) wrapped with the
+// key's repr, so the message quotes string keys the way CPython's
+// `KeyError: 'zz'` does and leaves other key types unquoted.
+func dictKeyError(i *interp.Interpreter, key vmtypes.Boxed) error {
+	text, err := pyRepr(i, key, false)
+	if err != nil {
+		return err
+	}
+	return fmt.Errorf("%w: %s", errDictKeyError, text)
 }
 
 func (c *lowerer) dictValues(receiver, result types.Type) *interp.HostFunction {

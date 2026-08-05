@@ -419,12 +419,15 @@ func (c *lowerer) subscript(x *ast.Subscript) {
 	}
 	c.expr(x.X)
 	c.expr(x.Index)
-	switch c.types[x.X].(type) {
+	switch recv := c.types[x.X].(type) {
 	case *types.List:
 		c.emit(instr.I64_TO_I32)
 		c.emit(instr.ARRAY_GET)
 	case *types.Dict:
-		c.emit(instr.MAP_GET)
+		// Unlike MAP_GET's silent zero-value fallback for a missing key,
+		// dictItem raises KeyError with the key's repr, matching CPython's
+		// `d[missing]` behavior (docs/spec/05-codegen.md, dict subscript reads).
+		c.callHost(c.dictItem(recv, c.types[x]))
 	case *types.Tuple:
 		c.emit(instr.I64_TO_I32)
 		c.emit(instr.STRUCT_GET)

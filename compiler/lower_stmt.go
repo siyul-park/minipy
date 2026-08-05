@@ -145,10 +145,23 @@ func (c *lowerer) deleteStmt(n *ast.Delete) {
 				c.callHost(c.listSliceDelete(c.types[t.X]))
 				continue
 			}
-			switch c.types[t.X].(type) {
+			switch recv := c.types[t.X].(type) {
 			case *types.Dict:
+				dictSlot := c.tmp()
+				keySlot := c.tmp()
 				c.expr(t.X)
+				c.emit(instr.GLOBAL_SET, uint64(dictSlot))
 				c.expr(t.Index)
+				c.emit(instr.GLOBAL_SET, uint64(keySlot))
+				// MAP_DELETE reports no success/failure, so probe presence
+				// through dictItem first: it raises KeyError for a missing key
+				// (docs/spec/05-codegen.md), matching CPython's `del d[missing]`.
+				c.emit(instr.GLOBAL_GET, uint64(dictSlot))
+				c.emit(instr.GLOBAL_GET, uint64(keySlot))
+				c.callHost(c.dictItem(recv, recv.Value))
+				c.emit(instr.DROP) // discard the looked-up value; del doesn't need it
+				c.emit(instr.GLOBAL_GET, uint64(dictSlot))
+				c.emit(instr.GLOBAL_GET, uint64(keySlot))
 				c.emit(instr.MAP_DELETE)
 			case *types.List:
 				c.expr(t.X)
@@ -820,11 +833,15 @@ func (c *lowerer) augAssignSubscript(n *ast.AugAssign, sub *ast.Subscript) {
 		c.emit(instr.SWAP)
 		c.emit(instr.ARRAY_SET)
 	case *types.Dict:
+		dict := c.types[sub.X].(*types.Dict)
 		c.emitBinary(n.Op, c.types[sub], c.types[n.Value],
 			func() {
 				c.emit(instr.GLOBAL_GET, uint64(recvSlot))
 				c.emit(instr.GLOBAL_GET, uint64(indexSlot))
-				c.emit(instr.MAP_GET)
+				// `d[k] += ...` reads d[k] first (CPython: d[k] = d[k] + ...);
+				// dictItem raises KeyError for a missing key instead of MAP_GET's
+				// silent zero-value fallback (docs/spec/05-codegen.md).
+				c.callHost(c.dictItem(dict, c.types[sub]))
 			},
 			func() { c.expr(n.Value) })
 		// Stack: [result]. Store back: need [receiver, key, result].

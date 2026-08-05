@@ -133,7 +133,7 @@ full CPython compatibility.
 | Dynamic `**kwargs` call unpack | ⏳ | Parsed, rejected. |
 | Keyword/star native calls | ⏳ | Rejected for native/builtin method/dynamic callable paths. |
 | Attribute access | ◐ | Classes/modules supported; arbitrary object attributes out of scope. Literal-only `getattr`/`hasattr` support declared class fields. |
-| Indexing | ✅ | Lists, dicts, strings, constant tuple indexes. |
+| Indexing | ✅ | Lists, dicts, strings, constant tuple indexes. A missing dict key raises `KeyError` (message quotes string keys, e.g. `'zz'`, matching CPython) for `d[k]` reads, `d[k] += ...`, and `del d[k]`; `d[k] = v` still inserts a missing key rather than raising. |
 | Slicing | ✅ | Lists and strings. |
 | Slice assignment/deletion | ◐ | `list[T]` contiguous slices only; omitted step or literal `1`; replacement length must match. |
 | List literals | ✅ | Homogeneous; empty needs hint. |

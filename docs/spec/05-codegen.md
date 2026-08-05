@@ -251,6 +251,32 @@ clamp bounds into `[0, len(list)]`, replace only when `len(rhs)` equals the
 normalized slice length, and store a resized array back into the receiver's heap
 slot. Length mismatch maps to `ValueError`.
 
+### Dict subscript reads and KeyError
+
+Every dict-keyed read — `d[k]`, the read half of `d[k] += ...`, and the
+presence probe `del d[k]` runs before deleting — lowers through the host
+function `dictItem` (`compiler/runtime.go`) instead of the bare `MAP_GET`
+opcode. `MAP_GET` returns the value type's zero value for a missing key with
+no way to detect the miss, which is exactly wrong for a language where
+`d[missing]` must raise; `dictItem` calls the same `mapGet` lookup and, on a
+miss, returns a Go error built from the sentinel `errDictKeyError` wrapped
+with the key's `repr` (`errors.New` message plus `%w`, `fmt.Errorf`). The
+compiler's error-to-exception host conversion (`c.exc()`, `runtime.go`)
+already classified `errDictKeyError` as `KeyError` for `dict.pop`; the
+subscript read path reuses that same classification, so `except KeyError`
+catches a missing-key read exactly like it catches a missing-key `pop`. The
+wrapped repr means the message quotes string keys and leaves other key types
+unquoted, matching CPython's `KeyError: 'zz'` shape.
+
+Because chained and nested subscripts, comprehension bodies, and f-string
+replacement fields all lower a dict read through the same `ast.Subscript`
+case, they inherit the check for free — there is no separate lowering path to
+duplicate it into. `del d[k]` is the one exception: `MAP_DELETE` reports no
+success/failure of its own, so `deleteStmt` calls `dictItem` first (raising
+on a miss) and only then issues `MAP_DELETE`, discarding the value `dictItem`
+returned. Assignment (`d[k] = v`) is unaffected — it still lowers through
+`MAP_SET`, which creates a missing key rather than raising, matching Python.
+
 ### Host ABI reference ownership
 
 Host functions in `builtins`, `operator`, and `compiler/runtime.go` exchange
