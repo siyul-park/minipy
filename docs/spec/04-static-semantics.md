@@ -90,6 +90,24 @@ use-before-definition diagnostic as any other uninitialized binding.
 returns or raises and has no `else`, the negative narrowing of the guard applies
 to the rest of the enclosing block.
 
+### Return and Reachability Analysis
+
+The "must return on every path" check for a non-generator function with a
+non-`None` result, and the dead-code/narrowing decisions that follow an `if`
+with no `else`, share one fall-through analysis over `if`, `match`, `try`,
+`with`, `return`, and `raise`:
+
+- A branch ending in an unconditional `raise` satisfies the return-on-every-path
+  requirement; a function may rely on always raising instead of an explicit
+  `return`.
+- A `match` statement counts as returning on every path when it has an
+  unconditional catch-all arm — a wildcard (`case _:`) or bare capture
+  (`case name:`) pattern with no `if` guard — and every case body itself
+  returns on every path. A guard makes an otherwise catch-all pattern
+  refutable, so `case _ if cond:` does not make the match exhaustive, and a
+  `match` with no catch-all arm is never counted as returning regardless of
+  its case bodies.
+
 ## Type Resolution
 
 Annotations resolve through primitive names, aliases, classes, imported module
