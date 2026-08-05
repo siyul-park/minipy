@@ -63,19 +63,19 @@ full CPython compatibility.
 | Expression statements | ✅ | Value is dropped. |
 | Annotated assignment | ✅ | Declares a typed binding; value optional. |
 | Unannotated assignment | ✅ | First assignment infers binding type. |
-| Tuple/starred unpack assignment | ✅ | Supports list/tuple sources and homogeneous starred rest. |
+| Tuple/starred unpack assignment | ✅ | Supports list/tuple sources and homogeneous starred rest. Also accepts a bare (unparenthesized) target and/or value list, e.g. `a, b = 1, 2` and the swap idiom `a, b = b, a`. |
 | Chained assignment | ✅ | Assigns the same value to all targets; evaluates expression once. |
 | Augmented assignment | ✅ | Names, attributes, and subscripts (list elements, dict values) supported. |
 | `del` | ✅ | Names, list/dict items, and attributes; captured names rejected. |
 | `assert` | ✅ | Throws structured assertion error on false test. |
 | `if`/`elif`/`else` | ✅ | Includes narrowing and static truth pruning. |
 | `while`/`else` | ✅ | `break` skips `else`. |
-| `for`/`else` | ✅ | Iterates supported iterables; tuple target allowed. |
+| `for`/`else` | ✅ | Iterates supported iterables; tuple target allowed. The iterable position also accepts a bare expression list (`for x in 1, 2, 3:`), but a tuple value — parenthesized or bare — is rejected with a `TypeError`; tuples have no iterator representation. |
 | `break`/`continue` | ✅ | Checked for loop scope. |
-| `return` | ✅ | Checked for function scope and result type. |
-| `yield` statement | ✅ | Supported in generator functions returning `Iterator[T]`. |
+| `return` | ✅ | Checked for function scope and result type; accepts a bare expression list, e.g. `return 1, 2`. |
+| `yield` statement | ✅ | Supported in generator functions returning `Iterator[T]`; accepts a bare expression list. |
 | `yield` expression | ✅ | Expression-position `x = yield v`; result type `None` in v1. |
-| `yield from` | ✅ | Delegates to an iterable; result type `None` in v1. |
+| `yield from` | ✅ | Delegates to an iterable; result type `None` in v1; takes a single expression, not a bare tuple list. |
 | `global` | ✅ | Function-scope declaration. |
 | `nonlocal` | ✅ | Requires enclosing binding. |
 | `type` alias statement | ✅ | Compile-time alias. |
