@@ -4,6 +4,16 @@
 // operator) and the compiler share these helpers, so they live here rather than
 // in any single consumer to keep native-module packages independent of the
 // compiler.
+//
+// hostabi owns retain/release ownership for boxed refs crossing the host
+// boundary. The rule is: ArrayElems returns borrowed boxes — the returned
+// slice is a fresh copy, but the elements still belong to whatever heap value
+// they came from, and reading them takes no reference. AllocArray takes
+// ownership of the boxes passed to it: it retains each ref-kind element on
+// the caller's behalf, so the new array holds an independent, owned
+// reference. A caller that hands AllocArray a box it already owns outright
+// (for example a value it just allocated itself) must release its own
+// reference afterward to avoid leaking the extra retain.
 package hostabi
 
 import (
@@ -98,20 +108,57 @@ func LoadI64(i *interp.Interpreter, v vmtypes.Boxed) (int64, error) {
 }
 
 // AllocArray allocates a heap array whose type and elements are copied from
-// the caller. The minivm heap owns the copies and retains any nested refs through
-// the array's Traceable contract.
+// the caller and returns it as a single boxed ref. AllocArray takes ownership
+// of elems: each ref-kind element is retained so the new array holds its own
+// independent reference, decoupled from wherever the element came from (see
+// the package doc comment). A caller passing a box it already owns outright
+// must release that reference once AllocArray returns successfully.
 func AllocArray(i *interp.Interpreter, typ *vmtypes.ArrayType, elems []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
 	ownedType := vmtypes.NewArrayType(typ.Elem)
 	ownedElems := append([]vmtypes.Boxed(nil), elems...)
+	if err := RetainBoxes(i, ownedElems); err != nil {
+		return nil, err
+	}
 	addr, err := i.Alloc(vmtypes.NewArray(ownedType, ownedElems...))
 	if err != nil {
+		_ = ReleaseBoxes(i, ownedElems)
 		return nil, err
 	}
 	return []vmtypes.Boxed{vmtypes.BoxRef(addr)}, nil
 }
 
+// RetainBoxes adds one reference to each ref-kind element of values, leaving
+// scalars untouched. Pair with ReleaseBoxes to balance ownership when a boxed
+// value already resident elsewhere is stored into a second owner.
+func RetainBoxes(i *interp.Interpreter, values []vmtypes.Boxed) error {
+	for _, value := range values {
+		if value.Kind() == vmtypes.KindRef && value.Ref() != 0 {
+			if _, err := i.Retain(value.Ref()); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// ReleaseBoxes drops one reference from each ref-kind element of values,
+// leaving scalars untouched. See RetainBoxes.
+func ReleaseBoxes(i *interp.Interpreter, values []vmtypes.Boxed) error {
+	for _, value := range values {
+		if value.Kind() == vmtypes.KindRef && value.Ref() != 0 {
+			if err := i.Release(value.Ref()); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 // ArrayElems reads the element type and boxed elements of a heap array,
-// normalizing typed arrays to their boxed representation.
+// normalizing typed arrays to their boxed representation. The returned
+// elements are borrowed: they still belong to the source array (see the
+// package doc comment), so a caller that stores one into a second owner must
+// retain it first.
 func ArrayElems(i *interp.Interpreter, ref vmtypes.Boxed) (*vmtypes.ArrayType, []vmtypes.Boxed, error) {
 	if ref.Kind() != vmtypes.KindRef || ref.Ref() == 0 {
 		return nil, nil, interp.ErrTypeMismatch
