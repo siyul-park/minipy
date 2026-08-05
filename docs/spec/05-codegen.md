@@ -188,6 +188,33 @@ host functions registered by the operator module. The `...` literal and the
 unshadowed `Ellipsis` fallback both load the same constant-pool value. Ellipsis
 identity and equality use `REF_EQ`; `is not` and `!=` append `I32_EQZ`.
 
+`CmpOpcode` (`operator/emit.go`) is the direct-opcode comparison table for
+`int`, `float`, `bool`, and `str`; an unsupported input there is a
+checker/lowerer invariant violation and panics rather than silently
+producing wrong bytecode. `EmitCompareStack` keeps every other checker-admitted
+comparison out of `CmpOpcode` entirely, so this panic path stays
+unreachable-by-construction:
+
+- `==`/`!=` on `list[T]`, `tuple[...]`, `dict[K, V]`, and `set[T]` call one
+  `operator`-owned host function (`containerEqual`, `operator/host.go`) that
+  recurses through the container's statically known element type — reusing
+  `hostabi.ArrayElems` for lists, minivm struct field reads for tuples, and
+  the existing map key/value walk for dicts/sets — down to
+  `hostabi.BoxedEqual` at scalar/string leaves. `!=` reuses the same call and
+  appends `I32_EQZ`, the same inversion `bytesEqual` already relies on rather
+  than registering a second host function per comparison.
+- `<`/`<=`/`>`/`>=` on `list[T]`/`tuple[...]` (only when every element
+  position's type is one `CmpOpcode` already supports — enforced by the
+  checker's `orderable` rule) call one host function (`containerCompare`)
+  that returns an `i64` in `{-1, 0, 1}` from an element-wise lexicographic
+  walk, then reduce to the requested operator by comparing that result
+  against `0` with the matching `I64_*_S` opcode.
+- `==`/`!=` between two operands of the same class, `Iterator[T]`, or
+  `Callable[[...], R]` type lower to `REF_EQ` (and `I32_EQZ` for `!=`) — the
+  same identity check `is`/`is not` already use for these types
+  (`identityComparable`, `operator/types.go`) — because minipy has no
+  structural/field equality for them.
+
 ### Containers, Strings, and Bytes
 
 List, dict, set, and tuple displays lower to minivm array/map/struct creation

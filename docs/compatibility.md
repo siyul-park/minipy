@@ -123,7 +123,7 @@ full CPython compatibility.
 | Arithmetic operations | ✅ | Supported numeric/operator combinations only. |
 | Power `**` | ✅ | Through operator semantics. |
 | Matrix multiply `@` | ⏳ | Tokenized/parsed, no semantics. |
-| Comparisons | ✅ | Chained comparisons included. |
+| Comparisons | ✅ | Chained comparisons included. `==`/`!=` on `list`/`tuple`/`dict`/`set` is structural (CPython semantics); `<`/`<=`/`>`/`>=` on `list`/`tuple` is lexicographic and only when every element position is `int`/`float`/`bool`/`str`. Ordering on `dict`, `set`, class, `Iterator`, or `Callable` is a diagnostic (`NotComparable`), not a runtime error. `==`/`!=` between two same-typed class/`Iterator`/`Callable` operands is identity-only (no structural/field equality, e.g. `@dataclass` field comparison). |
 | `is` / `is not` | ✅ | Especially used for `None` narrowing. |
 | `in` / `not in` | ✅ | Supported containers/strings/iterators. |
 | Conditional expressions | ✅ | Arms must have same type. |

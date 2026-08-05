@@ -216,6 +216,23 @@ an `int` needle in `0..255`. `bytes` has no other operator support: no
 ordering, no hashing (so it cannot be a dict key or set element), and no
 `str`/`repr`/truthiness conversion.
 
+`list[T]`, `tuple[...]`, `dict[K, V]`, and `set[T]` support `==`/`!=` between
+two operands of the same container type: structural comparison following
+CPython semantics (same length/size, elements or values compared
+element-wise/recursively; dict also requires matching keys, set requires
+matching members). `<`, `<=`, `>`, `>=` on `list[T]`/`tuple[...]` compare
+element-wise lexicographically (the first differing pair decides; an unbroken
+common prefix falls back to comparing lengths) but only when every element
+position's type is itself one of `int`, `float`, `bool`, or `str` — nested
+containers as elements, and `dict`/`set`/class/`Iterator`/`Callable`
+operands at any position, reject ordering with `NotComparable` using the same
+message shape as other unsupported comparisons (`'<' not supported between
+instances of ... and ...`). A class, `Iterator[T]`, or `Callable[[...], R]`
+operand supports `==`/`!=` against another operand of the same type as an
+identity comparison (no structural/field equality — matching CPython's
+default `__eq__` for objects without an override); ordering on these types is
+always `NotComparable`.
+
 `@` is syntactically accepted but unsupported because no matrix type/semantics are
 implemented.
 

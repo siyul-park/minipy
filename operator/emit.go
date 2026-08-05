@@ -174,6 +174,25 @@ func EmitCompareStack(e module.Emitter, op token.Type, left, right types.Type) {
 		}
 		return
 	}
+	el := types.Erase(left)
+	if isContainerType(el) {
+		emitContainerCompare(e, op, el)
+		return
+	}
+	if isIdentityOnlyType(el) {
+		// Comparable admits ==/!= between two operands of the same class,
+		// Iterator, or Callable type but neither special-methods nor operator
+		// overloading exist for them, so CPython's identity-based default
+		// __eq__ is the only meaningful behavior. This mirrors the REF_EQ
+		// lowering `is`/`is not` already use for these reference types
+		// (identityComparable in types.go); ordering is rejected at check
+		// time (Comparable/orderable), so LT/LE/GT/GE never reach here.
+		e.Emit(instr.REF_EQ)
+		if op == token.NE {
+			e.Emit(instr.I32_EQZ)
+		}
+		return
+	}
 	// Mixed int/float comparisons: promote the int operand to f64.
 	if isMixedNumeric(left, right) {
 		if types.Equal(types.Erase(left), types.Int) {
@@ -189,6 +208,66 @@ func EmitCompareStack(e module.Emitter, op token.Type, left, right types.Type) {
 		return
 	}
 	e.Emit(CmpOpcode(op, types.Erase(left)))
+}
+
+// emitContainerCompare lowers a checked list/tuple/dict/set comparison whose
+// operands are already on the stack. == and != use structural equality
+// (containerEqual, host.go); ordering uses lexicographic comparison
+// (containerCompare, host.go) reduced to `<`/`<=`/`>`/`>=` against zero. The
+// checker's orderable rule (types.go) admits ordering only for list/tuple
+// with scalar element positions, so LT/LE/GT/GE never reach here for dict,
+// set, or a container whose elements CmpOpcode cannot compare.
+func emitContainerCompare(e module.Emitter, op token.Type, t types.Type) {
+	if op == token.EQ || op == token.NE {
+		e.CallHost(containerEqual(t))
+		if op == token.NE {
+			e.Emit(instr.I32_EQZ)
+		}
+		return
+	}
+	e.CallHost(containerCompare(t))
+	e.Emit(instr.I64_CONST, 0)
+	e.Emit(orderOpcode(op))
+}
+
+// orderOpcode maps an ordering operator to the opcode that compares
+// containerCompare's -1/0/1 result against zero.
+func orderOpcode(op token.Type) instr.Opcode {
+	switch op {
+	case token.LT:
+		return instr.I64_LT_S
+	case token.LE:
+		return instr.I64_LE_S
+	case token.GT:
+		return instr.I64_GT_S
+	case token.GE:
+		return instr.I64_GE_S
+	default:
+		panic(fmt.Sprintf("operator: no ordering opcode for %s", op))
+	}
+}
+
+// isContainerType reports whether t is a list, dict, set, or tuple — the
+// structurally comparable container types (docs/spec/04-static-semantics.md).
+func isContainerType(t types.Type) bool {
+	switch t.(type) {
+	case *types.List, *types.Dict, *types.Set, *types.Tuple:
+		return true
+	default:
+		return false
+	}
+}
+
+// isIdentityOnlyType reports whether t is a reference type with no
+// structural equality, so == falls back to the same identity check as `is`
+// (identityComparable in types.go).
+func isIdentityOnlyType(t types.Type) bool {
+	switch t.(type) {
+	case *types.Class, *types.Iterator, *types.Callable:
+		return true
+	default:
+		return false
+	}
 }
 
 // EmitUnary lowers a checked unary operation on arg.

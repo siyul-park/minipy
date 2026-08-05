@@ -19,26 +19,34 @@ import (
 // stubChecker satisfies module.Checker for the type-level rules, counting errors.
 type stubChecker struct{ errs int }
 
-func (c *stubChecker) Check(ast.Expr) types.Type                { return types.Invalid }
+func (c *stubChecker) Check(ast.Expr) types.Type                     { return types.Invalid }
 func (c *stubChecker) CheckWithHint(ast.Expr, types.Type) types.Type { return types.Invalid }
-func (c *stubChecker) SetType(ast.Expr, types.Type)              {}
-func (c *stubChecker) ResolveType(ast.Expr) types.Type           { return types.Invalid }
+func (c *stubChecker) SetType(ast.Expr, types.Type)                  {}
+func (c *stubChecker) ResolveType(ast.Expr) types.Type               { return types.Invalid }
 func (c *stubChecker) Error(token.Pos, token.Code, string, ...any) {
 	c.errs++
 }
 
-type stubEmitter struct{ ops []instr.Opcode }
+// stubEmitter records both emitted opcodes and host-function calls, so a test
+// can assert a comparison lowered through a real host function (containers,
+// dynamic dispatch) and not only through inline opcodes.
+type stubEmitter struct {
+	ops       []instr.Opcode
+	hostCalls []*interp.HostFunction
+}
 
 type stubRuntime struct{}
 
 func (stubRuntime) Out() io.Writer { return io.Discard }
 
-func (e *stubEmitter) Emit(op instr.Opcode, _ ...uint64)      { e.ops = append(e.ops, op) }
-func (*stubEmitter) Expr(ast.Expr)                            {}
-func (*stubEmitter) Type(ast.Expr) types.Type                 { return types.Invalid }
-func (*stubEmitter) TypeIndex(types.Type) uint64              { return 0 }
-func (*stubEmitter) ConstGet(vmtypes.Value)                   {}
-func (*stubEmitter) CallHost(*interp.HostFunction)            {}
+func (e *stubEmitter) Emit(op instr.Opcode, _ ...uint64) { e.ops = append(e.ops, op) }
+func (*stubEmitter) Expr(ast.Expr)                       {}
+func (*stubEmitter) Type(ast.Expr) types.Type            { return types.Invalid }
+func (*stubEmitter) TypeIndex(types.Type) uint64         { return 0 }
+func (*stubEmitter) ConstGet(vmtypes.Value)              {}
+func (e *stubEmitter) CallHost(fn *interp.HostFunction) {
+	e.hostCalls = append(e.hostCalls, fn)
+}
 func (*stubEmitter) CallHostVoid(*interp.HostFunction)        {}
 func (*stubEmitter) Host(string, string) *interp.HostFunction { return nil }
 func (*stubEmitter) Runtime() module.Runtime                  { return stubRuntime{} }
@@ -118,6 +126,25 @@ func TestComparable(t *testing.T) {
 		{"ellipsis ordering rejected", token.LT, types.Ellipsis, types.Ellipsis, true},
 		{"ellipsis cross-type equality rejected", token.EQ, types.Ellipsis, types.Int, true},
 		{"ellipsis cross-type identity rejected", token.IS, types.Ellipsis, types.Int, true},
+		{"list eq", token.EQ, types.NewList(types.Int), types.NewList(types.Int), false},
+		{"list ne", token.NE, types.NewList(types.Int), types.NewList(types.Int), false},
+		{"list lt orderable elem", token.LT, types.NewList(types.Int), types.NewList(types.Int), false},
+		{"list lt str elem", token.LT, types.NewList(types.Str), types.NewList(types.Str), false},
+		{"list lt non-orderable elem rejected", token.LT, types.NewList(types.NewList(types.Int)), types.NewList(types.NewList(types.Int)), true},
+		{"list eq non-orderable elem still allowed", token.EQ, types.NewList(types.NewList(types.Int)), types.NewList(types.NewList(types.Int)), false},
+		{"tuple eq", token.EQ, types.NewTuple(types.Int, types.Str), types.NewTuple(types.Int, types.Str), false},
+		{"tuple lt orderable fields", token.LT, types.NewTuple(types.Int, types.Str), types.NewTuple(types.Int, types.Str), false},
+		{"tuple lt non-orderable field rejected", token.LT, types.NewTuple(types.Int, types.NewList(types.Int)), types.NewTuple(types.Int, types.NewList(types.Int)), true},
+		{"dict eq", token.EQ, types.NewDict(types.Str, types.Int), types.NewDict(types.Str, types.Int), false},
+		{"dict lt rejected", token.LT, types.NewDict(types.Str, types.Int), types.NewDict(types.Str, types.Int), true},
+		{"set eq", token.EQ, types.NewSet(types.Int), types.NewSet(types.Int), false},
+		{"set le rejected", token.LE, types.NewSet(types.Int), types.NewSet(types.Int), true},
+		{"class eq", token.EQ, types.NewClass("P", nil), types.NewClass("P", nil), false},
+		{"class lt rejected", token.LT, types.NewClass("P", nil), types.NewClass("P", nil), true},
+		{"iterator eq", token.EQ, types.NewIterator(types.Int), types.NewIterator(types.Int), false},
+		{"iterator gt rejected", token.GT, types.NewIterator(types.Int), types.NewIterator(types.Int), true},
+		{"callable eq", token.EQ, types.NewCallable([]types.Type{types.Int}, types.Bool), types.NewCallable([]types.Type{types.Int}, types.Bool), false},
+		{"callable ge rejected", token.GE, types.NewCallable([]types.Type{types.Int}, types.Bool), types.NewCallable([]types.Type{types.Int}, types.Bool), true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -158,6 +185,139 @@ func TestEmitCompareStack(t *testing.T) {
 		operator.EmitCompareStack(e, token.GT, types.Float, types.Int)
 		require.Equal(t, []instr.Opcode{instr.I64_TO_F64_S, instr.F64_GT}, e.ops)
 	})
+
+	t.Run("list eq calls a host function", func(t *testing.T) {
+		e := &stubEmitter{}
+		operator.EmitCompareStack(e, token.EQ, types.NewList(types.Int), types.NewList(types.Int))
+		require.Len(t, e.hostCalls, 1)
+		require.NotNil(t, e.hostCalls[0])
+		require.Empty(t, e.ops)
+	})
+
+	t.Run("list ne inverts the equality host call", func(t *testing.T) {
+		e := &stubEmitter{}
+		operator.EmitCompareStack(e, token.NE, types.NewList(types.Int), types.NewList(types.Int))
+		require.Len(t, e.hostCalls, 1)
+		require.Equal(t, []instr.Opcode{instr.I32_EQZ}, e.ops)
+	})
+
+	t.Run("list lt reduces a host comparison against zero", func(t *testing.T) {
+		e := &stubEmitter{}
+		operator.EmitCompareStack(e, token.LT, types.NewList(types.Int), types.NewList(types.Int))
+		require.Len(t, e.hostCalls, 1)
+		require.Equal(t, []instr.Opcode{instr.I64_CONST, instr.I64_LT_S}, e.ops)
+	})
+
+	t.Run("tuple ge reduces a host comparison against zero", func(t *testing.T) {
+		e := &stubEmitter{}
+		tuple := types.NewTuple(types.Int, types.Str)
+		operator.EmitCompareStack(e, token.GE, tuple, tuple)
+		require.Len(t, e.hostCalls, 1)
+		require.Equal(t, []instr.Opcode{instr.I64_CONST, instr.I64_GE_S}, e.ops)
+	})
+
+	t.Run("dict eq calls a host function", func(t *testing.T) {
+		e := &stubEmitter{}
+		dict := types.NewDict(types.Str, types.Int)
+		operator.EmitCompareStack(e, token.EQ, dict, dict)
+		require.Len(t, e.hostCalls, 1)
+		require.Empty(t, e.ops)
+	})
+
+	t.Run("set ne calls a host function and inverts", func(t *testing.T) {
+		e := &stubEmitter{}
+		set := types.NewSet(types.Int)
+		operator.EmitCompareStack(e, token.NE, set, set)
+		require.Len(t, e.hostCalls, 1)
+		require.Equal(t, []instr.Opcode{instr.I32_EQZ}, e.ops)
+	})
+
+	t.Run("class eq lowers to identity", func(t *testing.T) {
+		e := &stubEmitter{}
+		class := types.NewClass("P", nil)
+		operator.EmitCompareStack(e, token.EQ, class, class)
+		require.Equal(t, []instr.Opcode{instr.REF_EQ}, e.ops)
+		require.Empty(t, e.hostCalls)
+	})
+
+	t.Run("iterator ne lowers to inverted identity", func(t *testing.T) {
+		e := &stubEmitter{}
+		it := types.NewIterator(types.Int)
+		operator.EmitCompareStack(e, token.NE, it, it)
+		require.Equal(t, []instr.Opcode{instr.REF_EQ, instr.I32_EQZ}, e.ops)
+	})
+
+	t.Run("callable eq lowers to identity", func(t *testing.T) {
+		e := &stubEmitter{}
+		callable := types.NewCallable([]types.Type{types.Int}, types.Bool)
+		operator.EmitCompareStack(e, token.EQ, callable, callable)
+		require.Equal(t, []instr.Opcode{instr.REF_EQ}, e.ops)
+	})
+}
+
+// TestComparableEmitSymmetry is the checker/lowerer symmetry guard for
+// comparisons (AGENTS.md Completion Gate item 6, docs/coding-patterns.md
+// SS7.4): for every type in the catalogue below and every comparison
+// operator, whenever Comparable admits the pair, EmitCompareStack MUST lower
+// it without panicking. CmpOpcode documents unsupported input as an
+// unreachable checker/lowerer invariant violation; this test is what keeps
+// that claim true as new types are added to either side. Before this fix,
+// every container type here was admitted by Comparable but panicked in
+// CmpOpcode — this test reproduces the whole admitted matrix, not only the
+// cases in the bug report.
+func TestComparableEmitSymmetry(t *testing.T) {
+	catalogue := []types.Type{
+		types.Int,
+		types.Float,
+		types.Bool,
+		types.Str,
+		types.Bytes,
+		types.Ellipsis,
+		types.NewList(types.Int),
+		types.NewList(types.Str),
+		types.NewList(types.Bool),
+		types.NewList(types.Float),
+		types.NewList(types.NewList(types.Int)),
+		types.NewDict(types.Str, types.Int),
+		types.NewDict(types.Int, types.NewList(types.Str)),
+		types.NewSet(types.Int),
+		types.NewTuple(types.Int, types.Str),
+		types.NewTuple(types.Int, types.NewList(types.Int)),
+		types.NewClass("P", []types.Field{{Name: "x", Type: types.Int}}),
+		types.NewIterator(types.Int),
+		types.NewCallable([]types.Type{types.Int}, types.Bool),
+		types.Any,
+		types.NewUnion(types.Int, types.Str),
+		types.NewUnion(types.NewList(types.Int), types.Str),
+	}
+	ops := []token.Type{
+		token.EQ, token.NE, token.LT, token.LE, token.GT, token.GE,
+		token.IS, token.ISNOT,
+	}
+
+	admitted := 0
+	for _, left := range catalogue {
+		for _, right := range catalogue {
+			for _, op := range ops {
+				name := left.String() + " " + op.String() + " " + right.String()
+				t.Run(name, func(t *testing.T) {
+					c := &stubChecker{}
+					operator.Comparable(c, op, left, right, token.Pos{})
+					if c.errs > 0 {
+						return
+					}
+					admitted++
+					e := &stubEmitter{}
+					require.NotPanics(t, func() {
+						operator.EmitCompareStack(e, op, left, right)
+					}, "checker admitted %s but the emitter panicked", name)
+					require.True(t, len(e.ops) > 0 || len(e.hostCalls) > 0,
+						"checker admitted %s but the emitter produced no instructions", name)
+				})
+			}
+		}
+	}
+	require.Positive(t, admitted, "catalogue produced no checker-admitted comparisons to guard")
 }
 
 func TestContainsType(t *testing.T) {

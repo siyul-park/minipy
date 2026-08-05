@@ -202,7 +202,58 @@ func Comparable(c module.Checker, op token.Type, left, right types.Type, pos tok
 			return
 		}
 		c.Error(pos, token.NotComparable, "'%s' not supported between instances of %s and %s", op, left, right)
+		return
 	}
+	// Same-typed operands reach here for every op, including ==/!= on
+	// containers (structural equality) and identity-only reference types
+	// (Class, Iterator, Callable). Ordering additionally requires an
+	// orderable type: dict, set, class, iterator, callable, and containers
+	// whose element type CmpOpcode does not natively compare are rejected.
+	if isOrderingOp(op) && !orderable(left) {
+		c.Error(pos, token.NotComparable, "'%s' not supported between instances of %s and %s", op, left, right)
+	}
+}
+
+func isOrderingOp(op token.Type) bool {
+	switch op {
+	case token.LT, token.LE, token.GT, token.GE:
+		return true
+	default:
+		return false
+	}
+}
+
+// orderable reports whether t supports <, <=, >, and >= lowering. Scalars
+// int/float/bool/str are ordered directly; list/tuple are ordered
+// lexicographically when every element position is itself one of those
+// scalar types. Nested containers, dict, set, class, iterator, and callable
+// are not orderable.
+func orderable(t types.Type) bool {
+	t = types.Erase(t)
+	if orderableElem(t) {
+		return true
+	}
+	switch typ := t.(type) {
+	case *types.List:
+		return orderableElem(typ.Elem)
+	case *types.Tuple:
+		for _, elem := range typ.Elems {
+			if !orderableElem(elem) {
+				return false
+			}
+		}
+		return true
+	default:
+		return false
+	}
+}
+
+// orderableElem reports whether t is a scalar type CmpOpcode compares
+// directly: int, float, bool, or str.
+func orderableElem(t types.Type) bool {
+	t = types.Erase(t)
+	return types.Equal(t, types.Int) || types.Equal(t, types.Float) ||
+		types.Equal(t, types.Bool) || types.Equal(t, types.Str)
 }
 
 func identityComparable(t types.Type) bool {
