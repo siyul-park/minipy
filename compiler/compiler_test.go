@@ -922,6 +922,18 @@ print(str(sm.get("y")))
 		require.Equal(t, "1\n2\n4\n3\n1\n6\n", run(t, src))
 	})
 
+	// {**a, **b} and {*a, *b} lower through dictMerge, which copies borrowed
+	// entries from each operand into a fresh map. Both operands here are
+	// unrooted temporaries with reference-typed elements, so a missing
+	// retain would free the copied entries out from under the merged
+	// result once the temporaries are released.
+	t.Run("dict and set unpack over temporary str-valued literals", func(t *testing.T) {
+		src := `print({**{"x": "1"}, **{"y": "2"}})
+print(str(len({*{"a", "b"}, *{"b", "c"}})))
+`
+		require.Equal(t, "{'x': '1', 'y': '2'}\n3\n", run(t, src))
+	})
+
 	t.Run("print and str render containers", func(t *testing.T) {
 		src := `print([1, 2])
 print([True, False])
@@ -947,6 +959,18 @@ x: int = 7
 print(f"x={x:03d}")
 `
 		require.Equal(t, "A,B\na,b\nb\nx-y\n1\n04\n15\n4\n6\nx=007\n", run(t, src))
+	})
+
+	// zip/enumerate build a struct per element from the (borrowed) input
+	// array elements. Each temporary list literal here is unrooted: the
+	// struct fields must be retained before being embedded, or they are
+	// freed out from under the result once the argument arrays are
+	// released.
+	t.Run("zip and enumerate over temporary str list literals", func(t *testing.T) {
+		src := `print(zip(["a", "b"], ["c", "d"]))
+print(enumerate(["x", "y"]))
+`
+		require.Equal(t, "[('a', 'c'), ('b', 'd')]\n[(0, 'x'), (1, 'y')]\n", run(t, src))
 	})
 
 	t.Run("pass is a no-op", func(t *testing.T) {
@@ -1506,6 +1530,20 @@ match d:
         print(str(len(rest)))
 `
 		require.Equal(t, "1\n2\n", run(t, src))
+	})
+
+	// The matched dict[str, str] here is an unrooted temporary with
+	// reference-typed values: dictRest copies borrowed entries into the
+	// **rest dict without retaining them, so releasing the temporary source
+	// used to free the captured entries out from under **rest.
+	t.Run("match mapping with rest capture over temporary str-valued dict", func(t *testing.T) {
+		src := `match {"a": "1", "b": "2", "c": "3"}:
+    case {"a": x, **rest}:
+        print(x)
+        print(str(len(rest)))
+        print(rest["b"])
+`
+		require.Equal(t, "1\n2\n2\n", run(t, src))
 	})
 
 	t.Run("match tuple with star capture", func(t *testing.T) {

@@ -148,13 +148,31 @@ func enumerateHost(result types.Type) *interp.HostFunction {
 			}
 			out := make([]vmtypes.Boxed, 0, len(elems))
 			for idx, elem := range elems {
-				addr, err := i.Alloc(vmtypes.NewStruct(tupleType, vmtypes.BoxI64(int64(idx)), elem))
+				// elem is borrowed from the input array; the struct becomes
+				// its second owner, so it needs its own retain (see
+				// hostabi's package doc comment).
+				fields := []vmtypes.Boxed{vmtypes.BoxI64(int64(idx)), elem}
+				if err := hostabi.RetainBoxes(i, fields); err != nil {
+					return nil, err
+				}
+				addr, err := i.Alloc(vmtypes.NewStruct(tupleType, fields...))
 				if err != nil {
+					_ = hostabi.ReleaseBoxes(i, fields)
 					return nil, err
 				}
 				out = append(out, vmtypes.BoxRef(addr))
 			}
-			return hostabi.AllocArray(i, result.VM().(*vmtypes.ArrayType), out)
+			// out holds structs this call already owns outright (they were
+			// just allocated); AllocArray retains them again on the result
+			// array's behalf, so release our own stake once it succeeds.
+			res, err := hostabi.AllocArray(i, result.VM().(*vmtypes.ArrayType), out)
+			if err != nil {
+				return nil, err
+			}
+			if err := hostabi.ReleaseBoxes(i, out); err != nil {
+				return nil, err
+			}
+			return res, nil
 		},
 	)
 }
@@ -180,13 +198,31 @@ func zipHost(result types.Type) *interp.HostFunction {
 			}
 			out := make([]vmtypes.Boxed, 0, n)
 			for idx := 0; idx < n; idx++ {
-				addr, err := i.Alloc(vmtypes.NewStruct(tupleType, a[idx], b[idx]))
+				// a[idx]/b[idx] are borrowed from the input arrays; the
+				// struct becomes their second owner, so they need their own
+				// retain (see hostabi's package doc comment).
+				fields := []vmtypes.Boxed{a[idx], b[idx]}
+				if err := hostabi.RetainBoxes(i, fields); err != nil {
+					return nil, err
+				}
+				addr, err := i.Alloc(vmtypes.NewStruct(tupleType, fields...))
 				if err != nil {
+					_ = hostabi.ReleaseBoxes(i, fields)
 					return nil, err
 				}
 				out = append(out, vmtypes.BoxRef(addr))
 			}
-			return hostabi.AllocArray(i, result.VM().(*vmtypes.ArrayType), out)
+			// out holds structs this call already owns outright (they were
+			// just allocated); AllocArray retains them again on the result
+			// array's behalf, so release our own stake once it succeeds.
+			res, err := hostabi.AllocArray(i, result.VM().(*vmtypes.ArrayType), out)
+			if err != nil {
+				return nil, err
+			}
+			if err := hostabi.ReleaseBoxes(i, out); err != nil {
+				return nil, err
+			}
+			return res, nil
 		},
 	)
 }
@@ -353,6 +389,14 @@ func minListHost(arg types.Type) *interp.HostFunction {
 					return nil, err
 				}
 			}
+			// result is borrowed from the input array; the caller's array
+			// argument is released once this call returns (its box is not
+			// among the returned values), so the returned element needs its
+			// own retain to outlive that release (see hostabi's package doc
+			// comment).
+			if err := hostabi.RetainBoxes(i, []vmtypes.Boxed{result}); err != nil {
+				return nil, err
+			}
 			return []vmtypes.Boxed{result}, nil
 		},
 	)
@@ -378,6 +422,14 @@ func maxListHost(arg types.Type) *interp.HostFunction {
 				if err != nil {
 					return nil, err
 				}
+			}
+			// result is borrowed from the input array; the caller's array
+			// argument is released once this call returns (its box is not
+			// among the returned values), so the returned element needs its
+			// own retain to outlive that release (see hostabi's package doc
+			// comment).
+			if err := hostabi.RetainBoxes(i, []vmtypes.Boxed{result}); err != nil {
+				return nil, err
 			}
 			return []vmtypes.Boxed{result}, nil
 		},

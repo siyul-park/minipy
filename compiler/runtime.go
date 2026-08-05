@@ -27,6 +27,13 @@ func (c *lowerer) dictGet(receiver, result types.Type) *interp.HostFunction {
 				return nil, err
 			}
 			if ok {
+				// val is borrowed from the dict; the dict argument is
+				// released once this call returns (its box is not among the
+				// returned values), so val needs its own retain to outlive
+				// that release (see hostabi's package doc comment).
+				if err := hostabi.RetainBoxes(i, []vmtypes.Boxed{val}); err != nil {
+					return nil, err
+				}
 				return []vmtypes.Boxed{val}, nil
 			}
 			return []vmtypes.Boxed{params[2]}, nil
@@ -58,13 +65,32 @@ func (c *lowerer) dictItems(receiver, result types.Type) *interp.HostFunction {
 			}
 			items := make([]vmtypes.Boxed, 0, len(keys))
 			for idx := range keys {
-				addr, err := i.Alloc(vmtypes.NewStruct(tupleType, keys[idx], vals[idx]))
+				// keys[idx]/vals[idx] are borrowed from the dict; the struct
+				// becomes their second owner, so they need their own retain
+				// (see hostabi's package doc comment).
+				fields := []vmtypes.Boxed{keys[idx], vals[idx]}
+				if err := hostabi.RetainBoxes(i, fields); err != nil {
+					return nil, err
+				}
+				addr, err := i.Alloc(vmtypes.NewStruct(tupleType, fields...))
 				if err != nil {
+					_ = hostabi.ReleaseBoxes(i, fields)
 					return nil, err
 				}
 				items = append(items, vmtypes.BoxRef(addr))
 			}
-			return hostabi.AllocArray(i, result.VM().(*vmtypes.ArrayType), items)
+			// items holds structs this call already owns outright (they
+			// were just allocated); AllocArray retains them again on the
+			// result array's behalf, so release our own stake once it
+			// succeeds.
+			res, err := hostabi.AllocArray(i, result.VM().(*vmtypes.ArrayType), items)
+			if err != nil {
+				return nil, err
+			}
+			if err := hostabi.ReleaseBoxes(i, items); err != nil {
+				return nil, err
+			}
+			return res, nil
 		},
 	)
 }
@@ -118,10 +144,10 @@ func (c *lowerer) dictUpdate(receiver types.Type) *interp.HostFunction {
 				return nil, err
 			}
 			for idx, key := range keys {
-				if err := retainBoxes(i, []vmtypes.Boxed{key}); err != nil {
-					return nil, err
-				}
-				if err := retainBoxes(i, []vmtypes.Boxed{vals[idx]}); err != nil {
+				// key/vals[idx] are borrowed from the source dict; dst
+				// becomes their second owner, so they need their own retain
+				// (see hostabi's package doc comment).
+				if err := hostabi.RetainBoxes(i, []vmtypes.Boxed{key, vals[idx]}); err != nil {
 					return nil, err
 				}
 				if err := mapSet(dst, key, vals[idx]); err != nil {
@@ -143,16 +169,23 @@ func (c *lowerer) dictSetDefault(receiver, result types.Type) *interp.HostFuncti
 				return nil, err
 			}
 			if ok {
+				// val is borrowed from the dict; the dict argument is
+				// released once this call returns (its box is not among the
+				// returned values), so val needs its own retain to outlive
+				// that release (see hostabi's package doc comment).
+				if err := hostabi.RetainBoxes(i, []vmtypes.Boxed{val}); err != nil {
+					return nil, err
+				}
 				return []vmtypes.Boxed{val}, nil
 			}
 			dst, err := i.Load(params[0].Ref())
 			if err != nil {
 				return nil, err
 			}
-			if err := retainBoxes(i, []vmtypes.Boxed{params[1]}); err != nil {
+			if err := hostabi.RetainBoxes(i, []vmtypes.Boxed{params[1]}); err != nil {
 				return nil, err
 			}
-			if err := retainBoxes(i, []vmtypes.Boxed{params[2]}); err != nil {
+			if err := hostabi.RetainBoxes(i, []vmtypes.Boxed{params[2]}); err != nil {
 				return nil, err
 			}
 			if err := mapSet(dst, params[1], params[2]); err != nil {
@@ -210,6 +243,12 @@ func (c *lowerer) dictCopy(receiver types.Type) *interp.HostFunction {
 			}
 			out := vmtypes.NewMapForType(mt, len(keys))
 			for idx, key := range keys {
+				// key/vals[idx] are borrowed from the source dict; out
+				// becomes their second owner, so they need their own retain
+				// (see hostabi's package doc comment).
+				if err := hostabi.RetainBoxes(i, []vmtypes.Boxed{key, vals[idx]}); err != nil {
+					return nil, err
+				}
 				if err := mapSet(out, key, vals[idx]); err != nil {
 					return nil, err
 				}
@@ -260,6 +299,12 @@ func (c *lowerer) dictRest(receiver types.Type) *interp.HostFunction {
 					}
 				}
 				if !skip {
+					// k/vs[idx] are borrowed from the source dict; out
+					// becomes their second owner, so they need their own
+					// retain (see hostabi's package doc comment).
+					if err := hostabi.RetainBoxes(i, []vmtypes.Boxed{k, vs[idx]}); err != nil {
+						return nil, err
+					}
 					if err := mapSet(out, k, vs[idx]); err != nil {
 						return nil, err
 					}
@@ -370,10 +415,10 @@ func (c *lowerer) listSliceAssign(receiver types.Type) *interp.HostFunction {
 			if len(values) != stop-start {
 				return nil, errListSliceLength
 			}
-			if err := retainBoxes(i, values); err != nil {
+			if err := hostabi.RetainBoxes(i, values); err != nil {
 				return nil, err
 			}
-			if err := releaseBoxes(i, elems[start:stop]); err != nil {
+			if err := hostabi.ReleaseBoxes(i, elems[start:stop]); err != nil {
 				return nil, err
 			}
 			out := append([]vmtypes.Boxed(nil), elems...)
@@ -402,7 +447,7 @@ func (c *lowerer) listSliceDelete(receiver types.Type) *interp.HostFunction {
 			if err != nil {
 				return nil, err
 			}
-			if err := releaseBoxes(i, elems[start:stop]); err != nil {
+			if err := hostabi.ReleaseBoxes(i, elems[start:stop]); err != nil {
 				return nil, err
 			}
 			out := append([]vmtypes.Boxed(nil), elems[:start]...)
@@ -415,27 +460,6 @@ func (c *lowerer) listSliceDelete(receiver types.Type) *interp.HostFunction {
 	)
 }
 
-func retainBoxes(i *interp.Interpreter, values []vmtypes.Boxed) error {
-	for _, value := range values {
-		if value.Kind() == vmtypes.KindRef && value.Ref() != 0 {
-			if _, err := i.Retain(value.Ref()); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
-}
-
-func releaseBoxes(i *interp.Interpreter, values []vmtypes.Boxed) error {
-	for _, value := range values {
-		if value.Kind() == vmtypes.KindRef && value.Ref() != 0 {
-			if err := i.Release(value.Ref()); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
-}
 
 func (c *lowerer) listIndex(receiver types.Type) *interp.HostFunction {
 	elem := receiver.(*types.List).Elem
@@ -627,13 +651,22 @@ func (c *lowerer) dictMerge(receiver types.Type) *interp.HostFunction {
 			if err != nil {
 				return nil, err
 			}
+			// Entries from both operand dicts are borrowed; out becomes
+			// their second owner, so they need their own retain (see
+			// hostabi's package doc comment).
 			out := vmtypes.NewMapForType(mt, len(leftKeys)+len(rightKeys))
 			for idx, key := range leftKeys {
+				if err := hostabi.RetainBoxes(i, []vmtypes.Boxed{key, leftVals[idx]}); err != nil {
+					return nil, err
+				}
 				if err := mapSet(out, key, leftVals[idx]); err != nil {
 					return nil, err
 				}
 			}
 			for idx, key := range rightKeys {
+				if err := hostabi.RetainBoxes(i, []vmtypes.Boxed{key, rightVals[idx]}); err != nil {
+					return nil, err
+				}
 				if err := mapSet(out, key, rightVals[idx]); err != nil {
 					return nil, err
 				}
@@ -2041,8 +2074,14 @@ func (c *lowerer) setCopy(receiver types.Type) *interp.HostFunction {
 			if err != nil {
 				return nil, err
 			}
+			// key/vals[idx] are borrowed from the source set; out becomes
+			// their second owner, so they need their own retain (see
+			// hostabi's package doc comment).
 			out := vmtypes.NewMapForType(mt, len(keys))
 			for idx, key := range keys {
+				if err := hostabi.RetainBoxes(i, []vmtypes.Boxed{key, vals[idx]}); err != nil {
+					return nil, err
+				}
 				if err := mapSet(out, key, vals[idx]); err != nil {
 					return nil, err
 				}
@@ -2076,13 +2115,22 @@ func (c *lowerer) setUnion(receiver types.Type) *interp.HostFunction {
 			if err != nil {
 				return nil, err
 			}
+			// Entries from both operand sets are borrowed; out becomes their
+			// second owner, so they need their own retain (see hostabi's
+			// package doc comment).
 			out := vmtypes.NewMapForType(mt, len(leftKeys)+len(rightKeys))
 			for idx, key := range leftKeys {
+				if err := hostabi.RetainBoxes(i, []vmtypes.Boxed{key, leftVals[idx]}); err != nil {
+					return nil, err
+				}
 				if err := mapSet(out, key, leftVals[idx]); err != nil {
 					return nil, err
 				}
 			}
 			for idx, key := range rightKeys {
+				if err := hostabi.RetainBoxes(i, []vmtypes.Boxed{key, rightVals[idx]}); err != nil {
+					return nil, err
+				}
 				if err := mapSet(out, key, rightVals[idx]); err != nil {
 					return nil, err
 				}
@@ -2119,6 +2167,12 @@ func (c *lowerer) setIntersection(receiver types.Type) *interp.HostFunction {
 					return nil, err
 				}
 				if found {
+					// key/leftVals[idx] are borrowed from the source set;
+					// out becomes their second owner, so they need their
+					// own retain (see hostabi's package doc comment).
+					if err := hostabi.RetainBoxes(i, []vmtypes.Boxed{key, leftVals[idx]}); err != nil {
+						return nil, err
+					}
 					if err := mapSet(out, key, leftVals[idx]); err != nil {
 						return nil, err
 					}
@@ -2156,6 +2210,12 @@ func (c *lowerer) setDifference(receiver types.Type) *interp.HostFunction {
 					return nil, err
 				}
 				if !found {
+					// key/leftVals[idx] are borrowed from the source set;
+					// out becomes their second owner, so they need their
+					// own retain (see hostabi's package doc comment).
+					if err := hostabi.RetainBoxes(i, []vmtypes.Boxed{key, leftVals[idx]}); err != nil {
+						return nil, err
+					}
 					if err := mapSet(out, key, leftVals[idx]); err != nil {
 						return nil, err
 					}
