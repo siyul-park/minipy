@@ -261,13 +261,13 @@ func (p *Parser) parseWhile() ast.Stmt {
 	return &ast.While{Base: ast.Base{Position: pos}, Cond: cond, Body: body, Orelse: orelse}
 }
 
-// parseFor parses `'for' NAME 'in' expression ':' block ['else' ':' block]`.
+// parseFor parses `'for' NAME 'in' expression_list ':' block ['else' ':' block]`.
 func (p *Parser) parseFor() ast.Stmt {
 	pos := p.cur().Pos
 	p.advance() // 'for'
 	target := p.parseForTarget()
 	p.expect(token.IN)
-	iter := p.parseExpression()
+	iter := p.parseExpressionList()
 	body := p.parseBlock()
 	var orelse []ast.Stmt
 	if p.at(token.ELSE) {
@@ -619,16 +619,21 @@ func (p *Parser) parseSimpleStmt() ast.Stmt {
 	case token.RETURN:
 		t := p.cur()
 		p.advance()
-		return &ast.Return{Base: ast.Base{Position: t.Pos}, Value: p.parseOptionalExpression()}
+		return &ast.Return{Base: ast.Base{Position: t.Pos}, Value: p.parseOptionalExpressionList()}
 	case token.YIELD:
 		t := p.cur()
 		p.advance()
 		from := false
+		var value ast.Expr
 		if p.at(token.FROM) {
+			// `yield from` takes a single iterable expression, not a bare tuple.
 			from = true
 			p.advance()
+			value = p.parseOptionalExpression()
+		} else {
+			value = p.parseOptionalExpressionList()
 		}
-		return &ast.Yield{Base: ast.Base{Position: t.Pos}, Value: p.parseOptionalExpression(), From: from}
+		return &ast.Yield{Base: ast.Base{Position: t.Pos}, Value: value, From: from}
 	case token.RAISE:
 		return p.parseRaise()
 	case token.GLOBAL:
@@ -661,7 +666,7 @@ func (p *Parser) parseSimpleStmt() ast.Stmt {
 		target := p.parseFlatTupleTarget()
 		if p.at(token.ASSIGN) {
 			p.advance()
-			return &ast.Assign{Base: ast.Base{Position: pos}, Target: target, Value: p.parseExpression()}
+			return &ast.Assign{Base: ast.Base{Position: pos}, Target: target, Value: p.parseExpressionList()}
 		}
 		p.errs.Add(target.Pos(), token.SyntaxError, "tuple target requires assignment")
 		return nil
@@ -673,7 +678,7 @@ func (p *Parser) parseSimpleStmt() ast.Stmt {
 		targets := []ast.Expr{target}
 		for p.at(token.ASSIGN) {
 			p.advance()
-			value := p.parseExpression()
+			value := p.parseExpressionList()
 			if p.at(token.ASSIGN) {
 				p.requireTarget(value)
 				targets = append(targets, value)
@@ -717,6 +722,39 @@ func (p *Parser) parseOptionalExpression() ast.Expr {
 	return p.parseExpression()
 }
 
+// parseOptionalExpressionList is parseExpressionList, but returns nil at a
+// statement end instead of erroring (used where the expression list itself is
+// optional, e.g. bare `return` and `yield`).
+func (p *Parser) parseOptionalExpressionList() ast.Expr {
+	if p.atStmtEnd() {
+		return nil
+	}
+	return p.parseExpressionList()
+}
+
+// parseExpressionList parses `expression {',' expression} [',']` (Python's
+// star_expressions production for statement positions that accept an
+// unparenthesized tuple): `a, b = 1, 2`, `return 1, 2`, `yield 1, 2`, and
+// `for x in 1, 2, 3:`. More than one expression, or a single expression with a
+// trailing comma, builds an ast.TupleLit; a lone expression is returned
+// unwrapped so existing single-value callers see no change.
+func (p *Parser) parseExpressionList() ast.Expr {
+	pos := p.cur().Pos
+	first := p.parseExpression()
+	if !p.at(token.COMMA) {
+		return first
+	}
+	elems := []ast.Expr{first}
+	for p.at(token.COMMA) {
+		p.advance()
+		if p.atStmtEnd() {
+			break
+		}
+		elems = append(elems, p.parseExpression())
+	}
+	return &ast.TupleLit{Base: ast.Base{Position: pos}, Elems: elems}
+}
+
 // parseAnnAssign parses `NAME ':' type ['=' expression]`.
 func (p *Parser) parseAnnAssign() ast.Stmt {
 	nameTok := p.cur()
@@ -728,7 +766,7 @@ func (p *Parser) parseAnnAssign() ast.Stmt {
 	var value ast.Expr
 	if p.at(token.ASSIGN) {
 		p.advance()
-		value = p.parseExpression()
+		value = p.parseExpressionList()
 	}
 	return &ast.AnnAssign{Base: ast.Base{Position: nameTok.Pos}, Target: name, Ann: ann, Value: value}
 }

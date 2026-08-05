@@ -2070,6 +2070,43 @@ func requireFuncParam(t *testing.T, constants []vmtypes.Value, parameter vmtypes
 	require.Failf(t, "missing function constant", "expected function constant with parameter %s", parameter)
 }
 
+// TestCompileForTupleNotIterable is a regression test for a bug introduced
+// alongside bare (unparenthesized) tuple expression-list support: iterating a
+// tuple must still be rejected by the checker with a clean, positioned
+// TypeError before the lowerer ever runs, for both the parenthesized and the
+// bare spelling of a tuple in the for-iterable position. Before the fix,
+// iterableElem treated *types.Tuple as iterable whenever its elements shared
+// one type, so the checker emitted no diagnostic and the lowerer produced a
+// program with no tuple-iteration lowering, which failed at minivm runtime
+// with an opaque "type mismatch" error instead of a compile-time TypeError.
+func TestCompileForTupleNotIterable(t *testing.T) {
+	t.Run("parenthesized tuple", func(t *testing.T) {
+		src := "for x in (1, 2, 3):\n    print(x)\n"
+		errs := checkOnly(t, src)
+		require.NotEmpty(t, errs)
+		require.Equal(t, token.NotIterable, errs[0].Code)
+		require.Contains(t, errs[0].Error(), "not iterable")
+		require.Equal(t, 1, errs[0].Pos.Line)
+
+		_, err := Compile(strings.NewReader(src), WithOutput(&bytes.Buffer{}))
+		require.Error(t, err)
+		code(t, err, token.NotIterable)
+	})
+
+	t.Run("bare tuple", func(t *testing.T) {
+		src := "for x in 1, 2, 3:\n    print(x)\n"
+		errs := checkOnly(t, src)
+		require.NotEmpty(t, errs)
+		require.Equal(t, token.NotIterable, errs[0].Code)
+		require.Contains(t, errs[0].Error(), "not iterable")
+		require.Equal(t, 1, errs[0].Pos.Line)
+
+		_, err := Compile(strings.NewReader(src), WithOutput(&bytes.Buffer{}))
+		require.Error(t, err)
+		code(t, err, token.NotIterable)
+	})
+}
+
 func TestCompileErrors(t *testing.T) {
 	cases := map[string]token.Code{
 		"x: int = 1.5\n":                      token.TypeMismatch,
@@ -2091,6 +2128,8 @@ func TestCompileErrors(t *testing.T) {
 		// control flow
 		"x: int = 1\nif x:\n    pass\n":                           token.TypeMismatch,
 		"for i in 5:\n    pass\n":                                 token.NotIterable,
+		"for x in (1, 2, 3):\n    pass\n":                         token.NotIterable,
+		"for x in 1, 2, 3:\n    pass\n":                           token.NotIterable,
 		"break\n":                                                 token.SyntaxError,
 		"continue\n":                                              token.SyntaxError,
 		"for i in range(1.5):\n    pass\n":                        token.TypeMismatch,

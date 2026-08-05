@@ -652,6 +652,11 @@ func (c *checker) forStmt(n *ast.For) {
 }
 
 func iterableElem(t types.Type) types.Type {
+	// Tuples are not iterable in minipy: they have no runtime iterator
+	// representation, so `for x in (1, 2, 3):` and the bare `for x in 1, 2, 3:`
+	// must both be rejected here rather than reaching the lowerer, which has
+	// no tuple-iteration lowering to emit. types.IterableElem already returns
+	// Invalid for *types.Tuple via its default case.
 	return types.IterableElem(t)
 }
 

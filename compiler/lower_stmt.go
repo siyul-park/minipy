@@ -860,9 +860,19 @@ func (c *lowerer) augAssignAttribute(n *ast.AugAssign) {
 func (c *lowerer) unpackAssign(target *ast.TupleLit, value ast.Expr) {
 	if tupleStarIndex(target) < 0 {
 		if tupleValue, ok := value.(*ast.TupleLit); ok {
+			// Python evaluates the entire right-hand side before assigning any
+			// target, so a swap like `a, b = b, a` must read both old values
+			// before either name is rebound. Stash each element in its own
+			// temp slot first, then run the sets against those slots.
+			slots := make([]int, len(tupleValue.Elems))
+			for i, elem := range tupleValue.Elems {
+				c.expr(elem)
+				slots[i] = c.tmp()
+				c.emit(instr.GLOBAL_SET, uint64(slots[i]))
+			}
 			for i, elem := range target.Elems {
 				name := elem.(*ast.Name)
-				c.expr(tupleValue.Elems[i])
+				c.emit(instr.GLOBAL_GET, uint64(slots[i]))
 				c.set(name.Name)
 			}
 			return
