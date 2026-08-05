@@ -143,3 +143,72 @@ func TestHostValues(t *testing.T) {
 	require.True(t, it.Type().Equals(vmtypes.TypeRef))
 	require.Equal(t, "items", it.String())
 }
+
+// TestAllocArrayRetainsElements guards the ownership contract described in
+// the package doc comment: AllocArray must retain the (possibly borrowed)
+// elements it is given, so the new array stays valid even after whatever
+// released a source array that only ever borrowed those elements out — the
+// exact sequence a host function sees when a list literal is passed inline
+// as a call argument (an unrooted temporary the VM releases once the host
+// call returns).
+func TestAllocArrayRetainsElements(t *testing.T) {
+	vm := interp.New(program.New(nil))
+	defer vm.Close()
+
+	strAddr, err := vm.Alloc(vmtypes.String("a"))
+	require.NoError(t, err)
+	elem := vmtypes.BoxRef(strAddr)
+
+	srcType := vmtypes.NewArrayType(vmtypes.TypeRef)
+	srcAddr, err := vm.Alloc(vmtypes.NewArray(srcType, elem))
+	require.NoError(t, err)
+
+	_, elems, err := ArrayElems(vm, vmtypes.BoxRef(srcAddr))
+	require.NoError(t, err)
+	require.Len(t, elems, 1)
+
+	out, err := AllocArray(vm, srcType, elems)
+	require.NoError(t, err)
+	require.Len(t, out, 1)
+
+	// Release the source array the way the minivm calling convention
+	// releases a temporary argument once a host call returns without
+	// reusing its box in the result.
+	require.NoError(t, vm.Release(srcAddr))
+
+	val, err := vm.Load(out[0].Ref())
+	require.NoError(t, err)
+	arr, ok := val.(*vmtypes.Array)
+	require.True(t, ok)
+	require.Len(t, arr.Elems, 1)
+
+	s, err := LoadStr(vm, arr.Elems[0])
+	require.NoError(t, err)
+	require.Equal(t, "a", s)
+
+	_, err = AllocArray(vm, srcType, []vmtypes.Boxed{vmtypes.BoxRef(999)})
+	require.Error(t, err)
+}
+
+// TestRetainReleaseBoxes exercises RetainBoxes/ReleaseBoxes directly: scalar
+// elements are left untouched, and a retained ref-kind element survives a
+// release that would otherwise have reclaimed it.
+func TestRetainReleaseBoxes(t *testing.T) {
+	vm := interp.New(program.New(nil))
+	defer vm.Close()
+
+	addr, err := vm.Alloc(vmtypes.String("a"))
+	require.NoError(t, err)
+	ref := vmtypes.BoxRef(addr)
+	values := []vmtypes.Boxed{vmtypes.BoxI64(1), ref}
+
+	require.NoError(t, RetainBoxes(vm, values))
+	// One release drops the extra retain; the string is still live.
+	require.NoError(t, vm.Release(addr))
+	_, err = vm.Load(addr)
+	require.NoError(t, err)
+
+	require.NoError(t, ReleaseBoxes(vm, values))
+	_, err = vm.Load(addr)
+	require.Error(t, err)
+}
