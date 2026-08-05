@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"math/big"
 	"sort"
 	"strconv"
 	"strings"
@@ -559,11 +560,78 @@ func roundDigitsHost() *interp.HostFunction {
 		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
 			f := params[0].F64()
 			n := params[1].I64()
-			shift := math.Pow(10, float64(n))
-			rounded := math.RoundToEven(f*shift) / shift
-			return []vmtypes.Boxed{vmtypes.BoxF64(rounded)}, nil
+			return []vmtypes.Boxed{vmtypes.BoxF64(roundDigits(f, n))}, nil
 		},
 	)
+}
+
+// maxRoundDigits bounds the ndigits magnitude roundDigits scales by. Beyond
+// it, rounding cannot change the result: float64 has at most 323 significant
+// decimal places (denormal minimum ~4.9e-324), so a larger positive ndigits
+// leaves f unchanged and a smaller (more negative) ndigits collapses any
+// finite f to a signed zero, matching CPython's round().
+const maxRoundDigits = 323
+
+// roundDigits rounds f to n decimal digits the way CPython's round(float, int)
+// does: round-half-to-even applied to f's exact binary value, not to a
+// float64-scaled approximation of it. Scaling f by 10**n in float64 (the
+// naive shift-round-unshift approach) loses precision before rounding ever
+// happens, which is why round(2.675, 2) must land on 2.67 — 2.675 is not
+// exactly representable, and its nearest double is already below the
+// halfway point. big.Rat holds f and the decimal scale exactly, so the
+// halfway comparison in roundRatToEven sees f's true value.
+func roundDigits(f float64, n int64) float64 {
+	if math.IsNaN(f) || math.IsInf(f, 0) || f == 0 {
+		return f
+	}
+	if n > maxRoundDigits {
+		return f
+	}
+	if n < -maxRoundDigits {
+		return math.Copysign(0, f)
+	}
+
+	magnitude := n
+	if magnitude < 0 {
+		magnitude = -magnitude
+	}
+	scale := new(big.Rat).SetInt(new(big.Int).Exp(big.NewInt(10), big.NewInt(magnitude), nil))
+
+	scaled := new(big.Rat).SetFloat64(f)
+	if n >= 0 {
+		scaled.Mul(scaled, scale)
+	} else {
+		scaled.Quo(scaled, scale)
+	}
+	rounded := new(big.Rat).SetInt(roundRatToEven(scaled))
+	if n >= 0 {
+		rounded.Quo(rounded, scale)
+	} else {
+		rounded.Mul(rounded, scale)
+	}
+	result, _ := rounded.Float64()
+	return result
+}
+
+// roundRatToEven rounds r to the nearest integer, breaking exact halfway
+// ties toward the even neighbor (banker's rounding), matching CPython's
+// round().
+func roundRatToEven(r *big.Rat) *big.Int {
+	num, den := r.Num(), r.Denom()
+	quotient, remainder := new(big.Int).QuoRem(num, den, new(big.Int))
+	twiceRemainder := new(big.Int).Lsh(remainder.Abs(remainder), 1)
+	switch twiceRemainder.Cmp(den) {
+	case -1:
+		return quotient
+	case 0:
+		if quotient.Bit(0) == 0 {
+			return quotient
+		}
+	}
+	if num.Sign() < 0 {
+		return quotient.Sub(quotient, big.NewInt(1))
+	}
+	return quotient.Add(quotient, big.NewInt(1))
 }
 
 func divmodHost(elem types.Type) *interp.HostFunction {

@@ -17,6 +17,7 @@
 package hostabi
 
 import (
+	"math"
 	"strconv"
 	"strings"
 
@@ -53,10 +54,20 @@ func FormatScalar(i *interp.Interpreter, v vmtypes.Boxed) string {
 	}
 }
 
-// PyFloat mimics CPython's str(float): always shows a fractional part.
+// PyFloat mimics CPython's str(float): always shows a fractional part, and
+// renders the IEEE special values with CPython's lowercase spellings rather
+// than Go's FormatFloat spellings ("+Inf", "-Inf", "NaN").
 func PyFloat(f float64) string {
+	switch {
+	case math.IsNaN(f):
+		return "nan"
+	case math.IsInf(f, 1):
+		return "inf"
+	case math.IsInf(f, -1):
+		return "-inf"
+	}
 	s := strconv.FormatFloat(f, 'g', -1, 64)
-	if !strings.ContainsAny(s, ".eEnitf") {
+	if !strings.ContainsAny(s, ".eE") {
 		s += ".0"
 	}
 	return s
