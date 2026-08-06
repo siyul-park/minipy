@@ -95,11 +95,13 @@ compatibility matrix in `docs/compatibility.md`:
 - No `unittest`; imports are limited to `math`, `string`, `functools`,
   `sys`, `typing`, and `operator`.
 - No `if __name__ == "__main__":` — `__name__` is undefined in minipy.
-- Avoid, in this wave of the corpus, constructs with known open compiler
-  work: `==`/`!=` comparison on `list`/`tuple`/`dict`/`set`; `sorted`,
-  `reversed`, `min`, `enumerate`, or `zip` applied to an inline
-  list-of-strings literal; printing a `dict` or a `set`; and bare-tuple
-  assignment (`a, b = 1, 2`).
+- Avoid constructs with known open compiler work. As of this revision that
+  list is empty: `==`/`!=` on `list`/`tuple`/`dict`/`set`, `sorted`/`reversed`/
+  `min`/`enumerate`/`zip` over an inline list-of-strings literal, printing a
+  `dict` or a `set`, and bare-tuple assignment (`a, b = 1, 2`) were all
+  previously excluded here and all now match CPython. Re-verify before
+  re-adding an exclusion; a construct that stops matching is a bug to file,
+  not a rule to restore.
 - Keep cases small and deterministic: arithmetic, string methods, control
   flow, functions, classes, f-strings, and comprehensions over integers are
   all safe ground.

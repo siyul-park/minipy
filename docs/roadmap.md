@@ -36,6 +36,9 @@ owned by `docs/spec/`; compatibility status is summarized in
 - CLI `run` and REPL entry points.
 - Compile options for output sink, optimization level, and module search roots.
 - Accumulated diagnostics through `token.ErrorList`.
+- Scratch temporaries are frame locals with declared types, pooled per statement,
+  so a recursive call cannot clobber the scratch its caller still holds
+  (`docs/spec/05-codegen.md`, Scratch slots).
 
 ### Static type system ✅
 

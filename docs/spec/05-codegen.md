@@ -40,19 +40,57 @@ level and then verified with `program.Verify`.
 3. create a module loader and load the entry module
 4. check all reachable source modules and native symbols
 5. lower modules and functions into a `program.Builder`
-6. declare the module global table (`Builder.Globals`)
+6. declare each frame's scratch locals and the module global table
+   (`Builder.Locals`, `Builder.Globals`)
 7. build a minivm program
-8. optimize with `optimize.NewOptimizer(level)`
+8. optimize with `optimize.New(level)`
 9. restore type, handler, and global tables preserved across optimization
 10. verify the final program
 
 The interpreter sizes its global table from `Program.Globals`, and `GLOBAL_*`
 past the declared count traps and fails verification, so every global slot the
-module uses must be declared. Every slot is declared as a reference: scratch
-slots allocated during lowering carry no static type and are reused for values
-of different kinds, and a reference slot round-trips any boxed value under the
-interpreter's retain rules, so one uniform declaration stays correct where a
-per-slot precise kind could not.
+module uses must be declared. A global holding a scalar is declared with that
+scalar's kind, so reading it back is ready for arithmetic: `GLOBAL_GET` pushes
+the declared type. Everything else is declared as a reference, because
+`GLOBAL_SET` also checks the stored value against the declaration and a
+reference accepts every boxed value a wider store may produce.
+
+### Scratch slots
+
+Temporaries reserved while lowering — loop indices, iterator handles, match
+subjects, normalized list indices, decorator values — are **frame locals**, not
+module globals. A global is shared by every activation of a function, so a
+recursive call would clobber the scratch its own suspended caller still holds
+and silently produce a wrong value.
+
+Slot ids continue past the frame's named region, and emission rewrites
+`GLOBAL_*` on such an id to `LOCAL_*`, so the lowering sites do not name a
+storage class. Each frame declares its own pool once its body is lowered, since
+slots are discovered while emitting.
+
+A slot carries a declared type. This is a correctness requirement, not a
+refinement: `LOCAL_GET` pushes the slot's declared kind, so a slot read back for
+scalar arithmetic must be declared with that kind or the program does not
+verify. Concrete reference types erase to a plain reference, keeping calls
+through a scratch slot as indeterminate to the verifier as a global read was.
+A chained comparison therefore carries one slot per operand rather than reusing
+one, because a chain may mix kinds.
+
+Slots are pooled: a statement releases what it reserved when it ends, so sibling
+statements reuse the same entries and a frame grows with expression nesting
+depth rather than with reservation-site count. A released slot is only reused
+for the same kind. A frame containing a protected region — a `try`, or a `with`
+and its finalizers — opts out of pooling entirely: entering a handler resumes
+where the guarded code's slots are still live, and a handler's entry depth is a
+single frame-wide number, so no released slot is provably dead. Such a frame
+keeps one slot per site.
+
+A protected region's entry depth is the frame's total local count, which is only
+final once the body is lowered. Regions are therefore buffered during lowering
+and declared at frame close, innermost first.
+
+`module.Emitter.Tmp` takes the minivm type of the value the slot will hold. A
+native symbol reserving scratch names the type, never the storage class.
 
 Compile options:
 
