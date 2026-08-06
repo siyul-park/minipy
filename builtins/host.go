@@ -104,7 +104,7 @@ func floatParseHost() *interp.HostFunction {
 			if err != nil {
 				return nil, fmt.Errorf("%w: %q", ErrFloatValue, s)
 			}
-			return []vmtypes.Boxed{vmtypes.BoxF64(f)}, nil
+			return []vmtypes.Boxed{hostabi.BoxFloat(f)}, nil
 		},
 	)
 }
@@ -503,7 +503,7 @@ func sumHost(arg types.Type) *interp.HostFunction {
 			for _, e := range elems {
 				total += e.F64()
 			}
-			return []vmtypes.Boxed{vmtypes.BoxF64(total)}, nil
+			return []vmtypes.Boxed{hostabi.BoxFloat(total)}, nil
 		},
 	)
 }
@@ -560,7 +560,7 @@ func roundDigitsHost() *interp.HostFunction {
 		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
 			f := params[0].F64()
 			n := params[1].I64()
-			return []vmtypes.Boxed{vmtypes.BoxF64(roundDigits(f, n))}, nil
+			return []vmtypes.Boxed{hostabi.BoxFloat(roundDigits(f, n))}, nil
 		},
 	)
 }
@@ -670,7 +670,7 @@ func divmodHost(elem types.Type) *interp.HostFunction {
 			}
 			q := math.Floor(a / b)
 			r := a - q*b
-			addr, err := i.Alloc(vmtypes.NewStruct(tupleType, vmtypes.BoxF64(q), vmtypes.BoxF64(r)))
+			addr, err := i.Alloc(vmtypes.NewStruct(tupleType, hostabi.BoxFloat(q), hostabi.BoxFloat(r)))
 			if err != nil {
 				return nil, err
 			}
@@ -719,7 +719,7 @@ func powHost(base, exp types.Type) *interp.HostFunction {
 			} else {
 				ef = params[1].F64()
 			}
-			return []vmtypes.Boxed{vmtypes.BoxF64(math.Pow(bf, ef))}, nil
+			return []vmtypes.Boxed{hostabi.BoxFloat(math.Pow(bf, ef))}, nil
 		},
 	)
 }

@@ -73,6 +73,22 @@ func PyFloat(f float64) string {
 	return s
 }
 
+// BoxFloat boxes f as a boxed F64, canonicalizing an IEEE NaN payload's sign
+// bit first. minivm's Boxed representation tags non-float kinds with a
+// positive-signed NaN shape (exponent all ones, sign clear, non-zero
+// mantissa); a genuine NaN with that exact shape — what Go's math package,
+// strconv, and ordinary float division all produce — collides with the tag
+// and is misread as a different kind the next time a host-call boundary
+// inspects it. A NaN's sign carries no meaning str(), comparisons, or
+// isnan() ever expose, so flipping it here is invisible to Python-level
+// behavior: the value is still NaN, just outside the tagged range.
+func BoxFloat(f float64) vmtypes.Boxed {
+	if math.IsNaN(f) {
+		f = math.Copysign(f, -1)
+	}
+	return vmtypes.BoxF64(f)
+}
+
 // AllocString allocates a heap string and returns it as a single boxed ref.
 func AllocString(i *interp.Interpreter, s string) ([]vmtypes.Boxed, error) {
 	addr, err := i.Alloc(vmtypes.String(s))

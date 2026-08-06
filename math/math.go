@@ -81,8 +81,13 @@ func New() *module.NativeModule {
 	)
 }
 
-// constant builds a ConstantSymbol that emits an F64_CONST instruction.
+// constant builds a ConstantSymbol that emits an F64_CONST instruction. A NaN
+// value (the "nan" constant) is sign-canonicalized before encoding; see
+// hostabi.BoxFloat for why.
 func constant(name string, value float64) *module.NativeConstant {
+	if gomath.IsNaN(value) {
+		value = gomath.Copysign(value, -1)
+	}
 	bits := gomath.Float64bits(value)
 	return module.NewConstant(name, types.Float, func(e module.Emitter, _ []ast.Expr) {
 		e.Emit(instr.F64_CONST, uint64(bits))
@@ -317,7 +322,7 @@ func unaryFloatHost(fn func(float64) float64) *interp.HostFunction {
 	return interp.NewHostFunction(
 		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeF64}, Returns: []vmtypes.Type{vmtypes.TypeF64}},
 		func(_ *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
-			return []vmtypes.Boxed{vmtypes.BoxF64(fn(params[0].F64()))}, nil
+			return []vmtypes.Boxed{hostabi.BoxFloat(fn(params[0].F64()))}, nil
 		},
 	)
 }
@@ -330,7 +335,7 @@ func unaryFloatDomainHost(fn func(float64) float64, invalid domainInvalid) *inte
 			if invalid(x) {
 				return nil, ErrDomain
 			}
-			return []vmtypes.Boxed{vmtypes.BoxF64(fn(x))}, nil
+			return []vmtypes.Boxed{hostabi.BoxFloat(fn(x))}, nil
 		},
 	)
 }
@@ -339,7 +344,7 @@ func binaryFloatHost(fn func(float64, float64) float64) *interp.HostFunction {
 	return interp.NewHostFunction(
 		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeF64, vmtypes.TypeF64}, Returns: []vmtypes.Type{vmtypes.TypeF64}},
 		func(_ *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
-			return []vmtypes.Boxed{vmtypes.BoxF64(fn(params[0].F64(), params[1].F64()))}, nil
+			return []vmtypes.Boxed{hostabi.BoxFloat(fn(params[0].F64(), params[1].F64()))}, nil
 		},
 	)
 }
@@ -405,7 +410,7 @@ func dynUnaryFloatHost(fn func(float64) float64) *interp.HostFunction {
 			if err != nil {
 				return nil, err
 			}
-			return []vmtypes.Boxed{vmtypes.BoxF64(fn(f))}, nil
+			return []vmtypes.Boxed{hostabi.BoxFloat(fn(f))}, nil
 		},
 	)
 }
@@ -423,7 +428,7 @@ func dynUnaryFloatDomainHost(fn func(float64) float64, invalid domainInvalid) *i
 			if invalid(f) {
 				return nil, ErrDomain
 			}
-			return []vmtypes.Boxed{vmtypes.BoxF64(fn(f))}, nil
+			return []vmtypes.Boxed{hostabi.BoxFloat(fn(f))}, nil
 		},
 	)
 }
@@ -445,7 +450,7 @@ func dynBinaryFloatHost(fn func(float64, float64) float64, t0, t1 types.Type) *i
 			if err != nil {
 				return nil, err
 			}
-			return []vmtypes.Boxed{vmtypes.BoxF64(fn(f0, f1))}, nil
+			return []vmtypes.Boxed{hostabi.BoxFloat(fn(f0, f1))}, nil
 		},
 	)
 }
