@@ -889,6 +889,32 @@ func (c *lowerer) strSlice() *interp.HostFunction {
 	)
 }
 
+// strSplitWhitespace backs the no-argument str.split(). CPython treats that as
+// a different algorithm from split(sep), not as split(" "): it splits on runs of
+// any whitespace and drops leading and trailing empty fields, so "  a  b\tc "
+// yields ["a", "b", "c"] rather than ["", "", "a", "", "b\tc", ""].
+func (c *lowerer) strSplitWhitespace() *interp.HostFunction {
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeString}, Returns: []vmtypes.Type{vmtypes.NewArrayType(vmtypes.TypeString)}},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			text, err := hostabi.LoadStr(i, params[0])
+			if err != nil {
+				return nil, err
+			}
+			fields := strings.Fields(text)
+			out := make([]vmtypes.Boxed, 0, len(fields))
+			for _, field := range fields {
+				box, err := hostabi.AllocString(i, field)
+				if err != nil {
+					return nil, err
+				}
+				out = append(out, box[0])
+			}
+			return hostabi.AllocArray(i, vmtypes.NewArrayType(vmtypes.TypeString), out)
+		},
+	)
+}
+
 func (c *lowerer) strSplit() *interp.HostFunction {
 	return interp.NewHostFunction(
 		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeString, vmtypes.TypeString}, Returns: []vmtypes.Type{vmtypes.NewArrayType(vmtypes.TypeString)}},

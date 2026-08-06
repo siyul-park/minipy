@@ -177,3 +177,47 @@ func TestCompileStringMethods(t *testing.T) {
 		require.Equal(t, "5\n", run(t, src))
 	})
 }
+
+// TestCompileStrSplitNoSeparator pins the no-argument str.split(). CPython
+// treats it as a different algorithm from split(sep) — splitting on runs of any
+// whitespace and dropping leading and trailing empty fields — rather than as
+// split(" "), which is what minipy previously lowered it to.
+func TestCompileStrSplitNoSeparator(t *testing.T) {
+	tests := []struct {
+		name string
+		src  string
+		want string
+	}{
+		{
+			name: "collapses runs of spaces and splits on tabs",
+			src:  "print(\"  a  b\\tc \".split())\n",
+			want: "['a', 'b', 'c']\n",
+		},
+		{
+			name: "splits on newlines and drops empty fields",
+			src:  "print(\"a\\nb\\n\\nc\".split())\n",
+			want: "['a', 'b', 'c']\n",
+		},
+		{
+			name: "all-whitespace input yields no fields",
+			src:  "print(\"   \".split())\n",
+			want: "[]\n",
+		},
+		{
+			name: "an explicit separator still keeps empty fields",
+			src:  "print(\"a,b,,c\".split(\",\"))\n",
+			want: "['a', 'b', '', 'c']\n",
+		},
+		{
+			name: "an explicit space separator does not collapse runs",
+			src:  "print(\"a b  c\".split(\" \"))\n",
+			want: "['a', 'b', '', 'c']\n",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, run(t, tt.src))
+		})
+	}
+}

@@ -166,8 +166,6 @@ divergence, so fixing one means adding its case.
 
 - `int ** negative_int` and `pow(int, negative_int)` trap instead of producing a
   float.
-- `str.split()` with no separator neither collapses whitespace runs nor treats
-  tabs and newlines as separators.
 - `str.format()` ignores every embedded format spec. F-strings honor width,
   precision, and alignment, but not `,` grouping or `#` alternate form.
 

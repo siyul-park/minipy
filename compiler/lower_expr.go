@@ -1004,7 +1004,8 @@ func (c *lowerer) methodCall(x *ast.CallExpr, attr *ast.Attribute) {
 		c.callHost(c.strLower())
 	case "split":
 		if len(x.Args) == 0 {
-			c.constGet(vmtypes.String(" "))
+			c.callHost(c.strSplitWhitespace())
+			return
 		}
 		c.callHost(c.strSplit())
 	case "join":
