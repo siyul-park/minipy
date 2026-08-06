@@ -421,7 +421,7 @@ func (c *lowerer) subscript(x *ast.Subscript) {
 	c.expr(x.Index)
 	switch recv := c.types[x.X].(type) {
 	case *types.List:
-		c.emit(instr.I64_TO_I32)
+		c.emitListIndexNormalize()
 		c.emit(instr.ARRAY_GET)
 	case *types.Dict:
 		// Unlike MAP_GET's silent zero-value fallback for a missing key,
@@ -1149,9 +1149,13 @@ func (c *lowerer) emitZeroValue(t types.Type) {
 	}
 }
 
-// absInt lowers abs() on an int inline: branch on the sign and negate when
-// negative (the entry frame has no locals for a branchless trick).
-func (c *lowerer) emitArrayDelete() {
+// emitListIndexNormalize converts a possibly negative i64 list index into an
+// in-range i32 index, matching Python's `i < 0 => len + i` rule already used
+// by string indexing (strIndex), slicing, pop(), and insert(). Stack in:
+// [list, i64 index]. Stack out: [list, i32 index]. An index still negative,
+// or still out of range, is left for the following ARRAY_GET/ARRAY_SET/
+// ARRAY_DELETE bounds check to trap.
+func (c *lowerer) emitListIndexNormalize() {
 	idxSlot := c.tmp()
 	listSlot := c.tmp()
 	c.emit(instr.GLOBAL_SET, uint64(idxSlot))
@@ -1176,6 +1180,21 @@ func (c *lowerer) emitArrayDelete() {
 	c.emit(instr.GLOBAL_GET, uint64(listSlot))
 	c.emit(instr.GLOBAL_GET, uint64(idxSlot))
 	c.emit(instr.I64_TO_I32)
+}
+
+// emitListIndexNormalizeUnderValue normalizes a possibly negative i64 list
+// index that sits beneath a value already pushed on the stack: [list, i64
+// index, value] -> [list, i32 index, value]. Subscript-assignment writes push
+// the stored value after the index, so the index to normalize is not on top.
+func (c *lowerer) emitListIndexNormalizeUnderValue() {
+	valueSlot := c.tmp()
+	c.emit(instr.GLOBAL_SET, uint64(valueSlot))
+	c.emitListIndexNormalize()
+	c.emit(instr.GLOBAL_GET, uint64(valueSlot))
+}
+
+func (c *lowerer) emitArrayDelete() {
+	c.emitListIndexNormalize()
 	c.emit(instr.ARRAY_DELETE)
 }
 

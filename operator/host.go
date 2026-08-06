@@ -59,6 +59,11 @@ func powFloat() *interp.HostFunction {
 	)
 }
 
+// listContains implements `in`/`not in` over list[T]: CPython compares each
+// element to the needle with `==`, which is structural for containers (list,
+// tuple, dict, set), not identity. It reuses structuralEqual — the same
+// element comparison containerEqual uses for `list == list` — rather than a
+// second identity-only notion of equality via hostabi.BoxedEqual.
 func listContains(elem, receiver types.Type) *interp.HostFunction {
 	return interp.NewHostFunction(
 		&vmtypes.FunctionType{Params: []vmtypes.Type{receiver.VM(), elem.VM()}, Returns: []vmtypes.Type{vmtypes.TypeI1}},
@@ -68,7 +73,7 @@ func listContains(elem, receiver types.Type) *interp.HostFunction {
 				return nil, err
 			}
 			for _, e := range elems {
-				equal, err := hostabi.BoxedEqual(i, e, params[1])
+				equal, err := structuralEqual(i, elem, e, params[1])
 				if err != nil {
 					return nil, err
 				}

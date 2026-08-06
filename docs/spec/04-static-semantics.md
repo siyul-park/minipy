@@ -408,6 +408,16 @@ or compatible exception construction paths according to the checker/lowerer.
 
 `except*` syntax is parsed but ExceptionGroup semantics are not implemented.
 
+Every exception constructor — including a user-defined subclass — is checked
+against a single fixed signature, `(message: str = "")`
+(`constructorParams`/`constructorParamInfos`, `compiler/check_expr.go`),
+regardless of any `__init__` the subclass declares; this mirrors
+`BaseException.__new__` capturing `*args` ahead of `__init__` in CPython. A
+subclass may still declare its own fields and a matching single-argument
+`__init__` that assigns them (see `docs/spec/05-codegen.md`,
+`emitExceptionInstance`) — the constructor call's checked message argument is
+what that `__init__` receives.
+
 ### With Statements
 
 `with` statements are checked and lowered through context-manager-style attribute

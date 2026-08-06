@@ -144,7 +144,11 @@ func emitLen(e module.Emitter, args []ast.Expr) {
 		if types.Equal(e.Type(arg), types.Bytes) {
 			e.Emit(instr.ARRAY_LEN)
 		} else {
-			e.Emit(instr.STRING_LEN)
+			// STRING_LEN reports the underlying UTF-8 byte count, not the
+			// codepoint count str iteration/indexing/slicing already use;
+			// strLenHost counts codepoints so len() agrees with them.
+			e.CallHost(strLenHost())
+			return
 		}
 	}
 	e.Emit(instr.I32_TO_I64_S)

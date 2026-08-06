@@ -135,7 +135,19 @@ are not emitted.
 `while` and `for` maintain loop-label stacks for `break` and `continue`. Loop
 `else` blocks are emitted only along the non-break path.
 
-`assert` lowers to a guard that constructs and throws a minivm error on failure.
+`assert` lowers to a guard that, on a false test, constructs and throws an
+`AssertionError` instance through the same `emitExceptionInstance` path
+`raise AssertionError(...)` uses (see "Exception instance construction"
+above) — not a bare string error payload. A `except AssertionError`/`except
+Exception` handler classifies a caught exception by reading its payload's
+classID field, which only a proper instance struct has; a failed assert
+inside `try`/`except` previously always trapped with a type mismatch instead
+of matching, regardless of the caught class. A message argument that is not
+already `str` (assert only requires it be `Printable`, matching CPython's
+broader assert-message type; `raise`/direct construction always check the
+argument as `str`) is coerced with the same `str()` conversion print and
+f-strings use before landing in the `message` field, since that field is
+always declared `str`.
 
 ### Match
 
@@ -238,12 +250,36 @@ only slicing path, since bytes has no in-place mutation. Bytes concatenation
 functions (`bytesConcat`, `bytesEqual`, `bytesContains`) that read both
 operands via the shared array-element host ABI view.
 
+`in`/`not in` over `list[T]` (`emitContains`, `operator/emit.go`) calls the
+host function `listContains` (`operator/host.go`), which compares each
+element to the needle through the same `structuralEqual` helper
+`containerEqual` uses for `list == list` — not `hostabi.BoxedEqual` directly —
+so `tuple_value in list_of_tuples` and `list_value in list_of_lists` match by
+value the same way `==` already does, instead of only matching an
+identical/aliased reference. `in`/`not in` over `dict`/`set` still lowers to
+`MAP_LOOKUP` directly: dict/set keys and set elements are restricted to
+scalar hashable types (`hashableKey`, `compiler/check_expr.go`), so no
+non-scalar membership case exists to compare structurally.
+
 List methods lower without dynamic attribute lookup. `append`, `pop`, `insert`,
 `extend`, and `reverse` mutate the receiver with minivm array opcodes and
 compiler-emitted loops. `insert` grows with `ARRAY_APPEND` before shifting
 elements right. `extend` records the source length before appending, preserving
 `xs.extend(xs)` snapshot behavior. `index` uses a narrow host helper for equality
 search and maps a miss to `ValueError`.
+
+A scalar list index — `xs[i]` reads, `xs[i] = v` and chained-assignment writes,
+`xs[i] += v`, and `.pop(i)`/`del xs[i]` — normalizes a negative `i` the same way
+`strIndex` normalizes negative string indices: `i < 0` becomes `len(xs) + i`,
+and the index is only out of range if it is still negative, or still `>= len`,
+after that. The compiler helper `emitListIndexNormalize` (`compiler/lower_expr.go`)
+is the single place this arithmetic happens; every scalar list-index read and
+write path lowers through it (or its `emitListIndexNormalizeUnderValue`
+variant, which normalizes the index beneath an already-pushed value for
+subscript-assignment writes) before the `ARRAY_GET`/`ARRAY_SET`/`ARRAY_DELETE`
+opcode. Negative slicing, `.insert(-1, ...)`, and negative string indexing
+already normalized this way; this closes the same rule for plain list
+subscripting.
 
 Contiguous list slice assignment and deletion lower through narrow host helpers.
 The helpers normalize omitted and negative bounds like Python for step `1`,
@@ -276,6 +312,58 @@ success/failure of its own, so `deleteStmt` calls `dictItem` first (raising
 on a miss) and only then issues `MAP_DELETE`, discarding the value `dictItem`
 returned. Assignment (`d[k] = v`) is unaffected — it still lowers through
 `MAP_SET`, which creates a missing key rather than raising, matching Python.
+
+### `dict.get` with no default
+
+`d.get(k)` (no default argument) is checked as `V | None`
+(`types.NewUnion(V, types.None)`), not `V`: CPython's single-argument `get`
+returns `None` for a missing key rather than raising, so its result must
+admit `None` for `d.get(k) is None` to narrow. `dictGet` (`compiler/
+runtime.go`) is unchanged — it still takes a boxed default argument and
+returns it verbatim on a miss — but the lowerer (`case "get"`,
+`compiler/lower_expr.go`) now pushes that default through `emitZeroValue`
+with the call's own checked `V | None` result type instead of `V`, so the
+default pushed for the omitted-argument form is `REF_NULL` (`None`'s lowered
+form) instead of `V`'s zero value. minivm's boxed representation is
+self-describing per value (each `Boxed` carries its own kind tag), so a
+`dictGet` host function whose declared return type is the union's dynamic
+ref shape can still return a hit's concrete `V`-kind boxed value directly;
+downstream code already treats the call's `V | None` static type as dynamic
+and narrows it the same way any other `Optional`-shaped value narrows,
+without a separate mechanism for this call site. The two-argument form
+(`d.get(k, default)`) is unaffected: its checked and lowered result stays
+`V`, since the caller-supplied default is already assignable to `V` and
+there is no `None` case to represent.
+
+### Exception instance construction
+
+`emitExceptionStruct` (`compiler/lower_stmt.go`) allocates the struct for an
+exception instance — a plain `MyError(...)` construction, a `raise
+MyError(...)`, and a VM trap classified into a builtin exception class all go
+through it. It allocates using the **constructed class's own struct type**
+(`cls.typ`), not a shared `BaseException` type: a user-defined subclass can
+declare fields beyond the inherited `{classID, message}` prefix (e.g. `msg:
+str`), and those extra fields only exist in the subclass's own, wider struct
+layout. Allocating the narrower shared shape for such a class left every
+extra field's `STRUCT_GET`/`STRUCT_SET` reading past the allocated struct,
+segfaulting the VM on the very first field access. A class with no extra
+fields — every builtin exception, and a subclass that declares none — still
+gets the same two-field layout, so using `cls.typ` uniformly is safe.
+
+`emitExceptionInstance` evaluates the checked message argument (or `""` when
+omitted) once into a temp slot, then: allocates the struct and sets
+`{classID, message}` from that slot; applies any class-declared field
+defaults (`applyFieldDefaults`, the same helper plain class construction
+uses); and, when the class declares its own `__init__` whose arity matches
+the message-only constructor signature every exception class is checked
+against (SS "Exceptions" above), calls it with that same slot value so
+`self.msg = m`-style assignments actually run. Reusing one evaluated slot for
+both the field write and the `__init__` call avoids evaluating the message
+expression twice. A subclass whose own `__init__` has a different arity (or
+that inherits an ancestor's `__init__` without declaring one directly) is not
+called — its extra fields keep their zero value, a pre-existing, narrower gap
+in constructor-inheritance modeling shared with non-exception classes, not
+new to this path.
 
 ### Host ABI reference ownership
 

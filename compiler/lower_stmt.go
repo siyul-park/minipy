@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/siyul-park/minipy/ast"
+	"github.com/siyul-park/minipy/hostabi"
 	"github.com/siyul-park/minipy/operator"
 	"github.com/siyul-park/minipy/token"
 	"github.com/siyul-park/minipy/types"
@@ -181,17 +182,25 @@ func (c *lowerer) deleteStmt(n *ast.Delete) {
 	}
 }
 
-// assertStmt lowers `assert test[, msg]`: on a false test it builds an error
-// payload and throws it, which unwinds to an uncaught runtime exception.
+// assertStmt lowers `assert test[, msg]`: on a false test it raises
+// AssertionError through the same exception-instance path `raise
+// AssertionError(...)` uses (emitExceptionInstance), not a bare string
+// payload. A caught handler reads the thrown payload as a class instance
+// struct (STRUCT_GET on its classID field, emitExceptionClassID) to match it
+// against `except` types; a bare string payload has no classID field, so
+// `except AssertionError` on a failed assert traps with a type mismatch
+// instead of matching. CPython's `str(AssertionError())` with no message is
+// `""`, so an assert with no message passes no constructor argument rather
+// than substituting the class name as text.
 func (c *lowerer) assertStmt(n *ast.Assert) {
 	c.expr(n.Test)
 	ok := c.label()
 	c.brIf(ok)
+	var args []ast.Expr
 	if n.Msg != nil {
-		c.expr(n.Msg)
-	} else {
-		c.constGet(vmtypes.String("AssertionError"))
+		args = []ast.Expr{n.Msg}
 	}
+	c.emitExceptionInstance(c.classes["AssertionError"], args)
 	c.emit(instr.I32_CONST, uint64(vmtypes.ErrorCodeNone))
 	c.emit(instr.ERROR_NEW)
 	c.emit(instr.THROW)
@@ -377,12 +386,20 @@ func (c *lowerer) emitTrapInstance(errSlot int) {
 	c.bind(done)
 }
 
-// emitExceptionStruct allocates a BaseException-backed struct: field 0 is the
-// class id and field 1 is the message produced by pushMessage. Every exception
-// class inherits the same {classID, message} layout, and runtime dispatch
-// (emitExceptionClassID) only inspects the classID, not the struct's nominal type.
+// emitExceptionStruct allocates a struct laid out for cls: field 0 is the
+// class id and field 1 is the message produced by pushMessage; every
+// exception class inherits that {classID, message} prefix, and runtime
+// dispatch (emitExceptionClassID) only inspects the classID, not the
+// struct's nominal type. The allocation uses cls's own struct type, not the
+// shared BaseException type, because a user-defined subclass can declare
+// extra fields (e.g. `msg: str`) beyond the inherited prefix; allocating the
+// narrower BaseException shape for such a class left its extra fields
+// out of bounds for every later STRUCT_GET/STRUCT_SET, segfaulting on
+// attribute access. A class with no extra fields (every builtin exception,
+// and a user subclass that declares none) still gets the same {classID,
+// message} layout, so this is safe uniformly.
 func (c *lowerer) emitExceptionStruct(cls *class, pushMessage func()) {
-	c.emit(instr.STRUCT_NEW_DEFAULT, c.typeIndex(c.classes["BaseException"].typ))
+	c.emit(instr.STRUCT_NEW_DEFAULT, c.typeIndex(cls.typ))
 	c.emit(instr.DUP)
 	c.emit(instr.I32_CONST, 0)
 	c.emit(instr.I64_CONST, uint64(cls.classID))
@@ -459,14 +476,50 @@ func (c *lowerer) emitRaise(n *ast.Raise) {
 	c.emit(instr.THROW)
 }
 
+// emitExceptionInstance builds an exception instance from the constructor's
+// checked message argument (or "" when omitted), mirroring CPython's
+// BaseException.__new__ capturing *args before __init__ runs. The message
+// expression is evaluated once into a temp slot, both to set the inherited
+// `message` field and, when cls declares its own single-argument `__init__`
+// (matching the message-only signature every exception constructor is
+// checked against, constructorParams in check_expr.go), to run it — so a
+// subclass like `class MyError(Exception): def __init__(self, m): self.msg =
+// m` actually populates `msg` instead of leaving it at its zero value.
+//
+// A non-str argument is coerced with the same str() conversion print/f-string
+// use before landing in the message field, which is always declared `str`.
+// Every exception's own constructor call already checks its argument as str
+// (constructorParams), so this is a no-op there; assertStmt is the one caller
+// that can pass a non-str `args[0]` (assert only requires the message be
+// Printable, matching CPython's broader assert-message type), and without
+// this coercion that value would land in the str-typed message field
+// unconverted.
 func (c *lowerer) emitExceptionInstance(cls *class, args []ast.Expr) {
-	c.emitExceptionStruct(cls, func() {
-		if len(args) > 0 {
-			c.expr(args[0])
-		} else {
-			c.constGet(vmtypes.String(""))
+	msgSlot := c.tmp()
+	if len(args) > 0 {
+		c.expr(args[0])
+		if msgType := c.types[args[0]]; !types.Equal(msgType, types.Str) {
+			if refDynamic(msgType) {
+				c.callHost(operator.DynStr())
+			} else {
+				c.callHost(hostabi.StringFunction(msgType))
+			}
 		}
-	})
+	} else {
+		c.constGet(vmtypes.String(""))
+	}
+	c.emit(instr.GLOBAL_SET, uint64(msgSlot))
+
+	c.emitExceptionStruct(cls, func() { c.emit(instr.GLOBAL_GET, uint64(msgSlot)) })
+	c.applyFieldDefaults(cls)
+	if init := cls.methods["__init__"]; init != nil && len(init.params) == 2 {
+		c.emit(instr.DUP)
+		c.emit(instr.GLOBAL_GET, uint64(msgSlot))
+		c.promoteIntToFloat(types.Str, init.params[1].typ)
+		c.funcValue(init, cls.methodBody["__init__"])
+		c.emit(instr.CALL)
+		c.emit(instr.DROP)
+	}
 }
 
 func (c *lowerer) emitWith(n *ast.With) {
@@ -722,9 +775,7 @@ func (c *lowerer) assignTargetFromTemp(target ast.Expr, slot int) {
 		c.emit(instr.GLOBAL_GET, uint64(slot))
 		switch recv := c.types[t.X].(type) {
 		case *types.List:
-			c.emit(instr.SWAP)
-			c.emit(instr.I64_TO_I32)
-			c.emit(instr.SWAP)
+			c.emitListIndexNormalizeUnderValue()
 			c.emit(instr.ARRAY_SET)
 		case *types.Dict:
 			c.emit(instr.MAP_SET)
@@ -769,9 +820,7 @@ func (c *lowerer) assignTarget(target ast.Expr, value ast.Expr) {
 		c.expr(value)
 		switch recv := c.types[t.X].(type) {
 		case *types.List:
-			c.emit(instr.SWAP)
-			c.emit(instr.I64_TO_I32)
-			c.emit(instr.SWAP)
+			c.emitListIndexNormalizeUnderValue()
 			c.emit(instr.ARRAY_SET)
 		case *types.Dict:
 			c.emit(instr.MAP_SET)
@@ -821,16 +870,17 @@ func (c *lowerer) augAssignSubscript(n *ast.AugAssign, sub *ast.Subscript) {
 			func() {
 				c.emit(instr.GLOBAL_GET, uint64(recvSlot))
 				c.emit(instr.GLOBAL_GET, uint64(indexSlot))
-				c.emit(instr.I64_TO_I32)
+				c.emitListIndexNormalize()
 				c.emit(instr.ARRAY_GET)
 			},
 			func() { c.expr(n.Value) })
 		// Stack: [result]. Store back: need [receiver, i32_index, result].
+		resultSlot := c.tmp()
+		c.emit(instr.GLOBAL_SET, uint64(resultSlot))
 		c.emit(instr.GLOBAL_GET, uint64(recvSlot))
-		c.emit(instr.SWAP)
 		c.emit(instr.GLOBAL_GET, uint64(indexSlot))
-		c.emit(instr.I64_TO_I32)
-		c.emit(instr.SWAP)
+		c.emitListIndexNormalize()
+		c.emit(instr.GLOBAL_GET, uint64(resultSlot))
 		c.emit(instr.ARRAY_SET)
 	case *types.Dict:
 		dict := c.types[sub.X].(*types.Dict)

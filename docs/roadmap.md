@@ -157,26 +157,12 @@ Each was reproduced against CPython 3.13 while porting `conformance/testdata/`.
 The corpus deliberately avoids these rather than pinning minipy's answer as a
 divergence, so fixing one means adding its case.
 
-- Negative list indexing traps the VM for reads and writes (`xs[-1]`), while
-  negative slicing, `.pop(-1)`, `.insert(-1, ...)`, and negative string indexing
-  all work.
-- Reading a field of a user-defined `Exception` subclass segfaults; the same
-  class shape on a non-exception base works.
-- `assert` inside `try`/`except` always traps with a type mismatch, whatever the
-  caught class is, while `raise AssertionError(...)` works.
-- Single-argument `dict.get` returns the value type's zero value instead of
-  `None` for a missing key, and the checker types the result as `V`, so
-  `is None` is rejected.
 - `int ** negative_int` and `pow(int, negative_int)` trap instead of producing a
   float.
 - `str.split()` with no separator neither collapses whitespace runs nor treats
   tabs and newlines as separators.
-- `len(str)` counts UTF-8 bytes rather than codepoints, disagreeing with string
-  iteration, which is codepoint-correct.
 - `str.format()` ignores every embedded format spec. F-strings honor width,
   precision, and alignment, but not `,` grouping or `#` alternate form.
-- `in`/`not in` over `list[tuple[...]]` compares by identity while `==` on the
-  same values compares structurally.
 
 ### P1 language/runtime improvements
 

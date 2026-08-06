@@ -67,7 +67,7 @@ full CPython compatibility.
 | Chained assignment | ✅ | Assigns the same value to all targets; evaluates expression once. |
 | Augmented assignment | ✅ | Names, attributes, and subscripts (list elements, dict values) supported. |
 | `del` | ✅ | Names, list/dict items, and attributes; captured names rejected. |
-| `assert` | ✅ | Throws structured assertion error on false test. |
+| `assert` | ✅ | Throws structured assertion error on false test; catchable by `except AssertionError`/`except Exception` including from inside `try`/`except`. |
 | `if`/`elif`/`else` | ✅ | Includes narrowing and static truth pruning. |
 | `while`/`else` | ✅ | `break` skips `else`. |
 | `for`/`else` | ✅ | Iterates supported iterables; tuple target allowed. The iterable position also accepts a bare expression list (`for x in 1, 2, 3:`), but a tuple value — parenthesized or bare — is rejected with a `TypeError`; tuples have no iterator representation. |
@@ -125,7 +125,7 @@ full CPython compatibility.
 | Matrix multiply `@` | ⏳ | Tokenized/parsed, no semantics. |
 | Comparisons | ✅ | Chained comparisons included. `==`/`!=` on `list`/`tuple`/`dict`/`set` is structural (CPython semantics); `<`/`<=`/`>`/`>=` on `list`/`tuple` is lexicographic and only when every element position is `int`/`float`/`bool`/`str`. Ordering on `dict`, `set`, class, `Iterator`, or `Callable` is a diagnostic (`NotComparable`), not a runtime error. `==`/`!=` between two same-typed class/`Iterator`/`Callable` operands is identity-only (no structural/field equality, e.g. `@dataclass` field comparison). |
 | `is` / `is not` | ✅ | Especially used for `None` narrowing. |
-| `in` / `not in` | ✅ | Supported containers/strings/iterators. |
+| `in` / `not in` | ✅ | Supported containers/strings/iterators. List membership compares elements structurally (like `==`), e.g. a tuple/list value matches an equal element of `list[tuple[...]]`/`list[list[...]]` even when it is not the same reference. |
 | Conditional expressions | ✅ | Arms must have same type. |
 | Named expressions `:=` | ✅ | Name target only. |
 | Lambdas | ◐ | Need expected `Callable` context. |
@@ -133,13 +133,13 @@ full CPython compatibility.
 | Dynamic `**kwargs` call unpack | ⏳ | Parsed, rejected. |
 | Keyword/star native calls | ⏳ | Rejected for native/builtin method/dynamic callable paths. |
 | Attribute access | ◐ | Classes/modules supported; arbitrary object attributes out of scope. Literal-only `getattr`/`hasattr` support declared class fields. |
-| Indexing | ✅ | Lists, dicts, strings, constant tuple indexes. A missing dict key raises `KeyError` (message quotes string keys, e.g. `'zz'`, matching CPython) for `d[k]` reads, `d[k] += ...`, and `del d[k]`; `d[k] = v` still inserts a missing key rather than raising. |
+| Indexing | ✅ | Lists, dicts, strings, constant tuple indexes. A missing dict key raises `KeyError` (message quotes string keys, e.g. `'zz'`, matching CPython) for `d[k]` reads, `d[k] += ...`, and `del d[k]`; `d[k] = v` still inserts a missing key rather than raising. Negative `list[T]` indexes (`xs[-1]`, `xs[-1] = v`, `xs[-1] += v`) normalize like negative string indexing and slicing: `i < 0` becomes `len(xs) + i`. |
 | Slicing | ✅ | Lists and strings. |
 | Slice assignment/deletion | ◐ | `list[T]` contiguous slices only; omitted step or literal `1`; replacement length must match. |
 | List literals | ✅ | Homogeneous; empty needs hint. |
 | List methods | ◐ | `append`, `pop`, `index`, `insert`, `extend`, `reverse`, `sort`, `copy`, `count`, `clear`, `remove`; statically typed homogeneous lists only. |
 | String methods | ◐ | `upper`, `lower`, `split`, `join`, `find`, `strip`, `lstrip`, `rstrip`, `startswith`, `endswith`, `replace`, `count`, `isdigit`, `isalpha`, `isalnum`, `isspace`, `capitalize`, `title`, `swapcase`, `center`, `ljust`, `rjust`, `zfill`, `encode`, `format`; statically typed. |
-| Dict methods | ◐ | `get`, `keys`, `values`, `items`, `pop` (with optional default), `update`, `setdefault`, `clear`, `copy`; statically typed homogeneous dicts only. |
+| Dict methods | ◐ | `get`, `keys`, `values`, `items`, `pop` (with optional default), `update`, `setdefault`, `clear`, `copy`; statically typed homogeneous dicts only. `d.get(k)` with no default returns `V \| None` for a missing key (matching CPython's `None`), narrowable with `d.get(k) is None`; `d.get(k, default)` still returns `V`. |
 | Set methods | ◐ | `add`, `remove`, `discard`, `pop`, `clear`, `union`, `intersection`, `difference`, `issubset`, `issuperset`, `copy`; statically typed homogeneous sets only. |
 | Dict literals | ✅ | Homogeneous; empty needs hint; scalar hashable keys. Iteration order (`for`, `.keys()`, `.values()`, `.items()`) is unspecified and may differ between runs — unlike CPython's guaranteed insertion order since 3.7. `print`/`str` renders entries sorted by their rendered string for deterministic output, which does not track insertion order and need not match iteration order; see `docs/spec/02-types.md#iteration-order`. |
 | Set literals | ✅ | Homogeneous; empty needs hint; scalar hashable elements. Iteration order is unspecified and may differ between runs, the same as dict; `print`/`str` renders entries sorted by their rendered string for deterministic output. See `docs/spec/02-types.md#iteration-order`. |
@@ -181,7 +181,7 @@ full CPython compatibility.
 
 | Feature | Status | Notes |
 |---|---:|---|
-| `print`, `str`, `int`, `float`, `bool`, `abs`, `len` | ✅ | Native builtins. |
+| `print`, `str`, `int`, `float`, `bool`, `abs`, `len` | ✅ | Native builtins. `len(str)` counts Unicode codepoints, matching string iteration/indexing/slicing; `len(bytes)` counts bytes. |
 | `ord`, `chr` | ✅ | Unicode codepoint conversion; static `str->int` / `int->str`; `ValueError` for invalid inputs. `chr` rejects surrogate codepoints (`0xD800..0xDFFF`), diverging from CPython. |
 | `range`, `iter`, `next` | ✅ | Iterator paths. |
 | `enumerate`, `zip` | ✅ | List-based eager helpers. |
@@ -198,6 +198,7 @@ full CPython compatibility.
 | `isinstance` | ✅ | Type/class checks and narrowing support. |
 | `map`, `filter` | ✅ | Static list-based versions; `map(fn, list) -> list[R]`, `filter(pred, list) -> list[T]`. Inline lambdas supported via type inference. |
 | Builtin exceptions | ✅ | Seeded class hierarchy. |
+| Custom exception subclass fields | ◐ | A subclass may declare its own fields and a matching single-argument `__init__` (every exception constructor is checked as `(message: str = "")`, mirroring `BaseException.__new__`); that `__init__` runs and its field assignments are visible on the instance. A subclass with a different-arity `__init__`, or one that relies on an inherited ancestor `__init__` without declaring its own, does not have that initializer called — its extra fields keep their declared default or zero value. |
 | `operator` module | ✅ | Native functions for syntax operator semantics. |
 | `typing` module | ◐ | Annotation-only native symbols; no runtime typing objects. |
 | `math` module | ◐ | Constants (`pi`, `e`, `tau`, `inf`, `nan`) and subset of CPython math functions; `int` args promoted to `float`. |

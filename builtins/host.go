@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/siyul-park/minipy/hostabi"
 	"github.com/siyul-park/minipy/types"
@@ -258,6 +259,24 @@ func ordHost() *interp.HostFunction {
 				return nil, fmt.Errorf("%w: %q has %d codepoints", ErrOrdValue, string(runes), len(runes))
 			}
 			return []vmtypes.Boxed{vmtypes.BoxI64(int64(runes[0]))}, nil
+		},
+	)
+}
+
+// strLenHost implements len(str) by codepoint, not by the raw byte count
+// STRING_LEN reports for the underlying UTF-8 storage. String iteration
+// (strIter, below), indexing, and slicing (strIndex/strSlice,
+// compiler/runtime.go) already count/index by codepoint via []rune; len
+// disagreeing with them for any non-ASCII string is the bug this closes.
+func strLenHost() *interp.HostFunction {
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeString}, Returns: []vmtypes.Type{vmtypes.TypeI64}},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			s, err := hostabi.LoadStr(i, params[0])
+			if err != nil {
+				return nil, err
+			}
+			return []vmtypes.Boxed{vmtypes.BoxI64(int64(utf8.RuneCountInString(s)))}, nil
 		},
 	)
 }
