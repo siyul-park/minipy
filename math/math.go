@@ -31,6 +31,12 @@ const Name = "math"
 // Runtime errors exposed by math host functions.
 var (
 	ErrFactorial = errors.New("factorial() not defined for negative values")
+	// ErrDomain marks an argument outside a function's real-valued domain,
+	// mirroring CPython's "math domain error" ValueError (e.g. sqrt of a
+	// negative number, or log/asin/acos outside their domains). Runtime
+	// exception classification belongs to compiler/runtime.go's ValueError
+	// case list; this package only owns raising a stable, identifiable error.
+	ErrDomain = errors.New("math domain error")
 )
 
 // New builds the math native module.
@@ -45,16 +51,16 @@ func New() *module.NativeModule {
 		// Unary float functions
 		unaryFloat("ceil", gomath.Ceil),
 		unaryFloat("floor", gomath.Floor),
-		unaryFloat("sqrt", gomath.Sqrt),
-		unaryFloat("log", gomath.Log),
-		unaryFloat("log2", gomath.Log2),
-		unaryFloat("log10", gomath.Log10),
+		unaryFloatDomain("sqrt", gomath.Sqrt, negative),
+		unaryFloatDomain("log", gomath.Log, nonPositive),
+		unaryFloatDomain("log2", gomath.Log2, nonPositive),
+		unaryFloatDomain("log10", gomath.Log10, nonPositive),
 		unaryFloat("exp", gomath.Exp),
 		unaryFloat("sin", gomath.Sin),
 		unaryFloat("cos", gomath.Cos),
 		unaryFloat("tan", gomath.Tan),
-		unaryFloat("asin", gomath.Asin),
-		unaryFloat("acos", gomath.Acos),
+		unaryFloatDomain("asin", gomath.Asin, outsideUnitRange),
+		unaryFloatDomain("acos", gomath.Acos, outsideUnitRange),
 		unaryFloat("atan", gomath.Atan),
 		unaryFloat("fabs", gomath.Abs),
 		unaryFloat("trunc", gomath.Trunc),
@@ -75,8 +81,13 @@ func New() *module.NativeModule {
 	)
 }
 
-// constant builds a ConstantSymbol that emits an F64_CONST instruction.
+// constant builds a ConstantSymbol that emits an F64_CONST instruction. A NaN
+// value (the "nan" constant) is sign-canonicalized before encoding; see
+// hostabi.BoxFloat for why.
 func constant(name string, value float64) *module.NativeConstant {
+	if gomath.IsNaN(value) {
+		value = gomath.Copysign(value, -1)
+	}
 	bits := gomath.Float64bits(value)
 	return module.NewConstant(name, types.Float, func(e module.Emitter, _ []ast.Expr) {
 		e.Emit(instr.F64_CONST, uint64(bits))
@@ -88,6 +99,19 @@ func constant(name string, value float64) *module.NativeConstant {
 func unaryFloat(name string, fn func(float64) float64) *module.NativeSymbol {
 	host := unaryFloatHost(fn)
 	return module.NewSymbol(name, checkUnaryFloat(name), emitUnaryFloat(host, fn), nil)
+}
+
+// domainInvalid reports whether x lies outside a function's real-valued
+// domain. NaN always reports false: CPython's domain checks are ordinary
+// float comparisons, which NaN fails, so functions like sqrt(nan) compute a
+// NaN result instead of raising.
+type domainInvalid func(x float64) bool
+
+// unaryFloatDomain builds a callable symbol like unaryFloat, but raises
+// ErrDomain instead of computing a result when the argument fails invalid.
+func unaryFloatDomain(name string, fn func(float64) float64, invalid domainInvalid) *module.NativeSymbol {
+	host := unaryFloatDomainHost(fn, invalid)
+	return module.NewSymbol(name, checkUnaryFloat(name), emitUnaryFloatDomain(host, fn, invalid), nil)
 }
 
 // binaryFloat builds a callable symbol: (float, float) -> float, accepting int
@@ -211,6 +235,21 @@ func emitUnaryFloat(host *interp.HostFunction, fn func(float64) float64) module.
 	}
 }
 
+func emitUnaryFloatDomain(host *interp.HostFunction, fn func(float64) float64, invalid domainInvalid) module.EmitFunc {
+	return func(e module.Emitter, args []ast.Expr) {
+		e.Expr(args[0])
+		argType := e.Type(args[0])
+		if types.IsDynamic(argType) {
+			e.CallHost(dynUnaryFloatDomainHost(fn, invalid))
+			return
+		}
+		if types.Equal(argType, types.Int) {
+			e.Emit(instr.I64_TO_F64_S)
+		}
+		e.CallHost(host)
+	}
+}
+
 func emitBinaryFloat(host *interp.HostFunction, fn func(float64, float64) float64) module.EmitFunc {
 	return func(e module.Emitter, args []ast.Expr) {
 		t0 := e.Type(args[0])
@@ -283,7 +322,20 @@ func unaryFloatHost(fn func(float64) float64) *interp.HostFunction {
 	return interp.NewHostFunction(
 		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeF64}, Returns: []vmtypes.Type{vmtypes.TypeF64}},
 		func(_ *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
-			return []vmtypes.Boxed{vmtypes.BoxF64(fn(params[0].F64()))}, nil
+			return []vmtypes.Boxed{hostabi.BoxFloat(fn(params[0].F64()))}, nil
+		},
+	)
+}
+
+func unaryFloatDomainHost(fn func(float64) float64, invalid domainInvalid) *interp.HostFunction {
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeF64}, Returns: []vmtypes.Type{vmtypes.TypeF64}},
+		func(_ *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			x := params[0].F64()
+			if invalid(x) {
+				return nil, ErrDomain
+			}
+			return []vmtypes.Boxed{hostabi.BoxFloat(fn(x))}, nil
 		},
 	)
 }
@@ -292,7 +344,7 @@ func binaryFloatHost(fn func(float64, float64) float64) *interp.HostFunction {
 	return interp.NewHostFunction(
 		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeF64, vmtypes.TypeF64}, Returns: []vmtypes.Type{vmtypes.TypeF64}},
 		func(_ *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
-			return []vmtypes.Boxed{vmtypes.BoxF64(fn(params[0].F64(), params[1].F64()))}, nil
+			return []vmtypes.Boxed{hostabi.BoxFloat(fn(params[0].F64(), params[1].F64()))}, nil
 		},
 	)
 }
@@ -358,7 +410,25 @@ func dynUnaryFloatHost(fn func(float64) float64) *interp.HostFunction {
 			if err != nil {
 				return nil, err
 			}
-			return []vmtypes.Boxed{vmtypes.BoxF64(fn(f))}, nil
+			return []vmtypes.Boxed{hostabi.BoxFloat(fn(f))}, nil
+		},
+	)
+}
+
+// dynUnaryFloatDomainHost creates a dynamic dispatch host function for a
+// domain-restricted unary float operation. See dynUnaryFloatHost.
+func dynUnaryFloatDomainHost(fn func(float64) float64, invalid domainInvalid) *interp.HostFunction {
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeRef}, Returns: []vmtypes.Type{vmtypes.TypeF64}},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			f, err := hostabi.UnboxFloat(i, params[0])
+			if err != nil {
+				return nil, err
+			}
+			if invalid(f) {
+				return nil, ErrDomain
+			}
+			return []vmtypes.Boxed{hostabi.BoxFloat(fn(f))}, nil
 		},
 	)
 }
@@ -380,7 +450,7 @@ func dynBinaryFloatHost(fn func(float64, float64) float64, t0, t1 types.Type) *i
 			if err != nil {
 				return nil, err
 			}
-			return []vmtypes.Boxed{vmtypes.BoxF64(fn(f0, f1))}, nil
+			return []vmtypes.Boxed{hostabi.BoxFloat(fn(f0, f1))}, nil
 		},
 	)
 }
@@ -459,6 +529,17 @@ func degrees(rad float64) float64 { return rad * (180.0 / gomath.Pi) }
 func radians(deg float64) float64 { return deg * (gomath.Pi / 180.0) }
 
 func isFinite(f float64) bool { return !gomath.IsInf(f, 0) && !gomath.IsNaN(f) }
+
+// negative is sqrt's domain check: sqrt is undefined below zero.
+func negative(x float64) bool { return x < 0 }
+
+// nonPositive is log/log2/log10's domain check: they are undefined at and
+// below zero.
+func nonPositive(x float64) bool { return x <= 0 }
+
+// outsideUnitRange is asin/acos's domain check: both are undefined outside
+// [-1, 1].
+func outsideUnitRange(x float64) bool { return x < -1 || x > 1 }
 
 // isInfWrap adapts math.IsInf to the unary predicate signature.
 func isInfWrap(f float64) bool { return gomath.IsInf(f, 0) }

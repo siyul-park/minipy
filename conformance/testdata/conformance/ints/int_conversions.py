@@ -1,0 +1,16 @@
+# Derived from CPython Lib/test/test_int.py (PSF License, docs/reference/SOURCES.md).
+# Exercises conversions between int, float, bool, and str.
+print(int(3.9))
+print(int(-3.9))
+print(int(3.1))
+print(int(True))
+print(int(False))
+print(float(5))
+print(float(-5))
+print(str(42))
+print(str(-42))
+print(int("42"))
+print(int("-42"))
+print(bool(0))
+print(bool(1))
+print(bool(-1))

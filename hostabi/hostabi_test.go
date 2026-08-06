@@ -1,6 +1,7 @@
 package hostabi
 
 import (
+	"math"
 	"testing"
 
 	"github.com/siyul-park/minivm/interp"
@@ -11,6 +12,9 @@ import (
 )
 
 func TestPyFloat(t *testing.T) {
+	sum := 0.1 + valueOf(0.2) // computed at runtime: keeps Go's constant folder
+	// from evaluating 0.1+0.2 exactly, which would hide the double-rounding
+	// error str(0.1+0.2) must show.
 	tests := []struct {
 		in   float64
 		want string
@@ -20,10 +24,49 @@ func TestPyFloat(t *testing.T) {
 		{0, "0.0"},
 		{-2, "-2.0"},
 		{100, "100.0"},
+		{sum, "0.30000000000000004"},
+		{1e16, "1e+16"},
+		{1e-5, "1e-05"},
+		{1e22, "1e+22"},
+		{math.Copysign(0, -1), "-0.0"},
+		{math.Inf(1), "inf"},
+		{math.Inf(-1), "-inf"},
+		{math.NaN(), "nan"},
 	}
 	for _, tt := range tests {
 		require.Equalf(t, tt.want, PyFloat(tt.in), "PyFloat(%v)", tt.in)
 	}
+}
+
+// valueOf defeats Go's untyped-constant arithmetic folding so a test input
+// like 0.1+valueOf(0.2) is computed with float64 rounding at each step, the
+// way runtime float addition works, rather than as one exact-then-rounded
+// constant expression.
+func valueOf(f float64) float64 { return f }
+
+func TestBoxFloat(t *testing.T) {
+	t.Run("passes ordinary floats through", func(t *testing.T) {
+		require.Equal(t, vmtypes.KindF64, BoxFloat(1.5).Kind())
+		require.Equal(t, 1.5, BoxFloat(1.5).F64())
+		require.Equal(t, vmtypes.KindF64, BoxFloat(math.Inf(1)).Kind())
+		require.Equal(t, vmtypes.KindF64, BoxFloat(math.Inf(-1)).Kind())
+	})
+
+	t.Run("canonicalizes a positive-signed NaN so it still reports KindF64", func(t *testing.T) {
+		// math.NaN() (and every NaN strconv/the standard library produce) is
+		// positive-signed, the exact shape minivm's Boxed representation
+		// reserves to tag non-float kinds; boxing it unchanged would make
+		// Kind() misreport it as some other kind.
+		boxed := BoxFloat(math.NaN())
+		require.Equal(t, vmtypes.KindF64, boxed.Kind())
+		require.True(t, math.IsNaN(boxed.F64()))
+	})
+
+	t.Run("leaves an already negative-signed NaN as F64", func(t *testing.T) {
+		boxed := BoxFloat(math.Copysign(math.NaN(), -1))
+		require.Equal(t, vmtypes.KindF64, boxed.Kind())
+		require.True(t, math.IsNaN(boxed.F64()))
+	})
 }
 
 func TestNewIterator(t *testing.T) {
@@ -142,4 +185,73 @@ func TestHostValues(t *testing.T) {
 	require.Equal(t, vmtypes.KindRef, it.Kind())
 	require.True(t, it.Type().Equals(vmtypes.TypeRef))
 	require.Equal(t, "items", it.String())
+}
+
+// TestAllocArrayRetainsElements guards the ownership contract described in
+// the package doc comment: AllocArray must retain the (possibly borrowed)
+// elements it is given, so the new array stays valid even after whatever
+// released a source array that only ever borrowed those elements out — the
+// exact sequence a host function sees when a list literal is passed inline
+// as a call argument (an unrooted temporary the VM releases once the host
+// call returns).
+func TestAllocArrayRetainsElements(t *testing.T) {
+	vm := interp.New(program.New(nil))
+	defer vm.Close()
+
+	strAddr, err := vm.Alloc(vmtypes.String("a"))
+	require.NoError(t, err)
+	elem := vmtypes.BoxRef(strAddr)
+
+	srcType := vmtypes.NewArrayType(vmtypes.TypeRef)
+	srcAddr, err := vm.Alloc(vmtypes.NewArray(srcType, elem))
+	require.NoError(t, err)
+
+	_, elems, err := ArrayElems(vm, vmtypes.BoxRef(srcAddr))
+	require.NoError(t, err)
+	require.Len(t, elems, 1)
+
+	out, err := AllocArray(vm, srcType, elems)
+	require.NoError(t, err)
+	require.Len(t, out, 1)
+
+	// Release the source array the way the minivm calling convention
+	// releases a temporary argument once a host call returns without
+	// reusing its box in the result.
+	require.NoError(t, vm.Release(srcAddr))
+
+	val, err := vm.Load(out[0].Ref())
+	require.NoError(t, err)
+	arr, ok := val.(*vmtypes.Array)
+	require.True(t, ok)
+	require.Len(t, arr.Elems, 1)
+
+	s, err := LoadStr(vm, arr.Elems[0])
+	require.NoError(t, err)
+	require.Equal(t, "a", s)
+
+	_, err = AllocArray(vm, srcType, []vmtypes.Boxed{vmtypes.BoxRef(999)})
+	require.Error(t, err)
+}
+
+// TestRetainReleaseBoxes exercises RetainBoxes/ReleaseBoxes directly: scalar
+// elements are left untouched, and a retained ref-kind element survives a
+// release that would otherwise have reclaimed it.
+func TestRetainReleaseBoxes(t *testing.T) {
+	vm := interp.New(program.New(nil))
+	defer vm.Close()
+
+	addr, err := vm.Alloc(vmtypes.String("a"))
+	require.NoError(t, err)
+	ref := vmtypes.BoxRef(addr)
+	values := []vmtypes.Boxed{vmtypes.BoxI64(1), ref}
+
+	require.NoError(t, RetainBoxes(vm, values))
+	// One release drops the extra retain; the string is still live.
+	require.NoError(t, vm.Release(addr))
+	_, err = vm.Load(addr)
+	require.NoError(t, err)
+
+	require.NoError(t, ReleaseBoxes(vm, values))
+	_, err = vm.Load(addr)
+	require.Error(t, err)
 }

@@ -23,6 +23,7 @@ not duplicate the full content of each document.
 | lowering and runtime representation | `docs/spec/05-codegen.md` |
 | builtins and native modules | `docs/spec/06-builtins.md` |
 | Python compatibility status | `docs/compatibility.md` |
+| cross-implementation performance | `docs/benchmarks.md` |
 | completed work and remaining gaps | `docs/roadmap.md` |
 | normative coding and compiler architecture standard | `docs/coding-patterns.md` (RFC 0001) |
 
@@ -88,4 +89,5 @@ rules from the old location.
 - `docs/coding-patterns.md` — code and documentation contribution patterns.
 - `docs/spec/00-overview.md` — compiler architecture and execution model.
 - `docs/compatibility.md` — feature support matrix.
+- `docs/benchmarks.md` — cross-implementation performance comparison.
 - `docs/roadmap.md` — planned and deferred work.

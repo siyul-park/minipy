@@ -41,7 +41,7 @@ func TestMathModule(t *testing.T) {
 
 	t.Run("inf constant", func(t *testing.T) {
 		src := "import math\nprint(str(math.inf))\n"
-		require.Equal(t, "+Inf\n", run(t, src))
+		require.Equal(t, "inf\n", run(t, src))
 	})
 
 	t.Run("nan constant", func(t *testing.T) {

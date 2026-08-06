@@ -178,6 +178,16 @@ so `chr` only accepts Unicode scalar values in `0..0x10FFFF` excluding the
 surrogate range. This diverges from CPython, which accepts the full
 `0..0x10FFFF` range including surrogates.
 
+`len(s)` on a `str` counts Unicode codepoints, matching `ord`/`chr` and string
+iteration (`strIter`, `builtins/host.go`) and indexing/slicing
+(`strIndex`/`strSlice`, `compiler/runtime.go`), all of which already worked by
+codepoint. It lowers through a narrow host helper (`strLenHost`,
+`builtins/host.go`, `utf8.RuneCountInString`) instead of the `STRING_LEN`
+opcode, which reports the count of bytes in the underlying UTF-8 storage —
+correct for ASCII but wrong for any string with a multi-byte codepoint.
+`len(bytes)` is unaffected and still lowers through `ARRAY_LEN`: bytes length
+is defined in bytes, not codepoints.
+
 ## Iteration Builtins
 
 `iter` accepts lists, dicts, sets, iterators, strings, and bytes. Dict iteration
@@ -278,7 +288,7 @@ Supported homogeneous `dict[K, V]` methods:
 
 | Method | Arity | Accepted argument types | Result |
 |---|---:|---|---|
-| `get(key)` | 1 | `K` | `V` |
+| `get(key)` | 1 | `K` | `V \| None` |
 | `get(key, default)` | 2 | `K`, `V` | `V` |
 | `keys()` | 0 | none | `list[K]` |
 | `values()` | 0 | none | `list[V]` |
@@ -290,8 +300,13 @@ Supported homogeneous `dict[K, V]` methods:
 | `clear()` | 0 | none | `None` |
 | `copy()` | 0 | none | `dict[K, V]` |
 
-`get` returns the value for key if present, otherwise the default (or the
-zero value of `V` when no default is given). `pop` removes the key and returns
+`get` returns the value for key if present, otherwise the default; the
+single-argument form has no default and returns `None` for a missing key,
+matching CPython, so its checked and lowered result type is `V | None` (a
+`Union`, `types.NewUnion(V, types.None)`) rather than `V` — `d.get(k) is
+None` narrows it back to `V`. The two-argument form's result stays exactly
+`V`, since its default is always assignable to `V` and there is no `None`
+case to represent. `pop` removes the key and returns
 its value; raises `KeyError` if the key is not found and no default is given.
 When a default argument is provided, `pop` returns the default instead of raising
 `KeyError` for missing keys. `update` merges all entries

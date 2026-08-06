@@ -69,6 +69,14 @@ print(min(x))
 		require.Equal(t, "2\n", got)
 	})
 
+	// A list literal passed inline is an unrooted temporary: min() must
+	// retain the borrowed element it returns before the array argument is
+	// released, or the element is freed out from under the caller.
+	t.Run("min of temporary str list literal", func(t *testing.T) {
+		got := run(t, `print(min(["banana", "apple", "cherry"]))`)
+		require.Equal(t, "apple\n", got)
+	})
+
 	t.Run("max two args", func(t *testing.T) {
 		got := run(t, `print(max(3, 1))`)
 		require.Equal(t, "3\n", got)
@@ -85,6 +93,13 @@ x: list[int] = [4, 2, 5]
 print(max(x))
 `)
 		require.Equal(t, "5\n", got)
+	})
+
+	// See the "min of temporary str list literal" comment above: max() has
+	// the same borrowed-return shape.
+	t.Run("max of temporary str list literal", func(t *testing.T) {
+		got := run(t, `print(max(["banana", "apple", "cherry"]))`)
+		require.Equal(t, "cherry\n", got)
 	})
 
 	t.Run("sum int list", func(t *testing.T) {

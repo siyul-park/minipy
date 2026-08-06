@@ -135,7 +135,19 @@ are not emitted.
 `while` and `for` maintain loop-label stacks for `break` and `continue`. Loop
 `else` blocks are emitted only along the non-break path.
 
-`assert` lowers to a guard that constructs and throws a minivm error on failure.
+`assert` lowers to a guard that, on a false test, constructs and throws an
+`AssertionError` instance through the same `emitExceptionInstance` path
+`raise AssertionError(...)` uses (see "Exception instance construction"
+above) — not a bare string error payload. A `except AssertionError`/`except
+Exception` handler classifies a caught exception by reading its payload's
+classID field, which only a proper instance struct has; a failed assert
+inside `try`/`except` previously always trapped with a type mismatch instead
+of matching, regardless of the caught class. A message argument that is not
+already `str` (assert only requires it be `Printable`, matching CPython's
+broader assert-message type; `raise`/direct construction always check the
+argument as `str`) is coerced with the same `str()` conversion print and
+f-strings use before landing in the `message` field, since that field is
+always declared `str`.
 
 ### Match
 
@@ -188,6 +200,33 @@ host functions registered by the operator module. The `...` literal and the
 unshadowed `Ellipsis` fallback both load the same constant-pool value. Ellipsis
 identity and equality use `REF_EQ`; `is not` and `!=` append `I32_EQZ`.
 
+`CmpOpcode` (`operator/emit.go`) is the direct-opcode comparison table for
+`int`, `float`, `bool`, and `str`; an unsupported input there is a
+checker/lowerer invariant violation and panics rather than silently
+producing wrong bytecode. `EmitCompareStack` keeps every other checker-admitted
+comparison out of `CmpOpcode` entirely, so this panic path stays
+unreachable-by-construction:
+
+- `==`/`!=` on `list[T]`, `tuple[...]`, `dict[K, V]`, and `set[T]` call one
+  `operator`-owned host function (`containerEqual`, `operator/host.go`) that
+  recurses through the container's statically known element type — reusing
+  `hostabi.ArrayElems` for lists, minivm struct field reads for tuples, and
+  the existing map key/value walk for dicts/sets — down to
+  `hostabi.BoxedEqual` at scalar/string leaves. `!=` reuses the same call and
+  appends `I32_EQZ`, the same inversion `bytesEqual` already relies on rather
+  than registering a second host function per comparison.
+- `<`/`<=`/`>`/`>=` on `list[T]`/`tuple[...]` (only when every element
+  position's type is one `CmpOpcode` already supports — enforced by the
+  checker's `orderable` rule) call one host function (`containerCompare`)
+  that returns an `i64` in `{-1, 0, 1}` from an element-wise lexicographic
+  walk, then reduce to the requested operator by comparing that result
+  against `0` with the matching `I64_*_S` opcode.
+- `==`/`!=` between two operands of the same class, `Iterator[T]`, or
+  `Callable[[...], R]` type lower to `REF_EQ` (and `I32_EQZ` for `!=`) — the
+  same identity check `is`/`is not` already use for these types
+  (`identityComparable`, `operator/types.go`) — because minipy has no
+  structural/field equality for them.
+
 ### Containers, Strings, and Bytes
 
 List, dict, set, and tuple displays lower to minivm array/map/struct creation
@@ -211,6 +250,17 @@ only slicing path, since bytes has no in-place mutation. Bytes concatenation
 functions (`bytesConcat`, `bytesEqual`, `bytesContains`) that read both
 operands via the shared array-element host ABI view.
 
+`in`/`not in` over `list[T]` (`emitContains`, `operator/emit.go`) calls the
+host function `listContains` (`operator/host.go`), which compares each
+element to the needle through the same `structuralEqual` helper
+`containerEqual` uses for `list == list` — not `hostabi.BoxedEqual` directly —
+so `tuple_value in list_of_tuples` and `list_value in list_of_lists` match by
+value the same way `==` already does, instead of only matching an
+identical/aliased reference. `in`/`not in` over `dict`/`set` still lowers to
+`MAP_LOOKUP` directly: dict/set keys and set elements are restricted to
+scalar hashable types (`hashableKey`, `compiler/check_expr.go`), so no
+non-scalar membership case exists to compare structurally.
+
 List methods lower without dynamic attribute lookup. `append`, `pop`, `insert`,
 `extend`, and `reverse` mutate the receiver with minivm array opcodes and
 compiler-emitted loops. `insert` grows with `ARRAY_APPEND` before shifting
@@ -218,11 +268,142 @@ elements right. `extend` records the source length before appending, preserving
 `xs.extend(xs)` snapshot behavior. `index` uses a narrow host helper for equality
 search and maps a miss to `ValueError`.
 
+A scalar list index — `xs[i]` reads, `xs[i] = v` and chained-assignment writes,
+`xs[i] += v`, and `.pop(i)`/`del xs[i]` — normalizes a negative `i` the same way
+`strIndex` normalizes negative string indices: `i < 0` becomes `len(xs) + i`,
+and the index is only out of range if it is still negative, or still `>= len`,
+after that. The compiler helper `emitListIndexNormalize` (`compiler/lower_expr.go`)
+is the single place this arithmetic happens; every scalar list-index read and
+write path lowers through it (or its `emitListIndexNormalizeUnderValue`
+variant, which normalizes the index beneath an already-pushed value for
+subscript-assignment writes) before the `ARRAY_GET`/`ARRAY_SET`/`ARRAY_DELETE`
+opcode. Negative slicing, `.insert(-1, ...)`, and negative string indexing
+already normalized this way; this closes the same rule for plain list
+subscripting.
+
 Contiguous list slice assignment and deletion lower through narrow host helpers.
 The helpers normalize omitted and negative bounds like Python for step `1`,
 clamp bounds into `[0, len(list)]`, replace only when `len(rhs)` equals the
 normalized slice length, and store a resized array back into the receiver's heap
 slot. Length mismatch maps to `ValueError`.
+
+### Dict subscript reads and KeyError
+
+Every dict-keyed read — `d[k]`, the read half of `d[k] += ...`, and the
+presence probe `del d[k]` runs before deleting — lowers through the host
+function `dictItem` (`compiler/runtime.go`) instead of the bare `MAP_GET`
+opcode. `MAP_GET` returns the value type's zero value for a missing key with
+no way to detect the miss, which is exactly wrong for a language where
+`d[missing]` must raise; `dictItem` calls the same `mapGet` lookup and, on a
+miss, returns a Go error built from the sentinel `errDictKeyError` wrapped
+with the key's `repr` (`errors.New` message plus `%w`, `fmt.Errorf`). The
+compiler's error-to-exception host conversion (`c.exc()`, `runtime.go`)
+already classified `errDictKeyError` as `KeyError` for `dict.pop`; the
+subscript read path reuses that same classification, so `except KeyError`
+catches a missing-key read exactly like it catches a missing-key `pop`. The
+wrapped repr means the message quotes string keys and leaves other key types
+unquoted, matching CPython's `KeyError: 'zz'` shape.
+
+Because chained and nested subscripts, comprehension bodies, and f-string
+replacement fields all lower a dict read through the same `ast.Subscript`
+case, they inherit the check for free — there is no separate lowering path to
+duplicate it into. `del d[k]` is the one exception: `MAP_DELETE` reports no
+success/failure of its own, so `deleteStmt` calls `dictItem` first (raising
+on a miss) and only then issues `MAP_DELETE`, discarding the value `dictItem`
+returned. Assignment (`d[k] = v`) is unaffected — it still lowers through
+`MAP_SET`, which creates a missing key rather than raising, matching Python.
+
+### `dict.get` with no default
+
+`d.get(k)` (no default argument) is checked as `V | None`
+(`types.NewUnion(V, types.None)`), not `V`: CPython's single-argument `get`
+returns `None` for a missing key rather than raising, so its result must
+admit `None` for `d.get(k) is None` to narrow. `dictGet` (`compiler/
+runtime.go`) is unchanged — it still takes a boxed default argument and
+returns it verbatim on a miss — but the lowerer (`case "get"`,
+`compiler/lower_expr.go`) now pushes that default through `emitZeroValue`
+with the call's own checked `V | None` result type instead of `V`, so the
+default pushed for the omitted-argument form is `REF_NULL` (`None`'s lowered
+form) instead of `V`'s zero value. minivm's boxed representation is
+self-describing per value (each `Boxed` carries its own kind tag), so a
+`dictGet` host function whose declared return type is the union's dynamic
+ref shape can still return a hit's concrete `V`-kind boxed value directly;
+downstream code already treats the call's `V | None` static type as dynamic
+and narrows it the same way any other `Optional`-shaped value narrows,
+without a separate mechanism for this call site. The two-argument form
+(`d.get(k, default)`) is unaffected: its checked and lowered result stays
+`V`, since the caller-supplied default is already assignable to `V` and
+there is no `None` case to represent.
+
+### Exception instance construction
+
+`emitExceptionStruct` (`compiler/lower_stmt.go`) allocates the struct for an
+exception instance — a plain `MyError(...)` construction, a `raise
+MyError(...)`, and a VM trap classified into a builtin exception class all go
+through it. It allocates using the **constructed class's own struct type**
+(`cls.typ`), not a shared `BaseException` type: a user-defined subclass can
+declare fields beyond the inherited `{classID, message}` prefix (e.g. `msg:
+str`), and those extra fields only exist in the subclass's own, wider struct
+layout. Allocating the narrower shared shape for such a class left every
+extra field's `STRUCT_GET`/`STRUCT_SET` reading past the allocated struct,
+segfaulting the VM on the very first field access. A class with no extra
+fields — every builtin exception, and a subclass that declares none — still
+gets the same two-field layout, so using `cls.typ` uniformly is safe.
+
+`emitExceptionInstance` evaluates the checked message argument (or `""` when
+omitted) once into a temp slot, then: allocates the struct and sets
+`{classID, message}` from that slot; applies any class-declared field
+defaults (`applyFieldDefaults`, the same helper plain class construction
+uses); and, when the class declares its own `__init__` whose arity matches
+the message-only constructor signature every exception class is checked
+against (SS "Exceptions" above), calls it with that same slot value so
+`self.msg = m`-style assignments actually run. Reusing one evaluated slot for
+both the field write and the `__init__` call avoids evaluating the message
+expression twice. A subclass whose own `__init__` has a different arity (or
+that inherits an ancestor's `__init__` without declaring one directly) is not
+called — its extra fields keep their zero value, a pre-existing, narrower gap
+in constructor-inheritance modeling shared with non-exception classes, not
+new to this path.
+
+### Host ABI reference ownership
+
+Host functions in `builtins`, `operator`, and `compiler/runtime.go` exchange
+boxed values with the interpreter across the `hostabi` boundary, which owns
+the retain/release contract for that exchange (`docs/coding-patterns.md`
+SS7.5). Two rules cover every native symbol that reads or rebuilds a
+container:
+
+- `hostabi.ArrayElems` (and the equivalent `mapEntries`/`mapGet` helpers in
+  `compiler/runtime.go`) return **borrowed** boxes: the slice is a fresh Go
+  copy, but each element still belongs to the source array/dict/set. Reading
+  it takes no reference.
+- `hostabi.AllocArray` (and any host code that embeds a borrowed value into a
+  freshly built struct, e.g. `zip`/`enumerate`/`dict.items()` tuples, or a
+  freshly built map, e.g. `dict.copy()`/set union/`dictMerge`) **takes
+  ownership** of what it is given: it retains each ref-kind element so the
+  new container holds an independent reference, decoupled from wherever the
+  element came from.
+
+This matters because a call argument that is an unrooted temporary — an
+inline list/dict/set literal passed straight into a call, never bound to a
+name — is released by the minivm calling convention immediately after the
+host call returns, unless the returned value is that exact argument box. A
+host function that hands back or embeds a *borrowed* element (not a fresh
+allocation, not the argument itself) without retaining it first leaves a
+dangling reference once the source temporary's release cascades to its
+children — this is the shape behind `min`/`max` (return a borrowed list
+element), `zip`/`enumerate`/`dict.items()` (embed borrowed elements in a new
+struct), and `dict.copy()`/`dict.get()`/set union-style methods (surface or
+re-store borrowed entries) all needing an explicit `hostabi.RetainBoxes`
+call before the borrowed value outlives its source. Conversely, a value the
+host function already owns outright (something it just allocated, e.g. a
+freshly built struct handed to `AllocArray`) must be released with
+`hostabi.ReleaseBoxes` once its new container has taken its own retain, or
+the extra reference leaks. Named-variable arguments do not surface this
+defect: the variable's own binding keeps the source (and therefore the
+borrowed element) alive regardless of what the temporary call argument's
+reference count does, which is why regression coverage for these paths uses
+an inline literal expression, not a variable, as the call argument.
 
 ### Comprehensions and Generators
 

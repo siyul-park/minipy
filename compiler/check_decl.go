@@ -1055,10 +1055,14 @@ func (c *checker) synthGenBody(clauses []*ast.Comprehension, elem ast.Expr) []as
 func blockReturns(body []ast.Stmt) bool {
 	for _, s := range body {
 		switch n := s.(type) {
-		case *ast.Return:
+		case *ast.Return, *ast.Raise:
 			return true
 		case *ast.If:
 			if len(n.Orelse) > 0 && blockReturns(n.Body) && blockReturns(n.Orelse) {
+				return true
+			}
+		case *ast.Match:
+			if matchExhaustive(n) && allCasesReturn(n, blockReturns) {
 				return true
 			}
 		case *ast.Try:
@@ -1095,6 +1099,10 @@ func blockTerminates(body []ast.Stmt) bool {
 			if len(n.Orelse) > 0 && blockTerminates(n.Body) && blockTerminates(n.Orelse) {
 				return true
 			}
+		case *ast.Match:
+			if matchExhaustive(n) && allCasesReturn(n, blockTerminates) {
+				return true
+			}
 		case *ast.Try:
 			if blockReturns(n.Finalbody) || blockReturns(n.Body) {
 				return true
@@ -1106,6 +1114,35 @@ func blockTerminates(body []ast.Stmt) bool {
 		}
 	}
 	return false
+}
+
+// matchExhaustive reports whether n has an unconditional catch-all arm: a
+// wildcard (`case _:`) or bare capture (`case name:`) pattern with no guard.
+// A guard makes the arm refutable even when its pattern would otherwise match
+// anything, so it does not make the match exhaustive.
+func matchExhaustive(n *ast.Match) bool {
+	for _, cs := range n.Cases {
+		if cs.Guard != nil {
+			continue
+		}
+		switch cs.Pattern.(type) {
+		case *ast.WildcardPattern, *ast.CapturePattern:
+			return true
+		}
+	}
+	return false
+}
+
+// allCasesReturn reports whether every case body in n satisfies terminates,
+// which is blockReturns or blockTerminates depending on the caller's
+// reachability question.
+func allCasesReturn(n *ast.Match, terminates func([]ast.Stmt) bool) bool {
+	for _, cs := range n.Cases {
+		if !terminates(cs.Body) {
+			return false
+		}
+	}
+	return true
 }
 
 func containsYield(body []ast.Stmt) bool {

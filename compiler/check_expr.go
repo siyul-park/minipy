@@ -1330,6 +1330,12 @@ func (c *checker) methodCallType(n *ast.CallExpr, attr *ast.Attribute) types.Typ
 				c.errs.Add(n.Pos(), token.TypeMismatch, "dict.get expects key and optional default")
 				return types.Invalid
 			}
+			if len(args) == 1 {
+				// No default: a missing key returns None, matching CPython.
+				// The two-argument form still returns V, since its default is
+				// always assignable to V and there is no None case.
+				return types.NewUnion(t.Value, types.None)
+			}
 			return t.Value
 		case "keys":
 			if len(args) == 0 {

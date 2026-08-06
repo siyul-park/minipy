@@ -90,6 +90,24 @@ use-before-definition diagnostic as any other uninitialized binding.
 returns or raises and has no `else`, the negative narrowing of the guard applies
 to the rest of the enclosing block.
 
+### Return and Reachability Analysis
+
+The "must return on every path" check for a non-generator function with a
+non-`None` result, and the dead-code/narrowing decisions that follow an `if`
+with no `else`, share one fall-through analysis over `if`, `match`, `try`,
+`with`, `return`, and `raise`:
+
+- A branch ending in an unconditional `raise` satisfies the return-on-every-path
+  requirement; a function may rely on always raising instead of an explicit
+  `return`.
+- A `match` statement counts as returning on every path when it has an
+  unconditional catch-all arm — a wildcard (`case _:`) or bare capture
+  (`case name:`) pattern with no `if` guard — and every case body itself
+  returns on every path. A guard makes an otherwise catch-all pattern
+  refutable, so `case _ if cond:` does not make the match exhaustive, and a
+  `match` with no catch-all arm is never counted as returning regardless of
+  its case bodies.
+
 ## Type Resolution
 
 Annotations resolve through primitive names, aliases, classes, imported module
@@ -215,6 +233,23 @@ comparisons (ordering operators are `NotComparable`) and `in`/`not in` against
 an `int` needle in `0..255`. `bytes` has no other operator support: no
 ordering, no hashing (so it cannot be a dict key or set element), and no
 `str`/`repr`/truthiness conversion.
+
+`list[T]`, `tuple[...]`, `dict[K, V]`, and `set[T]` support `==`/`!=` between
+two operands of the same container type: structural comparison following
+CPython semantics (same length/size, elements or values compared
+element-wise/recursively; dict also requires matching keys, set requires
+matching members). `<`, `<=`, `>`, `>=` on `list[T]`/`tuple[...]` compare
+element-wise lexicographically (the first differing pair decides; an unbroken
+common prefix falls back to comparing lengths) but only when every element
+position's type is itself one of `int`, `float`, `bool`, or `str` — nested
+containers as elements, and `dict`/`set`/class/`Iterator`/`Callable`
+operands at any position, reject ordering with `NotComparable` using the same
+message shape as other unsupported comparisons (`'<' not supported between
+instances of ... and ...`). A class, `Iterator[T]`, or `Callable[[...], R]`
+operand supports `==`/`!=` against another operand of the same type as an
+identity comparison (no structural/field equality — matching CPython's
+default `__eq__` for objects without an override); ordering on these types is
+always `NotComparable`.
 
 `@` is syntactically accepted but unsupported because no matrix type/semantics are
 implemented.
@@ -372,6 +407,16 @@ be classes that inherit from `BaseException`. `raise` accepts exception instance
 or compatible exception construction paths according to the checker/lowerer.
 
 `except*` syntax is parsed but ExceptionGroup semantics are not implemented.
+
+Every exception constructor — including a user-defined subclass — is checked
+against a single fixed signature, `(message: str = "")`
+(`constructorParams`/`constructorParamInfos`, `compiler/check_expr.go`),
+regardless of any `__init__` the subclass declares; this mirrors
+`BaseException.__new__` capturing `*args` ahead of `__init__` in CPython. A
+subclass may still declare its own fields and a matching single-argument
+`__init__` that assigns them (see `docs/spec/05-codegen.md`,
+`emitExceptionInstance`) — the constructor call's checked message argument is
+what that `__init__` receives.
 
 ### With Statements
 

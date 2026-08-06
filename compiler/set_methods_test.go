@@ -142,4 +142,28 @@ func TestCompileSetMethods(t *testing.T) {
 			"print(str(len(s)))\n"
 		require.Equal(t, "2\n", run(t, src))
 	})
+
+	// A set[str] literal passed inline is an unrooted temporary: these
+	// builders copy borrowed entries into a fresh map without retaining
+	// them, so releasing the temporary source set(s) used to free the
+	// entries out from under the result.
+	t.Run("union of temporary str set literals", func(t *testing.T) {
+		got := run(t, `print(str(len({"a", "b"}.union({"b", "c"}))))`)
+		require.Equal(t, "3\n", got)
+	})
+
+	t.Run("intersection of temporary str set literals", func(t *testing.T) {
+		got := run(t, `print(str(len({"a", "b"}.intersection({"b", "c"}))))`)
+		require.Equal(t, "1\n", got)
+	})
+
+	t.Run("difference of temporary str set literals", func(t *testing.T) {
+		got := run(t, `print(str(len({"a", "b"}.difference({"b", "c"}))))`)
+		require.Equal(t, "1\n", got)
+	})
+
+	t.Run("copy of temporary str set literal", func(t *testing.T) {
+		got := run(t, `print(str(len({"a", "b"}.copy())))`)
+		require.Equal(t, "2\n", got)
+	})
 }

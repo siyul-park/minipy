@@ -1,0 +1,4 @@
+config failed
+parse failed
+loaded
+caught parse error as config error

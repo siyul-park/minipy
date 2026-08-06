@@ -132,6 +132,13 @@ These are implemented with deliberate limits, not undocumented bugs.
   (arbitrary PEP 614 expressions) are not supported.
 - `except*` is parsed but ExceptionGroup semantics are not implemented.
 - Async forms parse for diagnostics but are rejected.
+- `dict` and `set` do not preserve insertion order (unlike CPython's
+  guaranteed dict order since 3.7); iteration order is unspecified and may
+  vary between runs. This follows from mapping `dict`/`set` onto minivm's map
+  types, which are backed by Go maps with randomized iteration and no
+  insertion-order tracking (`minivm/types/map.go`). A fix requires adding
+  insertion-order tracking to minivm's map types — upstream work, outside
+  this repository. See `docs/spec/02-types.md#iteration-order`.
 
 ## Remaining Work
 
@@ -143,6 +150,24 @@ These are implemented with deliberate limits, not undocumented bugs.
   whenever syntax support moves between parse-only and lowered states.
 - Add focused regression tests for every compatibility-matrix row that is marked
   ✅ or ◐.
+
+### P0 defects found by the conformance corpus
+
+Each was reproduced against CPython 3.13 while porting `conformance/testdata/`.
+The corpus deliberately avoids these rather than pinning minipy's answer as a
+divergence, so fixing one means adding its case.
+
+- `int ** negative_int` and `pow(int, negative_int)` trap instead of producing a
+  float.
+- `str.split()` with no separator neither collapses whitespace runs nor treats
+  tabs and newlines as separators.
+- `str.format()` ignores every embedded format spec. F-strings honor width,
+  precision, and alignment, but not `,` grouping or `#` alternate form.
+
+- Float arithmetic in the `nbody` benchmark diverges from CPython:
+  minipy prints `-0.171846486` where CPython 3.13 prints `-0.171931230`,
+  identically at `-O0` and `-O3`. The benchmark fails `pybench`'s correctness
+  gate and is reported rather than worked around.
 
 ### P1 language/runtime improvements
 

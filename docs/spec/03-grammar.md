@@ -65,8 +65,9 @@ simple_stmt     ::= pass_stmt
 pass_stmt       ::= 'pass'
 break_stmt      ::= 'break'
 continue_stmt   ::= 'continue'
-return_stmt     ::= 'return' [expression]
-yield_stmt      ::= 'yield' [expression]
+return_stmt     ::= 'return' [expression_list]
+yield_stmt      ::= 'yield' [expression_list]
+                  | 'yield' 'from' expression
 raise_stmt      ::= 'raise' [expression ['from' expression]]
 global_stmt     ::= 'global' NAME {',' NAME}
 nonlocal_stmt   ::= 'nonlocal' NAME {',' NAME}
@@ -81,21 +82,37 @@ shape. Otherwise it remains a normal name.
 Assignment targets are checked after parsing:
 
 ```text
-ann_assign      ::= NAME ':' type_expr ['=' expression]
-assignment      ::= target '=' expression
-tuple_assignment::= tuple_target '=' expression
+ann_assign      ::= NAME ':' type_expr ['=' expression_list]
+assignment      ::= target '=' expression_list
+tuple_assignment::= tuple_target '=' expression_list
 aug_assignment  ::= target augop expression
 
 target          ::= NAME | primary '[' subscript ']' | primary '.' NAME | tuple_target
 del_target      ::= NAME | primary '[' subscript ']' | primary '.' NAME
 tuple_target    ::= NAME {',' (NAME | '*' NAME)} [',']
 augop           ::= '+=' | '-=' | '*=' | '/=' | '//=' | '%=' | '&=' | '|=' | '^=' | '<<=' | '>>=' | '**='
+
+expression_list ::= expression {',' expression} [',']
 ```
 
 Tuple/starred unpacking targets are supported for assignment and `for` targets.
 List slice assignment and deletion are supported for contiguous slices with an
 omitted step or a literal step of `1`. Augmented assignment is supported for
 names and attributes; other augmented targets are rejected.
+
+`expression_list` is Python's `star_expressions` production restricted to
+minipy's supported forms: it parses a bare (unparenthesized) tuple wherever a
+statement takes a value list — assignment values (`a, b = 1, 2`, including the
+swap idiom `a, b = b, a`), `return`, plain `yield`, and the `for` iterable
+(`for x in 1, 2, 3:`). Two or more comma-separated expressions, or one
+expression with a trailing comma, build an `ast.TupleLit`; a single expression
+with no trailing comma is unwrapped, so existing single-value call sites are
+unaffected. `yield from` is exempt: it takes one expression and iterates it,
+so it never accepts a bare tuple. A `tuple[...]` value produced this way is
+type-checked like any other tuple expression — in particular, the checker
+still rejects a tuple (parenthesized or bare) in the `for` iterable position
+with `TypeError: ... is not iterable`, since minipy tuples have no iterator
+representation (see `04-static-semantics.md`).
 
 ## Imports
 
@@ -120,7 +137,7 @@ compound_stmt   ::= if_stmt | while_stmt | for_stmt | try_stmt | with_stmt
 
 if_stmt         ::= 'if' expression block {'elif' expression block} ['else' block]
 while_stmt      ::= 'while' expression block ['else' block]
-for_stmt        ::= 'for' for_target 'in' expression block ['else' block]
+for_stmt        ::= 'for' for_target 'in' expression_list block ['else' block]
 for_target      ::= NAME | NAME {',' NAME} [',']
 try_stmt        ::= 'try' block {except_clause} ['else' block] ['finally' block]
 except_clause   ::= 'except' ['*'] [expression ['as' NAME]] block
