@@ -164,6 +164,11 @@ divergence, so fixing one means adding its case.
 - `str.format()` ignores every embedded format spec. F-strings honor width,
   precision, and alignment, but not `,` grouping or `#` alternate form.
 
+- Float arithmetic in the `nbody` benchmark diverges from CPython:
+  minipy prints `-0.171846486` where CPython 3.13 prints `-0.171931230`,
+  identically at `-O0` and `-O3`. The benchmark fails `pybench`'s correctness
+  gate and is reported rather than worked around.
+
 ### P1 language/runtime improvements
 
 - Dynamic `**kwargs` call unpacking and broader starred-call support.
