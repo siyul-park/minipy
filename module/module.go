@@ -95,8 +95,10 @@ type Emitter interface {
 	Br(l instr.Label)
 	// BrIf emits a conditional branch consuming the top of stack.
 	BrIf(l instr.Label)
-	// Tmp reserves a temporary slot and returns its index.
-	Tmp() int
+	// Tmp reserves a scratch slot able to hold a value of minivm type t and
+	// returns its index. The lowerer owns where the slot lives; a symbol only
+	// stores into and loads from it.
+	Tmp(t vmtypes.Type) int
 }
 
 // Runtime is the execution-time surface a Symbol may use when producing its

@@ -9,6 +9,7 @@ import (
 	"github.com/siyul-park/minipy/types"
 
 	"github.com/siyul-park/minivm/instr"
+	vmtypes "github.com/siyul-park/minivm/types"
 )
 
 // EmitBinary lowers a checked binary operation. pushLeft and pushRight evaluate
@@ -411,9 +412,9 @@ func emitContains(e module.Emitter, op token.Type, needle, haystack types.Type) 
 }
 
 func emitListConcat(e module.Emitter, list types.Type) {
-	rightSlot := e.Tmp()
-	leftSlot := e.Tmp()
-	resultSlot := e.Tmp()
+	rightSlot := e.Tmp(vmtypes.TypeRef)
+	leftSlot := e.Tmp(vmtypes.TypeRef)
+	resultSlot := e.Tmp(vmtypes.TypeRef)
 
 	e.Emit(instr.GLOBAL_SET, uint64(rightSlot))
 	e.Emit(instr.GLOBAL_SET, uint64(leftSlot))
@@ -427,7 +428,7 @@ func emitListConcat(e module.Emitter, list types.Type) {
 }
 
 func emitListAppend(e module.Emitter, resultSlot, sourceSlot int) {
-	indexSlot := e.Tmp()
+	indexSlot := e.Tmp(vmtypes.TypeI32)
 	top := e.Label()
 	done := e.Label()
 
@@ -485,9 +486,9 @@ func emitMixedArith(e module.Emitter, op token.Type, left, right types.Type) {
 // emitIntDivMod implements Python's floor quotient and divisor-signed remainder
 // from minivm's truncating signed remainder. Operands are evaluated once.
 func emitIntDivMod(e module.Emitter, pushLeft, pushRight func(), quotient bool) {
-	leftSlot := e.Tmp()
-	rightSlot := e.Tmp()
-	remainderSlot := e.Tmp()
+	leftSlot := e.Tmp(vmtypes.TypeI64)
+	rightSlot := e.Tmp(vmtypes.TypeI64)
+	remainderSlot := e.Tmp(vmtypes.TypeI64)
 
 	pushLeft()
 	e.Emit(instr.GLOBAL_SET, uint64(leftSlot))
@@ -496,7 +497,7 @@ func emitIntDivMod(e module.Emitter, pushLeft, pushRight func(), quotient bool) 
 
 	var quotientSlot int
 	if quotient {
-		quotientSlot = e.Tmp()
+		quotientSlot = e.Tmp(vmtypes.TypeI64)
 		e.Emit(instr.GLOBAL_GET, uint64(leftSlot))
 		e.Emit(instr.GLOBAL_GET, uint64(rightSlot))
 		e.Emit(instr.I64_DIV_S)

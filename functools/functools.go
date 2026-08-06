@@ -9,6 +9,7 @@ import (
 	"errors"
 
 	"github.com/siyul-park/minipy/ast"
+	"github.com/siyul-park/minipy/hostabi"
 	"github.com/siyul-park/minipy/module"
 	"github.com/siyul-park/minipy/token"
 	"github.com/siyul-park/minipy/types"
@@ -121,10 +122,14 @@ func reduceCheck(c module.Checker, args []ast.Expr, pos token.Pos) types.Type {
 
 // emitReduce lowers reduce(fn, xs[, initial]) to an inline iteration loop.
 func emitReduce(e module.Emitter, args []ast.Expr) {
-	fnSlot := e.Tmp()
-	listSlot := e.Tmp()
-	accSlot := e.Tmp()
-	idxSlot := e.Tmp()
+	// The accumulator carries the sequence's element type, which is also
+	// reduce()'s result type, so it must be declared with that kind rather than
+	// as a reference: the caller may store the result straight into a typed slot.
+	elem := types.IterableElem(types.Erase(e.Type(args[1])))
+	fnSlot := e.Tmp(vmtypes.TypeRef)
+	listSlot := e.Tmp(vmtypes.TypeRef)
+	accSlot := e.Tmp(hostabi.VMParamType(elem))
+	idxSlot := e.Tmp(vmtypes.TypeI64)
 
 	// Evaluate function and list, store in slots.
 	e.Expr(args[0])

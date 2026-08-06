@@ -59,8 +59,8 @@ func (c config) compileCode(source, filename, mode string) (module.Code, error) 
 	if err := low.lowerCode(mode); err != nil {
 		return nil, err
 	}
-	fb.WithLocals(low.scratch...)
-	fb.WithCaptures(codeCaptureTypes(low.consts)...)
+	fb.Locals(low.scratch...)
+	fb.Captures(codeCaptureTypes(low.consts)...)
 	fn, err := fb.Build()
 	if err != nil {
 		return nil, fmt.Errorf("build dynamic code: %w", err)

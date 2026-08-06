@@ -10,6 +10,7 @@ import (
 	"github.com/siyul-park/minipy/types"
 
 	"github.com/siyul-park/minivm/instr"
+	vmtypes "github.com/siyul-park/minivm/types"
 )
 
 func emitPrint(e module.Emitter, args []ast.Expr) {
@@ -309,7 +310,7 @@ func emitChr(e module.Emitter, args []ast.Expr) {
 }
 
 func emitNext(e module.Emitter, args []ast.Expr) {
-	valSlot := e.Tmp()
+	valSlot := e.Tmp(vmtypes.TypeRef)
 	done := e.Label()
 	end := e.Label()
 	e.Expr(args[0])

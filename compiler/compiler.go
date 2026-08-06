@@ -166,7 +166,7 @@ func (c *compilation) optimize(lowered *program.Program) (*program.Program, erro
 	handlers := append([]instr.Handler(nil), lowered.Handlers...)
 	globals := append([]vmtypes.Type(nil), lowered.Globals...)
 
-	optimized, err := optimize.NewOptimizer(c.config.level).Optimize(lowered)
+	optimized, err := optimize.New(c.config.level).Optimize(lowered)
 	if err != nil {
 		return nil, fmt.Errorf("optimize program: %w", err)
 	}

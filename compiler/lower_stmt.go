@@ -152,8 +152,8 @@ func (c *lowerer) deleteStmt(n *ast.Delete) {
 			}
 			switch recv := c.types[t.X].(type) {
 			case *types.Dict:
-				dictSlot := c.tmp()
-				keySlot := c.tmp()
+				dictSlot := c.tmp(vmtypes.TypeRef)
+				keySlot := c.tmp(vmtypes.TypeRef)
 				c.expr(t.X)
 				c.emit(instr.GLOBAL_SET, uint64(dictSlot))
 				c.expr(t.Index)
@@ -215,7 +215,7 @@ func (c *lowerer) assertStmt(n *ast.Assert) {
 // evaluated once into a temp slot, then each case's pattern test branches to the
 // next case on mismatch and falls through to the body on a full match.
 func (c *lowerer) emitMatch(n *ast.Match) {
-	subjSlot := c.tmp()
+	subjSlot := c.slotFor(n.Subject)
 	c.expr(n.Subject)
 	c.emit(instr.GLOBAL_SET, uint64(subjSlot))
 	subjT := c.types[n.Subject]
@@ -257,7 +257,7 @@ func (c *lowerer) emitTry(n *ast.Try) {
 	c.br(after)
 
 	c.bind(catch)
-	errSlot := c.tmp()
+	errSlot := c.tmp(vmtypes.TypeRef)
 	c.emit(instr.GLOBAL_SET, uint64(errSlot))
 	if len(n.Handlers) == 0 {
 		if finalizer != nil {
@@ -266,10 +266,10 @@ func (c *lowerer) emitTry(n *ast.Try) {
 		c.emit(instr.GLOBAL_GET, uint64(errSlot))
 		c.emit(instr.THROW)
 		c.bind(after)
-		c.tryRegion(start, end, catch, c.tryDepth())
+		c.tryRegion(start, end, catch)
 		return
 	}
-	instSlot := c.tmp()
+	instSlot := c.tmp(vmtypes.TypeRef)
 	c.emitCaughtInstance(errSlot, instSlot)
 	for _, h := range n.Handlers {
 		next := c.label()
@@ -299,7 +299,7 @@ func (c *lowerer) emitTry(n *ast.Try) {
 	c.emit(instr.GLOBAL_GET, uint64(errSlot))
 	c.emit(instr.THROW)
 	c.bind(after)
-	c.tryRegion(start, end, catch, c.tryDepth())
+	c.tryRegion(start, end, catch)
 }
 
 func (c *lowerer) emitTryFinally(body func(), finalizer func()) {
@@ -318,14 +318,14 @@ func (c *lowerer) emitTryFinally(body func(), finalizer func()) {
 	c.br(after)
 
 	c.bind(catch)
-	errSlot := c.tmp()
+	errSlot := c.tmp(vmtypes.TypeRef)
 	c.emit(instr.GLOBAL_SET, uint64(errSlot))
 	finalizer()
 	c.emit(instr.GLOBAL_GET, uint64(errSlot))
 	c.emit(instr.THROW)
 
 	c.bind(after)
-	c.tryRegion(start, end, catch, c.tryDepth())
+	c.tryRegion(start, end, catch)
 }
 
 func (c *lowerer) finalizer(body []ast.Stmt) func() {
@@ -363,7 +363,7 @@ func (c *lowerer) emitCaughtInstance(errSlot, instSlot int) {
 // skipping excInstance's host round trip for the traps minipy classifies most
 // often; an unrecognized code still defers to the host for its message text.
 func (c *lowerer) emitTrapInstance(errSlot int) {
-	codeSlot := c.tmp()
+	codeSlot := c.tmp(vmtypes.TypeI32)
 	c.emit(instr.GLOBAL_GET, uint64(errSlot))
 	c.emit(instr.ERROR_CODE)
 	c.emit(instr.GLOBAL_SET, uint64(codeSlot))
@@ -499,7 +499,7 @@ func (c *lowerer) emitRaise(n *ast.Raise) {
 // this coercion that value would land in the str-typed message field
 // unconverted.
 func (c *lowerer) emitExceptionInstance(cls *class, args []ast.Expr) {
-	msgSlot := c.tmp()
+	msgSlot := c.tmp(vmtypes.TypeRef)
 	if len(args) > 0 {
 		c.expr(args[0])
 		if msgType := c.types[args[0]]; !types.Equal(msgType, types.Str) {
@@ -531,7 +531,7 @@ func (c *lowerer) emitWith(n *ast.With) {
 	emit = func(i int) {
 		item := n.Items[i]
 		name := c.types[item.Context].(*types.Class).Name
-		ctxSlot := c.tmp()
+		ctxSlot := c.tmp(vmtypes.TypeRef)
 		c.expr(item.Context)
 		c.emit(instr.GLOBAL_SET, uint64(ctxSlot))
 		owner, enter := c.methodOwner(name, "__enter__")
@@ -617,9 +617,10 @@ func (c *lowerer) bindSlot(name string, slot int) {
 }
 
 // childSlot extracts a sub-value of the slot value at the given index (a
-// list/tuple/struct element) into a fresh temp slot and returns it.
-func (c *lowerer) childSlot(parent int, index int, op instr.Opcode) int {
-	child := c.tmp()
+// list/tuple/struct element) into a fresh temp slot of the element's own type
+// and returns it.
+func (c *lowerer) childSlot(parent int, index int, op instr.Opcode, elem types.Type) int {
+	child := c.tmp(hostabi.VMParamType(elem))
 	c.emit(instr.GLOBAL_GET, uint64(parent))
 	c.emit(instr.I32_CONST, uint64(index))
 	c.emit(op)
@@ -632,7 +633,7 @@ func (c *lowerer) emitSequenceTest(pat *ast.SequencePattern, slot int, typ types
 	case *types.Tuple:
 		if pat.Star < 0 {
 			for i, e := range pat.Elems {
-				child := c.childSlot(slot, i, instr.STRUCT_GET)
+				child := c.childSlot(slot, i, instr.STRUCT_GET, s.Elems[i])
 				c.emitPatternTest(e, child, s.Elems[i], next)
 			}
 			return
@@ -642,12 +643,12 @@ func (c *lowerer) emitSequenceTest(pat *ast.SequencePattern, slot int, typ types
 		prefix := pat.Star
 		suffix := len(pat.Elems) - pat.Star - 1
 		for i := 0; i < prefix; i++ {
-			child := c.childSlot(slot, i, instr.STRUCT_GET)
+			child := c.childSlot(slot, i, instr.STRUCT_GET, s.Elems[i])
 			c.emitPatternTest(pat.Elems[i], child, s.Elems[i], next)
 		}
 		for j := 0; j < suffix; j++ {
 			srcIdx := len(s.Elems) - suffix + j
-			child := c.childSlot(slot, srcIdx, instr.STRUCT_GET)
+			child := c.childSlot(slot, srcIdx, instr.STRUCT_GET, s.Elems[srcIdx])
 			c.emitPatternTest(pat.Elems[prefix+1+j], child, s.Elems[srcIdx], next)
 		}
 		star := pat.Elems[prefix].(*ast.StarPattern)
@@ -664,7 +665,7 @@ func (c *lowerer) emitSequenceTest(pat *ast.SequencePattern, slot int, typ types
 			c.emit(instr.I32_EQZ)
 			c.brIf(next)
 			for i, e := range pat.Elems {
-				child := c.childSlot(slot, i, instr.ARRAY_GET)
+				child := c.childSlot(slot, i, instr.ARRAY_GET, s.Elem)
 				c.emitPatternTest(e, child, s.Elem, next)
 			}
 			return
@@ -677,11 +678,11 @@ func (c *lowerer) emitSequenceTest(pat *ast.SequencePattern, slot int, typ types
 		c.emit(instr.I32_LT_S)
 		c.brIf(next)
 		for i := 0; i < prefix; i++ {
-			child := c.childSlot(slot, i, instr.ARRAY_GET)
+			child := c.childSlot(slot, i, instr.ARRAY_GET, s.Elem)
 			c.emitPatternTest(pat.Elems[i], child, s.Elem, next)
 		}
 		for j := 0; j < suffix; j++ {
-			child := c.tmp()
+			child := c.tmp(hostabi.VMParamType(s.Elem))
 			c.emit(instr.GLOBAL_GET, uint64(slot))
 			c.emit(instr.GLOBAL_GET, uint64(slot))
 			c.emit(instr.ARRAY_LEN)
@@ -708,7 +709,7 @@ func (c *lowerer) emitSequenceTest(pat *ast.SequencePattern, slot int, typ types
 func (c *lowerer) emitMappingTest(pat *ast.MappingPattern, slot int, typ types.Type, next instr.Label) {
 	d := typ.(*types.Dict)
 	for i, keyExpr := range pat.Keys {
-		child := c.tmp()
+		child := c.tmp(vmtypes.TypeRef)
 		c.emit(instr.GLOBAL_GET, uint64(slot))
 		c.expr(keyExpr)
 		c.emit(instr.MAP_LOOKUP)
@@ -730,7 +731,7 @@ func (c *lowerer) emitMappingTest(pat *ast.MappingPattern, slot int, typ types.T
 			c.expr(keyExpr)
 			c.emit(instr.ARRAY_SET)
 		}
-		keysSlot := c.tmp()
+		keysSlot := c.tmp(vmtypes.TypeRef)
 		c.emit(instr.GLOBAL_SET, uint64(keysSlot))
 		c.emit(instr.GLOBAL_GET, uint64(slot))
 		c.emit(instr.GLOBAL_GET, uint64(keysSlot))
@@ -743,12 +744,12 @@ func (c *lowerer) emitClassTest(pat *ast.ClassPattern, slot int, typ types.Type,
 	cls := typ.(*types.Class)
 	info := c.classes[cls.Name]
 	for i, sub := range pat.Args {
-		child := c.childSlot(slot, i, instr.STRUCT_GET)
+		child := c.childSlot(slot, i, instr.STRUCT_GET, info.fields[i].typ)
 		c.emitPatternTest(sub, child, info.fields[i].typ, next)
 	}
 	for i, kw := range pat.KwNames {
 		idx := info.fieldIndex[kw]
-		child := c.childSlot(slot, idx, instr.STRUCT_GET)
+		child := c.childSlot(slot, idx, instr.STRUCT_GET, info.fields[idx].typ)
 		c.emitPatternTest(pat.Kw[i], child, info.fields[idx].typ, next)
 	}
 }
@@ -764,7 +765,7 @@ func (c *lowerer) chainedAssign(n *ast.Assign) {
 			c.promoteIntToFloat(c.types[n.Value], c.typ(name.Name))
 			c.set(name.Name)
 		} else {
-			slot := c.tmp()
+			slot := c.tmp(vmtypes.TypeRef)
 			c.emit(instr.GLOBAL_SET, uint64(slot))
 			c.assignTargetFromTemp(target, slot)
 		}
@@ -859,12 +860,12 @@ func (c *lowerer) assignTarget(target ast.Expr, value ast.Expr) {
 func (c *lowerer) augAssignSubscript(n *ast.AugAssign, sub *ast.Subscript) {
 	// Save receiver in a temporary slot.
 	c.expr(sub.X)
-	recvSlot := c.tmp()
+	recvSlot := c.tmp(vmtypes.TypeRef)
 	c.emit(instr.GLOBAL_SET, uint64(recvSlot))
 
 	// Save index/key in a temporary slot.
 	c.expr(sub.Index)
-	indexSlot := c.tmp()
+	indexSlot := c.tmp(vmtypes.TypeRef)
 	c.emit(instr.GLOBAL_SET, uint64(indexSlot))
 
 	// Emit binary op: load old value, compute new value.
@@ -879,7 +880,7 @@ func (c *lowerer) augAssignSubscript(n *ast.AugAssign, sub *ast.Subscript) {
 			},
 			func() { c.expr(n.Value) })
 		// Stack: [result]. Store back: need [receiver, i32_index, result].
-		resultSlot := c.tmp()
+		resultSlot := c.tmp(vmtypes.TypeRef)
 		c.emit(instr.GLOBAL_SET, uint64(resultSlot))
 		c.emit(instr.GLOBAL_GET, uint64(recvSlot))
 		c.emit(instr.GLOBAL_GET, uint64(indexSlot))
@@ -938,7 +939,7 @@ func (c *lowerer) unpackAssign(target *ast.TupleLit, value ast.Expr) {
 			slots := make([]int, len(tupleValue.Elems))
 			for i, elem := range tupleValue.Elems {
 				c.expr(elem)
-				slots[i] = c.tmp()
+				slots[i] = c.slotFor(elem)
 				c.emit(instr.GLOBAL_SET, uint64(slots[i]))
 			}
 			for i, elem := range target.Elems {
@@ -950,7 +951,7 @@ func (c *lowerer) unpackAssign(target *ast.TupleLit, value ast.Expr) {
 		}
 	}
 	c.expr(value)
-	valueSlot := c.tmp()
+	valueSlot := c.slotFor(value)
 	c.emit(instr.GLOBAL_SET, uint64(valueSlot))
 	star := tupleStarIndex(target)
 	if star >= 0 {
@@ -1277,7 +1278,7 @@ func (c *lowerer) emitFor(n *ast.For) {
 }
 
 func (c *lowerer) emitIteratorFor(n *ast.For, emitIter func()) {
-	iterSlot := c.tmp()
+	iterSlot := c.tmp(vmtypes.TypeRef)
 	emitIter()
 	c.emit(instr.GLOBAL_SET, uint64(iterSlot))
 	top := c.label()
@@ -1332,8 +1333,8 @@ func (c *lowerer) iterate(expr ast.Expr, typ types.Type) {
 }
 
 func (c *lowerer) emitIterableFor(n *ast.For) {
-	iterSlot := c.tmp()
-	idxSlot := c.tmp()
+	iterSlot := c.tmp(vmtypes.TypeRef)
+	idxSlot := c.tmp(vmtypes.TypeI64)
 
 	c.expr(n.Iter)
 	c.emit(instr.GLOBAL_SET, uint64(iterSlot))
@@ -1428,7 +1429,7 @@ func (c *lowerer) emitDecoratorValues(decorators []ast.Expr) []int {
 	}
 	slots := make([]int, len(decorators))
 	for i, dec := range decorators {
-		slots[i] = c.tmp()
+		slots[i] = c.tmp(vmtypes.TypeRef)
 		c.expr(dec)
 		c.emit(instr.GLOBAL_SET, uint64(slots[i]))
 	}
@@ -1478,11 +1479,11 @@ func (c *lowerer) buildSpec(spec *specialization) {
 		Params:  vmParams(info),
 		Returns: vmReturns(info.result),
 	})
-	fb.WithLocals(vmLocals(info)...)
-
 	child := c.child(fnTarget(fb), info, spec.types, spec.calls, spec.args)
 	child.block(info.body)
 	child.emitNoneReturn()
+	child.flushTries()
+	fb.Locals(append(vmLocals(info), child.scratch...)...)
 	c.adopt(child)
 
 	f, ok := c.buildFunction(fb, "specialization", spec.key)
@@ -1513,23 +1514,23 @@ func (c *lowerer) funcValue(info *function, body []ast.Stmt) {
 		Params:  vmParams(info),
 		Returns: vmReturns(info.result),
 	})
-	fb.WithLocals(vmLocals(info)...)
 	// Dynamic code carries its globals and locals namespaces as the first two
 	// captures, so they precede the function's own captured cells.
 	if c.dynamic {
-		fb.WithCaptures(vmtypes.TypeRef, vmtypes.TypeRef)
+		fb.Captures(vmtypes.TypeRef, vmtypes.TypeRef)
 	}
-	fb.WithCaptures(vmCaps(info)...)
+	fb.Captures(vmCaps(info)...)
 
 	child := c.child(fnTarget(fb), info, nil, nil, nil)
 	child.block(body)
 	child.emitNoneReturn()
+	child.flushTries()
+	fb.Locals(append(vmLocals(info), child.scratch...)...)
 	c.adopt(child)
 
 	if c.dynamic {
-		fb.WithLocals(child.scratch...)
 		for _, constant := range child.consts {
-			fb.WithCaptures(constant.Type())
+			fb.Captures(constant.Type())
 		}
 	}
 
@@ -1560,7 +1561,7 @@ func (c *lowerer) funcValue(info *function, body []ast.Stmt) {
 // code, current, mod, and locals switch to the child's function; types,
 // callSpec, and callArgs are overridden only when non-nil (specializations
 // narrow them, plain nested functions inherit the parent's); loops, finally,
-// excepts, temps, boxed, and err reset to fresh zero values. The caller must
+// excepts, tries, temps, scratch, boxed, and err reset to fresh zero values. The caller must
 // call adopt(child) once the child finishes lowering its body.
 func (c *lowerer) child(code target, info *function, types map[ast.Expr]types.Type, callSpec map[*ast.CallExpr]*specialization, callArgs map[*ast.CallExpr][]ast.Expr) *lowerer {
 	child := *c
@@ -1580,6 +1581,7 @@ func (c *lowerer) child(code target, info *function, types map[ast.Expr]types.Ty
 	child.loops = nil
 	child.finally = nil
 	child.excepts = nil
+	child.tries = nil
 	child.temps = map[string]int{}
 	child.boxed = map[*local]bool{}
 	child.consts = nil
@@ -1589,14 +1591,11 @@ func (c *lowerer) child(code target, info *function, types map[ast.Expr]types.Ty
 	return &child
 }
 
-// adopt propagates a finished child's first lowering failure and temp-slot
-// high-water mark back onto the parent.
+// adopt propagates a finished child's first lowering failure back onto the
+// parent. Scratch slots do not propagate: each frame declares its own pool.
 func (c *lowerer) adopt(child *lowerer) {
 	if c.err == nil {
 		c.err = child.err
-	}
-	if child.next > c.next {
-		c.next = child.next
 	}
 }
 
@@ -1639,7 +1638,7 @@ func (c *lowerer) yieldExpr(n *ast.YieldExpr) {
 // resumed generators observe None through the result.
 func (c *lowerer) yieldCore(value ast.Expr, from bool) {
 	if from {
-		iterSlot := c.tmp()
+		iterSlot := c.tmp(vmtypes.TypeRef)
 		if lt, ok := c.types[value].(*types.List); ok {
 			c.expr(value)
 			c.callHost(c.listIter(lt))

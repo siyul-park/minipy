@@ -54,7 +54,7 @@ func (*stubEmitter) Label() instr.Label                       { return 0 }
 func (*stubEmitter) Bind(instr.Label)                         {}
 func (*stubEmitter) Br(instr.Label)                           {}
 func (*stubEmitter) BrIf(instr.Label)                         {}
-func (*stubEmitter) Tmp() int                                 { return 0 }
+func (*stubEmitter) Tmp(vmtypes.Type) int                     { return 0 }
 
 func TestBinaryType(t *testing.T) {
 	tests := []struct {
