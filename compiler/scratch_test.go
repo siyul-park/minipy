@@ -158,3 +158,78 @@ func TestCompileScratchStaysOutOfGlobals(t *testing.T) {
 	require.Len(t, prog.Globals, 3, "global table holds only the module's named bindings")
 	require.NotEmpty(t, prog.Locals, "scratch temporaries are entry-frame locals")
 }
+
+// TestCompileNestedFunctionReturnInference pins the inferred return type of an
+// unannotated nested function. The binding is declared before the body is
+// checked, so its callable type initially carries a None result placeholder;
+// until that was refreshed after inference, every call to such a function typed
+// as None and evaluated to None with no diagnostic.
+func TestCompileNestedFunctionReturnInference(t *testing.T) {
+	tests := []struct {
+		name string
+		src  string
+		want string
+	}{
+		{
+			name: "calling an unannotated nested function",
+			src:  "def o():\n    def i():\n        return 7\n    return i()\nprint(o())\n",
+			want: "7\n",
+		},
+		{
+			name: "unannotated nested function capturing an outer local",
+			src:  "def o():\n    n = 0\n    def i():\n        return n + 1\n    return i()\nprint(o())\n",
+			want: "1\n",
+		},
+		{
+			name: "returning an unannotated nested function and calling it",
+			src:  "def o():\n    def i():\n        return 7\n    return i\nprint(o()())\n",
+			want: "7\n",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, run(t, tt.src))
+		})
+	}
+}
+
+// TestCompileLargeIntHostBoundary pins ints past minivm's inline boxed payload
+// (49 bits, so anything outside [-2^48, 2^48-1]) surviving a host call. They
+// spill to a heap cell; a host function that boxes or reads one directly
+// truncates it silently.
+func TestCompileLargeIntHostBoundary(t *testing.T) {
+	tests := []struct {
+		name string
+		src  string
+		want string
+	}{
+		{name: "power just inside the inline payload", src: "print(2 ** 48)\n", want: "281474976710656\n"},
+		{name: "power just past it", src: "print(2 ** 49)\n", want: "562949953421312\n"},
+		{name: "pow builtin past it", src: "print(pow(2, 49))\n", want: "562949953421312\n"},
+		{name: "int() parsing a large literal", src: "print(int(\"1125899906842624000\"))\n", want: "1125899906842624000\n"},
+		{name: "abs of a large negative", src: "print(abs(-1125899906842624000))\n", want: "1125899906842624000\n"},
+		{name: "max over large values", src: "print(max(1125899906842624000, 1))\n", want: "1125899906842624000\n"},
+		{name: "min orders by value, not by truncation", src: "print(min(-1125899906842624000, 1))\n", want: "-1125899906842624000\n"},
+		{
+			name: "math.gcd over large values",
+			src:  "import math\nprint(math.gcd(1125899906842624000, 1125899906842624000))\n",
+			want: "1125899906842624000\n",
+		},
+		{
+			// Overflow past 64 bits still wraps two's-complement, which is
+			// minipy's documented divergence from CPython's arbitrary
+			// precision. What matters here is that it wraps consistently with
+			// the i64 opcodes rather than truncating to the boxed payload.
+			name: "power overflowing 64 bits wraps rather than truncating",
+			src:  "print(3 ** 40)\n",
+			want: "-6289078614652622815\n",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, run(t, tt.src))
+		})
+	}
+}

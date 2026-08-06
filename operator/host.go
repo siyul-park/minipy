@@ -45,7 +45,11 @@ func powInt() *interp.HostFunction {
 					base *= base
 				}
 			}
-			return []vmtypes.Boxed{vmtypes.BoxI64(result)}, nil
+			boxed, err := hostabi.BoxInt(i, result)
+			if err != nil {
+				return nil, err
+			}
+			return []vmtypes.Boxed{boxed}, nil
 		},
 	)
 }

@@ -361,9 +361,15 @@ func predicateHost(fn func(float64) bool) *interp.HostFunction {
 func gcdHost() *interp.HostFunction {
 	return interp.NewHostFunction(
 		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeI64, vmtypes.TypeI64}, Returns: []vmtypes.Type{vmtypes.TypeI64}},
-		func(_ *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
-			a := params[0].I64()
-			b := params[1].I64()
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			a, err := hostabi.LoadI64(i, params[0])
+			if err != nil {
+				return nil, err
+			}
+			b, err := hostabi.LoadI64(i, params[1])
+			if err != nil {
+				return nil, err
+			}
 			if a < 0 {
 				a = -a
 			}
@@ -373,7 +379,11 @@ func gcdHost() *interp.HostFunction {
 			for b != 0 {
 				a, b = b, a%b
 			}
-			return []vmtypes.Boxed{vmtypes.BoxI64(a)}, nil
+			boxed, err := hostabi.BoxInt(i, a)
+			if err != nil {
+				return nil, err
+			}
+			return []vmtypes.Boxed{boxed}, nil
 		},
 	)
 }
@@ -381,7 +391,7 @@ func gcdHost() *interp.HostFunction {
 func factorialHost() *interp.HostFunction {
 	return interp.NewHostFunction(
 		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeI64}, Returns: []vmtypes.Type{vmtypes.TypeI64}},
-		func(_ *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
 			n := params[0].I64()
 			if n < 0 {
 				return nil, fmt.Errorf("%w: %d", ErrFactorial, n)
@@ -390,7 +400,11 @@ func factorialHost() *interp.HostFunction {
 			for i := int64(2); i <= n; i++ {
 				result *= i
 			}
-			return []vmtypes.Boxed{vmtypes.BoxI64(result)}, nil
+			boxed, err := hostabi.BoxInt(i, result)
+			if err != nil {
+				return nil, err
+			}
+			return []vmtypes.Boxed{boxed}, nil
 		},
 	)
 }
@@ -493,7 +507,11 @@ func dynGCDHost(t0, t1 types.Type) *interp.HostFunction {
 			for b != 0 {
 				a, b = b, a%b
 			}
-			return []vmtypes.Boxed{vmtypes.BoxI64(a)}, nil
+			boxed, err := hostabi.BoxInt(i, a)
+			if err != nil {
+				return nil, err
+			}
+			return []vmtypes.Boxed{boxed}, nil
 		},
 	)
 }
@@ -514,7 +532,11 @@ func dynFactorialHost() *interp.HostFunction {
 			for j := int64(2); j <= n; j++ {
 				result *= j
 			}
-			return []vmtypes.Boxed{vmtypes.BoxI64(result)}, nil
+			boxed, err := hostabi.BoxInt(i, result)
+			if err != nil {
+				return nil, err
+			}
+			return []vmtypes.Boxed{boxed}, nil
 		},
 	)
 }

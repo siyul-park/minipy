@@ -811,6 +811,12 @@ func (c *checker) functionStmt(n *ast.Function) {
 		}
 		info.local.init = true
 		c.checkFunctionBody(n.Body, n.Params, info, n.Pos())
+		// nestedFuncs declared the binding before the body was checked, so an
+		// unannotated function's callable type still carries the None result
+		// placeholder. Refresh it now that the body has been inferred, and
+		// before the decorators are checked against "the function's own
+		// (possibly inferred) signature".
+		info.local.typ = types.NewCallable(srcTypes(info.params), info.result)
 		c.checkFunctionDecorators(n, info, &info.local.init)
 		return
 	}

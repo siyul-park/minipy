@@ -20,14 +20,14 @@ import (
 // Runtime ValueError cases exposed by builtin host functions. The compiler
 // boundary can classify these by identity without matching message text.
 var (
-	ErrIntValue      = errors.New("invalid literal for int() with base 10")
-	ErrFloatValue    = errors.New("could not convert string to float")
-	ErrRangeStep     = errors.New("range() step must not be zero")
-	ErrOrdValue      = errors.New("ord() expected a single Unicode character")
-	ErrChrValue      = errors.New("chr() argument out of range")
-	ErrMinMaxEmpty   = errors.New("min()/max() arg is an empty sequence")
-	ErrDivisionByZero    = errors.New("division by zero")
-	ErrNegativeExponent  = errors.New("negative exponent not supported for integer pow")
+	ErrIntValue         = errors.New("invalid literal for int() with base 10")
+	ErrFloatValue       = errors.New("could not convert string to float")
+	ErrRangeStep        = errors.New("range() step must not be zero")
+	ErrOrdValue         = errors.New("ord() expected a single Unicode character")
+	ErrChrValue         = errors.New("chr() argument out of range")
+	ErrMinMaxEmpty      = errors.New("min()/max() arg is an empty sequence")
+	ErrDivisionByZero   = errors.New("division by zero")
+	ErrNegativeExponent = errors.New("negative exponent not supported for integer pow")
 )
 
 type rangeIterator struct {
@@ -88,7 +88,11 @@ func intParseHost() *interp.HostFunction {
 			if err != nil {
 				return nil, fmt.Errorf("%w: %q", ErrIntValue, s)
 			}
-			return []vmtypes.Boxed{vmtypes.BoxI64(n)}, nil
+			boxed, err := hostabi.BoxInt(i, n)
+			if err != nil {
+				return nil, err
+			}
+			return []vmtypes.Boxed{boxed}, nil
 		},
 	)
 }
@@ -514,9 +518,17 @@ func sumHost(arg types.Type) *interp.HostFunction {
 			if types.Equal(list.Elem, types.Int) {
 				var total int64
 				for _, e := range elems {
-					total += e.I64()
+					n, err := hostabi.LoadI64(i, e)
+					if err != nil {
+						return nil, err
+					}
+					total += n
 				}
-				return []vmtypes.Boxed{vmtypes.BoxI64(total)}, nil
+				boxed, err := hostabi.BoxInt(i, total)
+				if err != nil {
+					return nil, err
+				}
+				return []vmtypes.Boxed{boxed}, nil
 			}
 			var total float64
 			for _, e := range elems {
@@ -709,7 +721,11 @@ func powHost(base, exp types.Type) *interp.HostFunction {
 				if err != nil {
 					return nil, err
 				}
-				return []vmtypes.Boxed{vmtypes.BoxI64(result)}, nil
+				boxed, err := hostabi.BoxInt(i, result)
+				if err != nil {
+					return nil, err
+				}
+				return []vmtypes.Boxed{boxed}, nil
 			},
 		)
 	}
@@ -812,7 +828,19 @@ func reprHost(t types.Type) *interp.HostFunction {
 func boxedLess(i *interp.Interpreter, a, b vmtypes.Boxed, elem types.Type, errp *error) bool {
 	switch {
 	case types.Equal(elem, types.Int):
-		return a.I64() < b.I64()
+		// Read through LoadI64: an int past the inline payload arrives as a
+		// heap ref, and comparing the raw boxes would order the truncations.
+		na, e := hostabi.LoadI64(i, a)
+		if e != nil {
+			*errp = e
+			return false
+		}
+		nb, e := hostabi.LoadI64(i, b)
+		if e != nil {
+			*errp = e
+			return false
+		}
+		return na < nb
 	case types.Equal(elem, types.Float):
 		return a.F64() < b.F64()
 	case types.Equal(elem, types.Bool):
