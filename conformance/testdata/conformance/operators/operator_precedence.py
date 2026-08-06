@@ -1,0 +1,15 @@
+# Derived from CPython Lib/test/test_grammar.py (PSF License, docs/reference/SOURCES.md).
+# Exercises operator precedence across arithmetic, bitwise, and comparison mixes.
+print(2 + 3 * 4)
+print((2 + 3) * 4)
+print(2 * 3 ** 2)
+print(-2 ** 2)
+print((-2) ** 2)
+print(2 + 3 == 5)
+print(1 | 2 & 3)
+print((1 | 2) & 3)
+print(1 << 2 + 1)
+print(10 - 2 - 3)
+print(2 ** 3 ** 2)
+print(not 1 == 2)
+print(1 + 2 < 4 and 5 > 3)
