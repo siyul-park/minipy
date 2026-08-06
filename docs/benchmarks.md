@@ -4,6 +4,12 @@ Wall-clock comparison of minipy against CPython, pypy3, and gpython on a
 shared corpus of compute-heavy programs, plus the tooling that produces the
 comparison.
 
+**Read [Execution mode](#execution-mode-only-pypy3-is-jit-compiled) first.**
+Every minipy number here is interpreted, not JIT-compiled: minivm's JIT is
+arm64-only and this host is amd64. CPython 3.13, CPython 3.11 and gpython are
+likewise interpreters, so those comparisons are like-for-like. pypy3 is the
+only JIT here, and its lead should be read accordingly.
+
 ## When to Read
 
 Read this before adding a benchmark case, before changing
@@ -285,6 +291,30 @@ reported in the header in its place.
   - gpython: Python 3.4.0 (none, unknown); [Gpython dev]
   - minipy -O0: built from this checkout, rev f523af2
   - minipy -O3: built from this checkout, rev f523af2
+
+### Execution mode: only pypy3 is JIT-compiled
+
+This is the single most important caveat for reading the tables below.
+
+| Implementation | Execution | Why |
+|---|---|---|
+| minipy `-O0`/`-O3` | interpreter | minivm's JIT backend is **arm64-only** (`interp/jit_arm64.go`); on every other architecture `interp/jit_stub.go` (`//go:build !arm64`) returns a nil compiler and the interpreter runs unassisted. This host is amd64, so **no minipy number here is JIT-compiled**. `-O0`/`-O3` select minivm's ahead-of-time optimizer level, not a JIT. |
+| CPython 3.13 | interpreter | 3.13's copy-and-patch JIT is opt-in at build time and this build does not have it (`--enable-experimental-jit` absent from `CONFIG_ARGS`). |
+| CPython 3.11 | interpreter | no JIT exists in 3.11. |
+| gpython | interpreter | tree-walking interpreter, no JIT. |
+| **pypy3** | **tracing JIT** | RPython tracing JIT, on by default. |
+
+So minipy against CPython 3.13, CPython 3.11 and gpython is a like-for-like
+interpreter comparison, and those ratios say something real about minipy's
+interpreter.
+
+**minipy against pypy3 is not like-for-like.** pypy3's 3x-20x lead is mostly
+its JIT compiling hot loops to machine code while minipy interprets bytecode.
+Read that column as "what a mature JIT buys on this workload", not as a
+verdict on minipy's design. The interesting comparison for minipy is CPython.
+
+A JIT-enabled minipy measurement would need an arm64 host and is not
+represented here at all.
 
 All six implementations pybench knows how to discover were present on this
 host; none is reported absent. `-runs 5` was used (the tool's own default),
