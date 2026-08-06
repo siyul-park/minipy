@@ -27,7 +27,7 @@ type spec struct {
 
 // New builds the builtins native module.
 func New() *module.NativeModule {
-	return module.NewNative(Name,
+	symbols := []module.Symbol{
 		callSymbol("print", spec{1, 1, printable(types.None)}, emitPrint, nil),
 		callSymbol("str", spec{1, 1, printable(types.Str)}, emitStr, nil),
 		callSymbol("int", spec{1, 1, convert(types.Int)}, emitInt, valueHost(intParseHost)),
@@ -61,7 +61,9 @@ func New() *module.NativeModule {
 		module.NewSymbol("isinstance", isInstanceCheck, emitIsInstance, nil),
 		module.NewSymbol("map", mapCheck, emitMap, nil),
 		module.NewSymbol("filter", filterCheck, emitFilter, nil),
-	)
+	}
+	symbols = append(symbols, dynamicSymbols()...)
+	return module.NewNative(Name, symbols...)
 }
 
 func callSymbol(name string, sp spec, emit module.EmitFunc, value module.ValueFunc) *module.NativeSymbol {

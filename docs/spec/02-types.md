@@ -127,6 +127,9 @@ generation with an unresolved type variable is a compiler bug.
 - any concrete value assignable to a union member may flow into that union
 - a union may flow into a wider union that admits all of its members
 - any value may flow into `Any`
+- `Any` may flow into an annotated target of any type; the annotation is trusted
+  statically and recovered at runtime by a checked cast, so a value whose real
+  type does not match traps instead of being silently reinterpreted
 - `int` is assignable to `float` (implicit numeric widening, matching standard
   Python semantics)
 

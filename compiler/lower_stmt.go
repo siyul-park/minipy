@@ -21,6 +21,10 @@ func (c *lowerer) stmt(s ast.Stmt) {
 		}
 		if n.Value != nil {
 			c.expr(n.Value)
+			// An annotated target is the one place the checker admits a dynamic
+			// value into a concrete slot (dynamic code results), so recover the
+			// concrete representation before storing it.
+			c.narrow(c.types[n.Value], c.typ(n.Target.Name))
 			c.promoteIntToFloat(c.types[n.Value], c.typ(n.Target.Name))
 			c.set(n.Target.Name)
 		}
@@ -1065,7 +1069,7 @@ func (c *lowerer) get(name string) {
 	}
 	if c.current != nil {
 		if cap, ok := c.current.captures[name]; ok {
-			c.emit(instr.UPVAL_GET, uint64(cap.index))
+			c.emit(instr.UPVAL_GET, uint64(c.captureIndex(cap.index)))
 			if cap.boxed || cap.src.boxed {
 				c.emit(instr.REF_GET)
 			}
@@ -1100,17 +1104,24 @@ func (c *lowerer) set(name string) {
 	}
 	if c.current != nil {
 		if cap, ok := c.current.captures[name]; ok {
-			c.emit(instr.UPVAL_GET, uint64(cap.index))
+			c.emit(instr.UPVAL_GET, uint64(c.captureIndex(cap.index)))
 			c.emit(instr.SWAP)
 			if cap.boxed || cap.src.boxed {
 				c.emit(instr.REF_SET)
 			} else {
-				c.emit(instr.UPVAL_SET, uint64(cap.index))
+				c.emit(instr.UPVAL_SET, uint64(c.captureIndex(cap.index)))
 			}
 			return
 		}
 	}
 	c.emit(instr.GLOBAL_SET, uint64(c.globals[c.symbol(name)].index))
+}
+
+func (c *lowerer) captureIndex(index int) int {
+	if c.dynamic {
+		return index + 2
+	}
+	return index
 }
 
 func (c *lowerer) symbol(name string) string {
@@ -1152,14 +1163,20 @@ func (c *lowerer) symbol(name string) string {
 // checked REF_CAST recovers the unboxed value. No cast is emitted when the use
 // itself is still dynamic or None.
 func (c *lowerer) narrowCast(x *ast.Name) {
-	use := c.types[x]
-	if use == nil || refDynamic(use) || types.Equal(use, types.None) {
+	c.narrow(c.typ(x.Name), c.types[x])
+}
+
+// narrow recovers a concrete value from the dynamic ref representation. Dynamic
+// slots hold self-describing boxed values, so widening to Any needs no
+// instruction and only the narrowing direction emits a checked REF_CAST.
+func (c *lowerer) narrow(src, dst types.Type) {
+	if src == nil || dst == nil || dst == types.Invalid || !refDynamic(src) {
 		return
 	}
-	if !refDynamic(c.typ(x.Name)) {
+	if refDynamic(dst) || types.Equal(dst, types.None) {
 		return
 	}
-	c.emit(instr.REF_CAST, c.typeIndex(use))
+	c.emit(instr.REF_CAST, c.typeIndex(dst))
 }
 
 // refDynamic reports whether a type is represented as minivm's dynamic ref —
@@ -1497,6 +1514,11 @@ func (c *lowerer) funcValue(info *function, body []ast.Stmt) {
 		Returns: vmReturns(info.result),
 	})
 	fb.WithLocals(vmLocals(info)...)
+	// Dynamic code carries its globals and locals namespaces as the first two
+	// captures, so they precede the function's own captured cells.
+	if c.dynamic {
+		fb.WithCaptures(vmtypes.TypeRef, vmtypes.TypeRef)
+	}
 	fb.WithCaptures(vmCaps(info)...)
 
 	child := c.child(fnTarget(fb), info, nil, nil, nil)
@@ -1504,16 +1526,32 @@ func (c *lowerer) funcValue(info *function, body []ast.Stmt) {
 	child.emitNoneReturn()
 	c.adopt(child)
 
+	if c.dynamic {
+		fb.WithLocals(child.scratch...)
+		for _, constant := range child.consts {
+			fb.WithCaptures(constant.Type())
+		}
+	}
+
 	function, ok := c.buildFunction(fb, "function", info.name)
 	if !ok {
 		return
+	}
+	if c.dynamic {
+		c.emit(instr.UPVAL_GET, 0)
+		c.emit(instr.UPVAL_GET, 1)
 	}
 	for _, name := range info.capOrder {
 		cap := info.captures[name]
 		c.emitCapture(cap)
 	}
+	if c.dynamic {
+		for _, constant := range child.consts {
+			c.constGet(constant)
+		}
+	}
 	c.constGet(function)
-	if len(info.capOrder) > 0 {
+	if c.dynamic || len(info.capOrder) > 0 {
 		c.emit(instr.CLOSURE_NEW)
 	}
 }
@@ -1544,6 +1582,9 @@ func (c *lowerer) child(code target, info *function, types map[ast.Expr]types.Ty
 	child.excepts = nil
 	child.temps = map[string]int{}
 	child.boxed = map[*local]bool{}
+	child.consts = nil
+	child.scratch = nil
+	child.base = len(info.params) + len(info.order)
 	child.err = nil
 	return &child
 }

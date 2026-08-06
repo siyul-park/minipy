@@ -108,6 +108,7 @@ var (
 	// when no bounded union fits. It is backed by minivm's dynamic ref type.
 	Any       Type = primitive{name: "Any", vm: vmtypes.TypeRef}
 	TypeAlias Type = primitive{name: "typing.TypeAlias"}
+	Code      Type = primitive{name: "code", vm: vmtypes.TypeRef}
 )
 
 // NewList returns the list type with the given element type.

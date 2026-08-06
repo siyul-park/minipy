@@ -1359,7 +1359,7 @@ func specializable(info *function) bool {
 // recurses, or re-checking the reachable body under the concrete types produces
 // any error.
 func (c *checker) specialize(info *function, argTypes []types.Type) *specialization {
-	if !info.specializable {
+	if c.dynamic || !info.specializable {
 		return nil
 	}
 	params := make([]parameter, len(info.params))

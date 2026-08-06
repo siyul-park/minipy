@@ -187,6 +187,10 @@ true and false branches. In a specialized function body, when the narrowed value
 already concrete, the checker can statically determine a guard result and the
 lowerer prunes the impossible branch.
 
+An annotated assignment also narrows: an `Any` value is accepted for a concretely
+annotated target and the annotation is trusted for later uses, with the runtime
+cast (`docs/spec/05-codegen.md`) rejecting a value of another type.
+
 ## Expressions
 
 ### Literals and Displays

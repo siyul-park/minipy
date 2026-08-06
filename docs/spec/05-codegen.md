@@ -106,7 +106,10 @@ tables.
 
 Name assignments evaluate the RHS and store into the resolved local/global slot.
 Annotated assignments without a value only declare/check the binding and emit no
-runtime instruction.
+runtime instruction. A dynamic value stored into a concretely annotated target is
+recovered with a checked `REF_CAST`, the same unboxing that narrowed name uses
+emit; the widening direction emits nothing because dynamic slots already hold
+self-describing boxed values.
 
 Tuple/starred unpacking lowers by reading the source tuple/list fields or list
 positions and storing each target. Starred rest targets build a list of the
@@ -441,6 +444,26 @@ dispatch or a runtime dunder table:
 - `len(obj)` emits `obj.__len__()`, then a guard that raises `ValueError` when
   the returned length is negative. Built-in container `len` keeps its inline
   opcode lowering.
+
+### Dynamic Code
+
+`compile`, `eval`, and `exec` reuse the same parser, checker, and lowerer, but
+lower into a standalone function instead of a program: a dynamic unit has no
+constant, type, or global pool of its own.
+
+- Module-level names become namespace lookups. The globals and locals mappings
+  arrive as the first two captures; a read searches locals then globals and
+  raises `name ... is not defined` through a host function when both miss, and a
+  write stores into locals.
+- Remaining constants (strings, host functions, nested function values) are
+  passed as further captures, so `CONST_GET` becomes `UPVAL_GET`.
+- Scratch slots become function locals appended after the namespace captures, so
+  `GLOBAL_*` on a scratch slot lowers to the matching `LOCAL_*`.
+- `eval` returns the expression value in dynamic form; `exec` runs the module
+  body and returns `None`.
+
+Because the unit carries no type pool, dynamic code that would need runtime type
+metadata is rejected at `compile` time rather than lowered.
 
 ## Verification and Optimizer Notes
 

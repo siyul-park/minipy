@@ -2498,3 +2498,95 @@ func TestCompiler_lowerFailure(t *testing.T) {
 		require.Equal(t, child.next, c.next)
 	})
 }
+
+func TestCompileDynamicBuiltins(t *testing.T) {
+	t.Run("eval explicit namespace returns Any with runtime cast", func(t *testing.T) {
+		src := "from typing import Any\n" +
+			"ns: dict[str, Any] = {\"x\": 41}\n" +
+			"value: int = eval(\"x + 1\", ns)\n" +
+			"print(str(value))\n"
+		require.Equal(t, "42\n", run(t, src))
+	})
+
+	t.Run("exec writes explicit namespace", func(t *testing.T) {
+		src := "from typing import Any\n" +
+			"ns: dict[str, Any] = {\"x\": 1}\n" +
+			"exec(\"x: int = x + 2\", ns)\n" +
+			"value: int = ns[\"x\"]\n" +
+			"print(str(value))\n"
+		require.Equal(t, "3\n", run(t, src))
+	})
+
+	t.Run("compile code object accepted by matching builtin", func(t *testing.T) {
+		src := "from typing import Any\n" +
+			"ns: dict[str, Any] = {\"x\": 4}\n" +
+			"code = compile(\"x * 2\", \"<test>\", \"eval\")\n" +
+			"value: int = eval(code, ns)\n" +
+			"print(str(value))\n"
+		require.Equal(t, "8\n", run(t, src))
+	})
+
+	t.Run("eval uses normal checker and lowerer", func(t *testing.T) {
+		src := "from typing import Any\n" +
+			"ns: dict[str, Any] = {\"x\": 5.5}\n" +
+			"value: float = eval(\"x / 2.0\", ns)\n" +
+			"print(str(value))\n"
+		require.Equal(t, "2.75\n", run(t, src))
+	})
+
+	t.Run("separate locals override globals and receive writes", func(t *testing.T) {
+		src := "from typing import Any\n" +
+			"globals: dict[str, Any] = {\"x\": 1}\n" +
+			"locals: dict[str, Any] = {\"x\": 4}\n" +
+			"value: int = eval(\"x + 1\", globals, locals)\n" +
+			"exec(\"x: int = x + 2\", globals, locals)\n" +
+			"local: int = locals[\"x\"]\n" +
+			"globalValue: int = globals[\"x\"]\n" +
+			"print(str(value) + \",\" + str(local) + \",\" + str(globalValue))\n"
+		require.Equal(t, "5,6,1\n", run(t, src))
+	})
+
+	t.Run("exec function reads globals and writes locals", func(t *testing.T) {
+		src := "from typing import Any\n" +
+			"globals: dict[str, Any] = {\"x\": 4}\n" +
+			"locals: dict[str, Any] = {}\n" +
+			"exec(\"x: int\\ndef add() -> int:\\n    return x + 1\\ny: int = add()\", globals, locals)\n" +
+			"value: int = locals[\"y\"]\n" +
+			"print(str(value))\n"
+		require.Equal(t, "5\n", run(t, src))
+	})
+
+	t.Run("compiled functions can be executed repeatedly", func(t *testing.T) {
+		src := "from typing import Any\n" +
+			"globals: dict[str, Any] = {\"x\": 4}\n" +
+			"first: dict[str, Any] = {}\n" +
+			"second: dict[str, Any] = {}\n" +
+			"code = compile(\"x: int\\ndef add() -> int:\\n    return x + 1\\ny: int = add()\", \"<test>\", \"exec\")\n" +
+			"exec(code, globals, first)\n" +
+			"exec(code, globals, second)\n" +
+			"a: int = first[\"y\"]\n" +
+			"b: int = second[\"y\"]\n" +
+			"print(str(a + b))\n"
+		require.Equal(t, "10\n", run(t, src))
+	})
+
+	t.Run("dynamic constants reuse the same host value", func(t *testing.T) {
+		src := "from typing import Any\n" +
+			"ns: dict[str, Any] = {}\n" +
+			"exec(\"a: int = int('1')\\nb: int = int('2')\", ns)\n" +
+			"a: int = ns[\"a\"]\n" +
+			"b: int = ns[\"b\"]\n" +
+			"print(str(a + b))\n"
+		require.Equal(t, "3\n", run(t, src))
+	})
+
+	t.Run("ref identity survives eval", func(t *testing.T) {
+		src := "from typing import Any\n" +
+			"xs: list[int] = [1]\n" +
+			"ns: dict[str, Any] = {\"xs\": xs}\n" +
+			"ys: list[int] = eval(\"xs\", ns)\n" +
+			"ys.append(2)\n" +
+			"print(str(len(xs)))\n"
+		require.Equal(t, "2\n", run(t, src))
+	})
+}

@@ -156,7 +156,7 @@ func (c *compilation) check(module *ast.Module, parseErr error) (*checkedProgram
 }
 
 func (c *compilation) lower(checked *checkedProgram) (*program.Program, error) {
-	runtime := newNativeRuntime(c.config.reg, c.config.out)
+	runtime := newNativeRuntime(c.config)
 	lowerer := newLowerer(program.NewBuilder(), checked, runtime)
 	return lowerer.lower()
 }

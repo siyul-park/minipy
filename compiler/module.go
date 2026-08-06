@@ -91,13 +91,17 @@ type pathFinder struct{}
 // program's output writer.
 type nativeRuntime struct {
 	modules map[string]map[string]vmtypes.Value
+	config  config
 	out     io.Writer
 }
 
 // nativeRuntime adapts to module.Runtime so native modules can produce
 // runtime values (host functions bound to the program's output) without
 // depending on compiler internals.
-var _ module.Runtime = (*nativeRuntime)(nil)
+var (
+	_ module.Runtime  = (*nativeRuntime)(nil)
+	_ module.Compiler = (*nativeRuntime)(nil)
+)
 
 func newLoader(reg *module.Registry, paths []searchEntry) *loader {
 	if reg == nil {
@@ -115,14 +119,18 @@ func newLoader(reg *module.Registry, paths []searchEntry) *loader {
 	return ld
 }
 
-func newNativeRuntime(reg *module.Registry, out io.Writer) *nativeRuntime {
-	rt := &nativeRuntime{out: out}
-	rt.modules = reg.Values(rt)
+func newNativeRuntime(cfg config) *nativeRuntime {
+	rt := &nativeRuntime{config: cfg, out: cfg.out}
+	rt.modules = cfg.reg.Values(rt)
 	return rt
 }
 
 // Out returns the writer bound to native symbols' runtime values.
 func (rt *nativeRuntime) Out() io.Writer { return rt.out }
+
+func (rt *nativeRuntime) Compile(source, filename, mode string) (module.Code, error) {
+	return rt.config.compileCode(source, filename, mode)
+}
 
 func (ld *loader) loadEntry(mod *ast.Module) *moduleInfo {
 	entry := &moduleInfo{

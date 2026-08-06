@@ -342,6 +342,23 @@ not in the other. `issubset` returns `True` if all elements of the receiver are
 in the other set. `issuperset` returns `True` if all elements of the other set
 are in the receiver. `copy` returns a shallow copy.
 
+## Dynamic Code Builtins
+
+`compile(source, filename, mode)` accepts `eval` or `exec` mode and completes
+parsing, checking, lowering, and bytecode verification when called. It returns a
+reusable `Code` object and does not inspect an execution namespace.
+
+`eval(source_or_code, globals, locals)` returns `Any`; `exec` returns `None`.
+Namespaces are `dict[str, Any]`. When `locals` is omitted, `globals` is used for
+both. Top-level reads search `locals` before `globals`, while assignments write
+to `locals`. Functions created by dynamic code resolve module-level names from
+`globals` and write explicit global assignments there.
+
+When both namespaces are omitted, minipy currently creates an empty namespace
+rather than exposing the caller frame. Dynamic code that needs a separate
+runtime type pool is rejected until minivm can link that metadata into a dynamic
+function.
+
 ## Exceptions
 
 `builtins` also provides the builtin exception hierarchy used by the checker and

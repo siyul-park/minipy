@@ -104,3 +104,18 @@ type Emitter interface {
 type Runtime interface {
 	Out() io.Writer
 }
+
+// Compiler compiles dynamic source into an executable code value. Runtime
+// implementations may provide it to native symbols without exposing compiler
+// internals to native-module packages.
+type Compiler interface {
+	Compile(source, filename, mode string) (Code, error)
+}
+
+// Code is a compiled dynamic code object.
+type Code interface {
+	vmtypes.Value
+	Mode() string
+	Function() *vmtypes.Function
+	Constants() []vmtypes.Value
+}

@@ -52,6 +52,7 @@ type checker struct {
 	// native len builtin.
 	lenDunder map[*ast.CallExpr]bool
 	checked   map[*moduleInfo]bool
+	dynamic   bool
 }
 
 func newChecker(ld *loader) *checker {

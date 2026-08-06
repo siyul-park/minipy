@@ -193,6 +193,19 @@ func (c *checker) listElemType(e ast.Expr) types.Type {
 }
 
 func (c *checker) dictType(n *ast.DictLit, hint types.Type) types.Type {
+	if expected, ok := hint.(*types.Dict); ok && len(n.Keys) > 0 && !hasDictUnpack(n) {
+		for i := range n.Keys {
+			key := c.exprWithHint(n.Keys[i], expected.Key)
+			value := c.exprWithHint(n.Values[i], expected.Value)
+			if key != types.Invalid && !types.AssignableTo(key, expected.Key) {
+				c.errs.Add(n.Keys[i].Pos(), token.TypeMismatch, "dict key must be %s, got %s", expected.Key, key)
+			}
+			if value != types.Invalid && !types.AssignableTo(value, expected.Value) {
+				c.errs.Add(n.Values[i].Pos(), token.TypeMismatch, "dict value must be %s, got %s", expected.Value, value)
+			}
+		}
+		return expected
+	}
 	if len(n.Keys) == 0 {
 		if dt, ok := hint.(*types.Dict); ok {
 			return dt
@@ -514,6 +527,11 @@ func (c *checker) global(n *ast.Name) types.Type {
 	if !ok {
 		if n.Name == "Ellipsis" {
 			return types.Ellipsis
+		}
+		if c.dynamic {
+			g = c.declare(n.Name, types.Any, n.Pos())
+			g.init = true
+			return g.typ
 		}
 		c.errs.Add(n.Pos(), token.UndefinedName, "name %q is not defined", n.Name)
 		return types.Invalid

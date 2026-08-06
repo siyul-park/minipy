@@ -159,7 +159,7 @@ full CPython compatibility.
 |---|---:|---|
 | `int`, `float`, `bool`, `str`, `None` | ✅ | Source-level primitive types. |
 | `EllipsisType` | ◐ | Annotation for the Ellipsis singleton; direct construction and `Literal[Ellipsis]` are unsupported. |
-| `Any` | ✅ | Dynamic fallback top type. |
+| `Any` | ✅ | Dynamic fallback top type. Assigning `Any` to an annotated target is accepted and checked at runtime; a mismatch traps instead of raising a Python `TypeError`. |
 | `list[T]`, `dict[K, V]`, `set[T]` | ✅ | Homogeneous containers. |
 | `tuple[...]` | ✅ | Fixed heterogeneous tuple. |
 | `Iterator[T]` | ✅ | Iteration/generator result type. |
@@ -194,6 +194,7 @@ full CPython compatibility.
 | `pow` | ✅ | `int,int -> int`; mixed/float yields `float`. |
 | `hex`, `oct`, `bin` | ✅ | `int -> str` formatting. |
 | `repr` | ✅ | Printable values to `str` with quotes for strings. |
+| `compile`, `eval`, `exec` | ◐ | Reuse the normal parser/checker/lowerer. Explicit `dict[str, Any]` globals/locals follow locals-first lookup and locals writes; omitted namespaces use an empty mapping, and dynamic code needing a separate runtime type pool is rejected. |
 | `getattr`, `hasattr` | ◐ | Concrete class instances and literal declared field names only; no methods, dynamic strings, defaults, or runtime lookup. |
 | `isinstance` | ✅ | Type/class checks and narrowing support. |
 | `map`, `filter` | ✅ | Static list-based versions; `map(fn, list) -> list[R]`, `filter(pred, list) -> list[T]`. Inline lambdas supported via type inference. |

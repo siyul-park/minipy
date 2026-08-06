@@ -75,8 +75,8 @@ owned by `docs/spec/`; compatibility status is summarized in
 - `builtins`: `print`, `str`, `int`, `float`, `bool`, `abs`, `len`, `enumerate`,
   `zip`, `range`, `iter`, `next`, `ord`, `chr`, `sorted`, `reversed`, `min`,
   `max`, `sum`, `any`, `all`, `round`, `divmod`, `pow`, `hex`, `oct`, `bin`,
-  `repr`, `getattr`, `hasattr`, `isinstance`, `map`, `filter`, and builtin
-  exceptions.
+  `repr`, `getattr`, `hasattr`, `isinstance`, `map`, `filter`, `compile`, `eval`,
+  `exec`, and builtin exceptions.
 - `operator`: syntax operator semantics and native `operator.*` functions share
   one implementation.
 - `math`: constants (`pi`, `e`, `tau`, `inf`, `nan`) and functions (`ceil`,
@@ -124,6 +124,9 @@ These are implemented with deliberate limits, not undocumented bugs.
   strings, runtime namespace lookup, or compiler-internal fields.
 - Keyword/starred calls are restricted outside direct minipy function calls.
 - Dynamic `**expr` call unpacking is not supported.
+- Dynamic code uses explicit `dict[str, Any]` namespaces. Omitting both namespaces
+  creates an empty mapping rather than exposing the caller frame, and code that
+  needs a separately linked runtime type pool is rejected.
 - Multiple class bases, class keywords, and non-`@dataclass`/`@dataclass()` class
   decorators are not supported.
 - Function decorators are restricted to a bare name, a module-qualified

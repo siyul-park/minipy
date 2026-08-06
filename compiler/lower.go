@@ -101,10 +101,15 @@ func fnTarget(b *vmtypes.FunctionBuilder) target {
 // (via child) to lower nested function and specialization bodies.
 type lowerer struct {
 	// infrastructure
-	prog   *program.Builder
-	code   target
-	reg    *module.Registry
-	native *nativeRuntime
+	prog    *program.Builder
+	code    target
+	reg     *module.Registry
+	native  *nativeRuntime
+	dynamic bool
+	names   []string
+	consts  []vmtypes.Value
+	scratch []vmtypes.Type
+	base    int
 
 	// checker-produced metadata
 	entry      *moduleInfo
@@ -150,7 +155,7 @@ type lowerer struct {
 // newLowerer creates a lowerer over a fresh builder, seeded with the checked
 // module's symbol tables. Compiler.Compile calls this once per Compile call.
 func newLowerer(b *program.Builder, checked *checkedProgram, native *nativeRuntime) *lowerer {
-	return &lowerer{
+	c := &lowerer{
 		prog:       b,
 		code:       mainTarget(b),
 		entry:      checked.entry,
@@ -178,6 +183,11 @@ func newLowerer(b *program.Builder, checked *checkedProgram, native *nativeRunti
 		next:       len(checked.globals),
 		boxed:      map[*local]bool{},
 	}
+	c.names = make([]string, len(checked.globals))
+	for name, global := range checked.globals {
+		c.names[global.index] = name
+	}
+	return c
 }
 
 // lower emits every top-level statement of entry, declares the global slot
@@ -212,7 +222,56 @@ func (c *lowerer) emit(op instr.Opcode, operands ...uint64) {
 	if c.failed() {
 		return
 	}
+	if c.dynamic && len(operands) > 0 {
+		slot := int(operands[0])
+		switch op {
+		case instr.GLOBAL_GET:
+			c.loadSlot(slot)
+			return
+		case instr.GLOBAL_SET:
+			c.storeSlot(slot)
+			return
+		case instr.GLOBAL_TEE:
+			c.teeSlot(slot)
+			return
+		}
+	}
 	c.code.emit(op, operands...)
+}
+
+func (c *lowerer) loadSlot(slot int) {
+	if slot >= len(c.names) {
+		c.code.emit(instr.LOCAL_GET, uint64(slot-len(c.names)))
+		return
+	}
+	name := c.names[slot]
+	if name == "" {
+		c.fail(fmt.Errorf("load dynamic slot %d: missing name", slot))
+		return
+	}
+	c.loadName(name)
+}
+
+func (c *lowerer) storeSlot(slot int) {
+	if slot >= len(c.names) {
+		c.code.emit(instr.LOCAL_SET, uint64(slot-len(c.names)))
+		return
+	}
+	name := c.names[slot]
+	if name == "" {
+		c.fail(fmt.Errorf("store dynamic slot %d: missing name", slot))
+		return
+	}
+	c.storeName(name)
+}
+
+func (c *lowerer) teeSlot(slot int) {
+	if slot >= len(c.names) {
+		c.code.emit(instr.LOCAL_TEE, uint64(slot-len(c.names)))
+		return
+	}
+	c.code.emit(instr.DUP)
+	c.storeSlot(slot)
 }
 
 func (c *lowerer) label() instr.Label {
@@ -258,7 +317,35 @@ func (c *lowerer) tryDepth() int {
 }
 
 func (c *lowerer) constGet(v vmtypes.Value) {
+	if c.dynamic {
+		c.emit(instr.UPVAL_GET, uint64(c.constantBase()+c.constant(v)))
+		return
+	}
 	c.emit(instr.CONST_GET, uint64(c.prog.Const(v)))
+}
+
+// constant interns a dynamic-code constant into the capture list. Name strings
+// are the only constants that repeat — every other constant is built fresh per
+// use — so interning them keeps the capture list from growing per occurrence.
+func (c *lowerer) constant(v vmtypes.Value) int {
+	if name, ok := v.(vmtypes.String); ok {
+		for index, existing := range c.consts {
+			if existing == name {
+				return index
+			}
+		}
+	}
+	index := len(c.consts)
+	c.consts = append(c.consts, v)
+	return index
+}
+
+func (c *lowerer) constantBase() int {
+	base := 2
+	if c.current != nil {
+		base += len(c.current.capOrder)
+	}
+	return base
 }
 
 func (c *lowerer) typeIndex(t types.Type) uint64 {
@@ -266,6 +353,13 @@ func (c *lowerer) typeIndex(t types.Type) uint64 {
 }
 
 func (c *lowerer) tmp() int {
+	// Dynamic code runs as a function, so scratch slots are function locals
+	// appended after the namespace globals rather than module global slots.
+	if c.dynamic {
+		idx := len(c.names) + c.base + len(c.scratch)
+		c.scratch = append(c.scratch, vmtypes.TypeRef)
+		return idx
+	}
 	idx := c.next
 	c.next++
 	return idx
@@ -341,7 +435,7 @@ func (c *lowerer) callHost(function *interp.HostFunction) {
 	if function == nil || c.failed() {
 		return
 	}
-	c.emit(instr.CONST_GET, uint64(c.prog.Const(function)))
+	c.constGet(function)
 	c.emit(instr.CALL)
 }
 
@@ -351,7 +445,7 @@ func (c *lowerer) callHostVoid(function *interp.HostFunction) {
 	if function == nil || c.failed() {
 		return
 	}
-	c.emit(instr.CONST_GET, uint64(c.prog.Const(function)))
+	c.constGet(function)
 	c.emit(instr.CALL)
 	c.emit(instr.REF_NULL)
 }
@@ -397,7 +491,7 @@ func (c *lowerer) Br(l instr.Label) { c.br(l) }
 // BrIf emits a conditional branch consuming the top of stack.
 func (c *lowerer) BrIf(l instr.Label) { c.brIf(l) }
 
-// Tmp reserves a temporary slot and returns its index.
+// Tmp reserves a temporary slot and returns its opaque index.
 func (c *lowerer) Tmp() int { return c.tmp() }
 
 var _ module.Emitter = (*lowerer)(nil)

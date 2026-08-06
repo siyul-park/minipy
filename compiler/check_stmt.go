@@ -718,10 +718,13 @@ func (c *checker) annAssign(n *ast.AnnAssign) {
 		l = c.declareLocal(n.Target.Name, t, n.Pos())
 	} else {
 		g = c.declare(n.Target.Name, t, n.Pos())
+		if c.dynamic {
+			g.init = true
+		}
 	}
 	if n.Value != nil {
 		value := c.exprWithHint(n.Value, t)
-		if t != types.Invalid && value != types.Invalid && !types.AssignableTo(value, t) {
+		if t != types.Invalid && value != types.Invalid && !types.IsAny(value) && !types.AssignableTo(value, t) {
 			c.errs.Add(n.Value.Pos(), token.TypeMismatch, "cannot assign %s to %s %q", value, t, n.Target.Name)
 		}
 		if l != nil {
