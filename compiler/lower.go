@@ -58,13 +58,13 @@ type formatSpec struct {
 const omittedSliceBound = math.MinInt64
 
 var (
-	ellipsisValue       = vmtypes.NewStruct(types.Ellipsis.VM().(*vmtypes.StructType))
-	errListIndexValue   = errors.New("list.index value not found")
-	errListRemoveValue  = errors.New("list.remove(x): x not in list")
-	errListSliceLength  = errors.New("list slice assignment length mismatch")
-	errExtendedSlice    = errors.New("extended slice assignment is not supported")
-	errSliceStep        = errors.New("slice step cannot be zero")
-	errDictKeyError     = errors.New("KeyError")
+	ellipsisValue      = vmtypes.NewStruct(types.Ellipsis.VM().(*vmtypes.StructType))
+	errListIndexValue  = errors.New("list.index value not found")
+	errListRemoveValue = errors.New("list.remove(x): x not in list")
+	errListSliceLength = errors.New("list slice assignment length mismatch")
+	errExtendedSlice   = errors.New("extended slice assignment is not supported")
+	errSliceStep       = errors.New("slice step cannot be zero")
+	errDictKeyError    = errors.New("KeyError")
 )
 
 // trapClasses maps the VM trap codes minipy classifies into dedicated
@@ -150,6 +150,15 @@ type lowerer struct {
 	temps map[string]int
 	boxed map[*local]bool
 
+	// scratch-slot reuse: protected disables it for a frame containing a try
+	// region, free lists the released pool indices per kind, live the indices
+	// the open scopes hold, and open the live-stack mark each scope was entered
+	// at.
+	protected bool
+	free      map[vmtypes.Kind][]int
+	live      []int
+	open      []int
+
 	// control-flow stacks
 	loops   []loopLabels
 	finally []finallyFrame
@@ -199,6 +208,7 @@ func newLowerer(b *program.Builder, checked *checkedProgram, native *nativeRunti
 // lower emits every top-level statement of entry, declares the global slot
 // table, and assembles the finished (unoptimized, unverified) program.
 func (c *lowerer) lower() (*program.Program, error) {
+	c.protected = containsTry(c.entry.ast.Body)
 	c.module(c.entry)
 	if c.err != nil {
 		return nil, c.err
@@ -401,9 +411,63 @@ func (c *lowerer) typeIndex(t types.Type) uint64 {
 // slot read back for scalar arithmetic must be declared with that kind or
 // verification rejects the program.
 func (c *lowerer) tmp(t vmtypes.Type) int {
-	idx := len(c.names) + c.frameBase() + len(c.scratch)
-	c.scratch = append(c.scratch, slotType(t))
-	return idx
+	declared := slotType(t)
+	kind := declared.Kind()
+	idx, reused := c.reuse(kind)
+	if !reused {
+		idx = len(c.scratch)
+		c.scratch = append(c.scratch, declared)
+	}
+	c.live = append(c.live, idx)
+	return len(c.names) + c.frameBase() + idx
+}
+
+// reuse takes a released slot of the given kind, if one is available. Kind is
+// the only thing a slot's declaration says, so any released slot of the same
+// kind serves.
+func (c *lowerer) reuse(kind vmtypes.Kind) (int, bool) {
+	pool := c.free[kind]
+	if len(pool) == 0 {
+		return 0, false
+	}
+	idx := pool[len(pool)-1]
+	c.free[kind] = pool[:len(pool)-1]
+	return idx, true
+}
+
+// enterScratch opens a scratch scope; leaveScratch releases every slot reserved
+// since the matching enterScratch back to the free lists. A scratch slot lives
+// exactly as long as the scope that reserved it, so scopes nest with the
+// lowering: a statement's slots stay live while its nested statements run, and
+// sibling statements reuse the same pool entries instead of growing the frame.
+// reusable reports whether slots reserved by the statement about to be lowered
+// may be released when it ends. A frame containing a protected region opts out
+// entirely: entering a handler resumes at a point where the slots the guarded
+// code reserved are still live, and the handler's entry depth is a single
+// frame-wide number, so there is no point at which a released slot is provably
+// dead. Such a frame keeps one slot per site, as before.
+func (c *lowerer) reusable() bool {
+	return !c.protected
+}
+
+func (c *lowerer) enterScratch() {
+	c.open = append(c.open, len(c.live))
+}
+
+func (c *lowerer) leaveScratch() {
+	if len(c.open) == 0 {
+		return
+	}
+	mark := c.open[len(c.open)-1]
+	c.open = c.open[:len(c.open)-1]
+	if c.free == nil {
+		c.free = map[vmtypes.Kind][]int{}
+	}
+	for _, idx := range c.live[mark:] {
+		kind := c.scratch[idx].Kind()
+		c.free[kind] = append(c.free[kind], idx)
+	}
+	c.live = c.live[:mark]
 }
 
 // frameBase is the first LOCAL_* index available to scratch slots: the params

@@ -13,7 +13,46 @@ import (
 	vmtypes "github.com/siyul-park/minivm/types"
 )
 
+// containsTry reports whether body lowers any protected region, including ones
+// nested in compound statements but not ones inside a nested function, which
+// gets its own frame.
+func containsTry(body []ast.Stmt) bool {
+	for _, s := range body {
+		switch n := s.(type) {
+		case *ast.Try:
+			return true
+		case *ast.If:
+			if containsTry(n.Body) || containsTry(n.Orelse) {
+				return true
+			}
+		case *ast.For:
+			if containsTry(n.Body) || containsTry(n.Orelse) {
+				return true
+			}
+		case *ast.While:
+			if containsTry(n.Body) || containsTry(n.Orelse) {
+				return true
+			}
+		case *ast.With:
+			// A with statement installs finalizers, so its body is unwound the
+			// same way a handler unwinds a try.
+			return true
+		case *ast.Match:
+			for _, c := range n.Cases {
+				if containsTry(c.Body) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
 func (c *lowerer) stmt(s ast.Stmt) {
+	if c.reusable() {
+		c.enterScratch()
+		defer c.leaveScratch()
+	}
 	switch n := s.(type) {
 	case *ast.AnnAssign:
 		if c.aliasDecls[n] {
@@ -1480,6 +1519,7 @@ func (c *lowerer) buildSpec(spec *specialization) {
 		Returns: vmReturns(info.result),
 	})
 	child := c.child(fnTarget(fb), info, spec.types, spec.calls, spec.args)
+	child.protected = containsTry(info.body)
 	child.block(info.body)
 	child.emitNoneReturn()
 	child.flushTries()
@@ -1522,6 +1562,7 @@ func (c *lowerer) funcValue(info *function, body []ast.Stmt) {
 	fb.Captures(vmCaps(info)...)
 
 	child := c.child(fnTarget(fb), info, nil, nil, nil)
+	child.protected = containsTry(body)
 	child.block(body)
 	child.emitNoneReturn()
 	child.flushTries()
@@ -1582,6 +1623,10 @@ func (c *lowerer) child(code target, info *function, types map[ast.Expr]types.Ty
 	child.finally = nil
 	child.excepts = nil
 	child.tries = nil
+	child.free = nil
+	child.live = nil
+	child.open = nil
+
 	child.temps = map[string]int{}
 	child.boxed = map[*local]bool{}
 	child.consts = nil
