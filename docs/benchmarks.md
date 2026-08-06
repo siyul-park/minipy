@@ -143,35 +143,44 @@ are worked around by picking a different *implementation* of that
 computation, the same way an application author hitting one of these bugs
 would have to.
 
-### A sixth defect, not worked around: `nbody`
+### A sixth defect, now fixed: `nbody`
 
-Unlike the five above, `nbody` was **not** rewritten to route around a
-defect, because no alternative formulation was found that avoided it: this
-measurement's own run shows minipy failing `nbody`'s correctness gate at
-both `-O 0` and `-O 3`, reproducibly, and the results table below reports it
-as a real `FAIL` rather than a passing time.
+Unlike the five above, `nbody` was **not** rewritten to route around its
+defect, because no alternative formulation was found that avoided it. It is
+recorded here because the diagnosis turned out to matter: the defect was not
+what this document previously assumed.
 
 `nbody` runs 250,000 `advance()` steps of pairwise gravitational float
 arithmetic (`math.sqrt`, multiply-accumulate) over 5 bodies, then prints a
-final energy checksum. CPython 3.13 (and CPython 3.11 and pypy3, both of
-which also pass) produce `-0.171931230`; minipy at both optimization levels
-produces `-0.171846486` — a difference starting at the fifth significant
-digit, not a gross logic error, consistent with floating-point arithmetic
-accumulating differently over 250,000 sequential steps (operation order,
-`math.sqrt` precision, or fused-multiply-add differences are all plausible
-causes) rather than an obviously wrong formula. That distinction does not
-change the correctness-gate outcome: `pybench` requires byte-identical
-output, minipy's does not match, and it is reported `FAIL` at both `-O 0`
-and `-O 3` — identically, which is itself informative: whatever causes the
-divergence is not something the `-O 3` optimizer passes introduce or fix, so
-it is present already at `-O 0`, in either the interpreter's float pipeline
-or `nbody.py`'s own arithmetic as minipy evaluates it. No workaround was
-applied because, unlike the five defects above, no alternative
-*formulation* of this computation was found that both stays idiomatic and
-avoids the divergence — the program already uses flat arrays and index
-loops, the corpus's preferred style. Diagnosing the exact source (interpreter
-float pipeline vs. a specific operation) is outside this document's scope;
-it is recorded here as a real, reproducible, currently unresolved gap.
+final energy checksum. CPython 3.13, CPython 3.11, and pypy3 all produce
+`-0.171931230`; minipy produced `-0.171846486` at both `-O 0` and `-O 3`, a
+difference starting at the fifth significant digit. This document read that as
+floating-point arithmetic accumulating differently over 250,000 sequential
+steps — operation order, `math.sqrt` precision, or fused-multiply-add — and
+noted that the divergence was identical at both optimization levels, so no
+optimizer pass introduced it.
+
+That reading was wrong. It was a **scratch-slot aliasing bug**: temporaries
+were module globals, shared by every activation, so `advance()` and the
+functions it calls clobbered each other's list-index temporaries. Moving
+scratch to frame locals fixes it, and the fix is visible across builds
+independently of the minivm bump:
+
+| build | output |
+|---|---|
+| CPython 3.13 | `-0.171931230` |
+| minipy, scratch in globals | `-0.171846486` |
+| minipy, scratch in frame locals, old VM | `-0.171931230` |
+| minipy, scratch in frame locals, new VM | `-0.171931230` |
+
+`nbody` now passes `pybench`'s correctness gate at both levels and the results
+table below reports real times for it.
+
+The lesson generalizes to the five defects above: a wrong value that looks like
+accumulated float error can be a compiler bug, and "identical at `-O 0` and
+`-O 3`" rules out the optimizer but not the lowerer. Those five were **not**
+re-verified after this fix; they are still described as first observed, and
+whether any of them shared this root cause is untested.
 
 ## `pybench`, the Cross-Implementation Runner
 
@@ -291,31 +300,48 @@ reported in the header in its place.
 `-runs 5` was used (the tool's own default), so every table below is a full,
 unreduced run of the corpus for the implementations that were present.
 
-### Two regressions in this measurement
+### Regressions in this measurement, and what causes them
 
-Both are against the previous measurement (rev `f523af2`) and both are real, not
-noise. They arrived with the move of scratch temporaries from module globals to
-frame locals (`refactor(compiler)!: allocate scratch temporaries as frame
-locals`), which also bumped minivm — **the two were not isolated from each
-other**, so which of them causes each regression is not established here.
+Three builds were timed to separate the two changes that landed together — the
+scratch-temporaries refactor and the minivm bump — since the bump could not land
+on its own (the new verifier propagates a slot's declared type through
+`GLOBAL_GET` where the old one pushed `KindAny`, so the old uniformly-`TypeRef`
+global table stops verifying). Min-of-3 wall clock at `-O 0`:
 
-1. **`fannkuch` at `-O 3` no longer finishes.** It passed at 6.4s in the
-   previous measurement and now times out at 40s; a direct run confirms it
-   exceeds 90s. This is *runtime*, not compile time: compiling `fannkuch.py`
-   takes 1.5ms at `-O 0` and 2.5ms at `-O 3`. Bisecting the two builds by hand
-   shows the pre-refactor build still passes at 6.6s, so the regression is in
-   this change, not in the corpus or the host.
-2. **`binarytrees` and `strbuild` are slower.** Min-of-3 wall clock at `-O 0`
-   against the pre-refactor build: binarytrees 1755ms -> 2294ms (+31%),
-   strbuild 5433ms -> 5930ms (+9%). Neither uses a protected region, so scratch
-   pooling is active in both; what remains is the cost of the frame itself on
-   call- and allocation-heavy code. The same change made sortstress 40% faster,
-   matmul 5% faster, and nbody 3% faster.
+| case | base + old VM | refactor + old VM | refactor + new VM |
+|---|---:|---:|---:|
+| binarytrees | 1782ms | 1872ms | **2501ms** |
+| sortstress | 3279ms | 3142ms | **1971ms** |
+| strbuild | 5966ms | 5573ms | 5372ms |
+| matmul | 1844ms | 1744ms | 1754ms |
+| nbody | 6736ms | 6452ms | 6536ms |
+| fib | 2688ms | 2690ms | 2787ms |
+| fannkuch `-O 3` | 6681ms | 5812ms | **times out** |
 
-The trade is deliberate: scratch in module globals was shared by every
-activation, so a recursive call silently corrupted its caller's temporaries
-(see `docs/spec/05-codegen.md`, Scratch slots). Correctness came first;
-recovering the lost time is open work.
+The middle column is the refactor alone. It is neutral to slightly positive
+everywhere — strbuild -7%, matmul -5%, nbody -4%, sortstress -4%, fib unchanged,
+binarytrees +5% — so moving scratch into frame locals does not cost meaningful
+performance.
+
+**Both regressions come from the minivm bump, not from the refactor.**
+
+1. **`fannkuch` no longer finishes at any optimization level.** It passed at
+   6.2-6.7s on the old VM at both `-O 0` and `-O 3`; on the new VM it exceeds
+   45s at `-O 0`, `-O 1`, `-O 2`, and `-O 3` alike. This is *runtime*, not
+   compile time — compiling `fannkuch.py` takes 1.5ms at `-O 0` and 2.5ms at
+   `-O 3` — and it is level-independent, so it is not an optimizer pass. Filed
+   upstream; tracked here as #62.
+2. **`binarytrees` is 34% slower** (1872ms -> 2501ms) purely across the VM
+   bump. `sortstress` is 37% *faster* across the same bump, so the new VM is not
+   uniformly slower; something specific to this workload regressed.
+
+`strbuild` is faster than the previous measurement, not slower. An earlier
+reading of this measurement attributed both regressions to the refactor; the
+three-build comparison above supersedes it.
+
+The refactor's own trade is still deliberate: scratch in module globals was
+shared by every activation, so a recursive call silently corrupted its caller's
+temporaries (see `docs/spec/05-codegen.md`, Scratch slots).
 
 The defects recorded under
 [Algorithm changes forced by real minipy bugs](#algorithm-changes-forced-by-real-minipy-bugs)
@@ -431,23 +457,23 @@ All ratios below use each case's `minipy` **min** against CPython 3.13's own
 smaller than run-to-run noise on this host.
 
 - **minipy `-O0` vs CPython 3.13**, over the cases where both pass the
-  correctness gate: `mandelbrot` is the one case minipy wins, and the rest run
-  roughly 1.3x-4x slower, with the call- and allocation-heavy cases at the
-  slow end. Read the per-case tables above for the exact numbers rather than a
-  summarized band; the two regressions described under
-  [Two regressions in this measurement](#two-regressions-in-this-measurement)
+  correctness gate: `mandelbrot` is the one case minipy wins. The rest run
+  roughly 1.3x-4.6x slower, `strbuild` worst at about 4.6x (5536.8ms against
+  1195.3ms). Read the per-case tables above for exact numbers rather than a
+  summarized band; the regressions described under
+  [Regressions in this measurement](#regressions-in-this-measurement-and-what-causes-them)
   move several of these against the previous run.
 - **minipy `-O0` vs `-O3`**: `-O 3` is at or slightly ahead of `-O 0` on the
   cases that pass at both levels. The one categorical difference the previous
   measurement recorded — `fannkuch` passing at `-O 3` in 6.4s where `-O 0`
-  times out — **no longer holds**: `fannkuch` now times out at both levels.
-  That is a regression in this change, not a property of the corpus; see
-  above. Nothing here licenses "always pass `-O 3`" as a general rule; it says
+  times out — **no longer holds**: `fannkuch` now times out at every level from
+  `-O 0` to `-O 3`. That is a regression in the minivm bump, not a property of
+  the corpus; see above. Nothing here licenses "always pass `-O 3`" as a general rule; it says
   only what this measurement showed.
-- **minipy vs CPython on `nbody`**: neither optimization level passes the
-  correctness gate (see [the sixth defect](#a-sixth-defect-not-worked-around-nbody)
-  above), so `nbody` has no minipy timing to compare — the table reports
-  `FAIL`, not a fast wrong answer.
+- **`nbody` now passes** at both levels, where the previous measurement failed
+  the correctness gate. That was a compiler bug, not float drift — see
+  [the sixth defect](#a-sixth-defect-now-fixed-nbody) above. It runs about 4.9x
+  slower than CPython 3.13.
 - **Startup**: minipy starts in roughly 3.4-4.3ms against CPython 3.13's
   13.0-14.8ms, about 3-4x faster. On the short cases that is a visible share of
   wall clock, which is why every table carries a "minus startup" column.

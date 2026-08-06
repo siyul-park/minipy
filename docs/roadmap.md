@@ -36,8 +36,9 @@ owned by `docs/spec/`; compatibility status is summarized in
 - CLI `run` and REPL entry points.
 - Compile options for output sink, optimization level, and module search roots.
 - Accumulated diagnostics through `token.ErrorList`.
-- Scratch temporaries are frame locals with declared types, pooled per statement,
-  so a recursive call cannot clobber the scratch its caller still holds
+- Scratch temporaries are frame locals with declared types, pooled per statement
+  where safe (a frame containing a `try` or `with` keeps one slot per site), so a
+  recursive call cannot clobber the scratch its caller still holds
   (`docs/spec/05-codegen.md`, Scratch slots).
 
 ### Static type system ✅
@@ -170,10 +171,6 @@ divergence, so fixing one means adding its case.
 - `str.format()` ignores every embedded format spec. F-strings honor width,
   precision, and alignment, but not `,` grouping or `#` alternate form.
 
-- Float arithmetic in the `nbody` benchmark diverges from CPython:
-  minipy prints `-0.171846486` where CPython 3.13 prints `-0.171931230`,
-  identically at `-O0` and `-O3`. The benchmark fails `pybench`'s correctness
-  gate and is reported rather than worked around.
 
 ### P1 language/runtime improvements
 

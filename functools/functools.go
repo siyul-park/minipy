@@ -105,6 +105,18 @@ func reduceCheck(c module.Checker, args []ast.Expr, pos token.Pos) types.Type {
 		return types.Invalid
 	}
 
+	// The accumulator is a single slot carrying the element type across the
+	// whole fold, so a callback returning something else would change what that
+	// slot holds mid-loop. CPython lets the accumulator's type drift; minipy's
+	// accumulator is statically typed, so the drift is rejected instead.
+	if !types.IsDynamic(callable.Return) && !types.AssignableTo(callable.Return, elemType) {
+		c.Error(args[0].Pos(), token.TypeMismatch, "reduce() function returns %s, which is not assignable to element type %s", callable.Return, elemType)
+		if len(args) == 3 {
+			c.Check(args[2])
+		}
+		return types.Invalid
+	}
+
 	// Validate optional initial value matches the element type.
 	if len(args) == 3 {
 		initType := c.Check(args[2])

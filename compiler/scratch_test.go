@@ -31,7 +31,7 @@ func TestCompileScratchIsPerFrame(t *testing.T) {
 			want: "24\n",
 		},
 		{
-			name: "recursive call inside a list comprehension keeps the accumulator",
+			name: "recursive call in a comprehension iterable keeps the accumulator",
 			src: "def spread(n: int) -> list[int]:\n" +
 				"    if n <= 0:\n" +
 				"        return [0]\n" +
@@ -40,7 +40,7 @@ func TestCompileScratchIsPerFrame(t *testing.T) {
 			want: "[6]\n",
 		},
 		{
-			name: "recursive call in a match guard keeps the subject",
+			name: "recursive call in a match case body keeps the subject",
 			src: "def rank(n: int) -> int:\n" +
 				"    match n:\n" +
 				"        case 0:\n" +
@@ -63,6 +63,72 @@ func TestCompileScratchIsPerFrame(t *testing.T) {
 				"    return xs[0]\n" +
 				"buf: list[int] = [0]\n" +
 				"print(fill(buf, 3))\n",
+			want: "1\n",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, run(t, tt.src))
+		})
+	}
+}
+
+// TestCompileScalarScratchPaths pins the lowering paths where a scratch slot
+// carries a value that is a scalar at the VM level rather than a reference.
+// Their slots are declared as references because the value is only stored and
+// loaded, never fed to a scalar opcode, so the declaration is what the verifier
+// accepts — but that is a property of the emitted shape, not of the values, and
+// a change to either would break these silently.
+func TestCompileScalarScratchPaths(t *testing.T) {
+	tests := []struct {
+		name string
+		src  string
+		want string
+	}{
+		{
+			name: "integer-key dict deletion",
+			src:  "d: dict[int, int] = {1: 10, 2: 20}\ndel d[1]\nprint(len(d))\n",
+			want: "1\n",
+		},
+		{
+			name: "integer list element assignment",
+			src:  "xs: list[int] = [1, 2, 3]\nxs[1] = 99\nprint(xs)\n",
+			want: "[1, 99, 3]\n",
+		},
+		{
+			name: "integer list insert",
+			src:  "xs: list[int] = [1, 2]\nxs.insert(1, 42)\nprint(xs)\n",
+			want: "[1, 42, 2]\n",
+		},
+		{
+			name: "integer list reverse",
+			src:  "xs: list[int] = [1, 2, 3]\nxs.reverse()\nprint(xs)\n",
+			want: "[3, 2, 1]\n",
+		},
+		{
+			name: "chained assignment of an integer",
+			src:  "a: int = 0\nb: int = 0\na = b = 7\nprint(a + b)\n",
+			want: "14\n",
+		},
+		{
+			name: "augmented assignment into an integer list element",
+			src:  "xs: list[int] = [1, 2]\nxs[0] += 5\nprint(xs)\n",
+			want: "[6, 2]\n",
+		},
+		{
+			name: "augmented assignment into a float list element",
+			src:  "xs: list[float] = [1.0]\nxs[0] += 0.5\nprint(xs)\n",
+			want: "[1.5]\n",
+		},
+		{
+			name: "mapping pattern binding an integer",
+			src: "d: dict[str, int] = {\"a\": 1}\n" +
+				"match d:\n" +
+				"    case {\"a\": v}:\n" +
+				"        print(v)\n" +
+				"    case _:\n" +
+				"        print(\"no\")\n",
 			want: "1\n",
 		},
 	}
