@@ -312,3 +312,12 @@ Unknown generic names are rejected by the checker.
 - `docs/spec/02-types.md` — annotation and source type semantics.
 - `docs/spec/04-static-semantics.md` — checker restrictions on parsed forms.
 - `docs/compatibility.md` — user-facing syntax support matrix.
+
+### Bare generator arguments
+
+A generator expression may drop its own parentheses when it is a call's **only**
+argument: `sum(i * i for i in xs)`. Following it with another argument is a
+syntax error, matching CPython — write `f((i for i in xs), 1)` instead.
+
+Parsing it is not the same as being able to call it: a builtin still has to
+accept `Iterator[T]` as its argument type, and most currently take a list.
