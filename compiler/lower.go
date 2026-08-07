@@ -50,6 +50,8 @@ type formatSpec struct {
 	align     byte // '<' '>' '^' '=' or 0
 	sign      byte // '+' '-' ' ' or 0
 	zero      bool
+	alt       bool // '#': 0b/0o/0x prefix on b/o/x/X
+	group     byte // ',' or '_' thousands separator, or 0
 	width     int
 	precision int  // -1 when omitted
 	typ       byte // 'd' 'f' 's' ... or 0

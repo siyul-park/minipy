@@ -158,16 +158,6 @@ These are implemented with deliberate limits, not undocumented bugs.
 - Add focused regression tests for every compatibility-matrix row that is marked
   ✅ or ◐.
 
-### P0 defects found by the conformance corpus
-
-Each was reproduced against CPython 3.13 while porting `conformance/testdata/`.
-The corpus deliberately avoids these rather than pinning minipy's answer as a
-divergence, so fixing one means adding its case.
-
-- `str.format()` ignores every embedded format spec. F-strings honor width,
-  precision, and alignment, but not `,` grouping or `#` alternate form.
-
-
 ### P1 language/runtime improvements
 
 - Dynamic `**kwargs` call unpacking and broader starred-call support.

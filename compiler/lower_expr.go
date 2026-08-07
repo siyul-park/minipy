@@ -1110,11 +1110,10 @@ func (c *lowerer) emitStrFormat(x *ast.CallExpr) {
 	// Save each arg (top of stack last pushed) into a temporary slot,
 	// converting non-string args to string along the way.
 	argSlots := make([]int, n)
+	argTypes := make([]types.Type, n)
 	for i := n - 1; i >= 0; i-- {
-		if !types.Equal(c.types[x.Args[i]], types.Str) {
-			c.callHost(hostabi.StringFunction(c.types[x.Args[i]]))
-		}
-		slot := c.tmp(vmtypes.TypeRef)
+		argTypes[i] = c.types[x.Args[i]]
+		slot := c.slotFor(x.Args[i])
 		argSlots[i] = slot
 		c.emit(instr.GLOBAL_SET, uint64(slot))
 	}
@@ -1127,7 +1126,7 @@ func (c *lowerer) emitStrFormat(x *ast.CallExpr) {
 	for _, slot := range argSlots {
 		c.emit(instr.GLOBAL_GET, uint64(slot))
 	}
-	c.callHost(c.strFormatMethod(n))
+	c.callHost(c.strFormatMethod(argTypes))
 }
 
 // emitBool pushes a bool literal as an i1 value. There is no i1 const opcode,
