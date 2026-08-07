@@ -628,3 +628,31 @@ func TestParseErrors(t *testing.T) {
 		hasCode(t, err, code)
 	}
 }
+
+func TestParseBareGeneratorArgument(t *testing.T) {
+	t.Run("a sole generator argument needs no parentheses", func(t *testing.T) {
+		mod, err := Parse(strings.NewReader("sum(i * i for i in xs)\n"))
+		require.NoError(t, err)
+
+		stmt := mod.Body[0].(*ast.ExprStmt)
+		call := stmt.X.(*ast.CallExpr)
+		require.Len(t, call.Args, 1)
+		gen := call.Args[0].(*ast.GeneratorExp)
+		require.Len(t, gen.Clauses, 1)
+	})
+
+	t.Run("a generator alongside another argument must be parenthesized", func(t *testing.T) {
+		_, err := Parse(strings.NewReader("f(i for i in xs, 1)\n"))
+		require.Error(t, err)
+	})
+
+	t.Run("the parenthesized form still parses", func(t *testing.T) {
+		mod, err := Parse(strings.NewReader("sum((i for i in xs))\n"))
+		require.NoError(t, err)
+
+		stmt := mod.Body[0].(*ast.ExprStmt)
+		call := stmt.X.(*ast.CallExpr)
+		require.Len(t, call.Args, 1)
+		require.IsType(t, &ast.GeneratorExp{}, call.Args[0])
+	})
+}

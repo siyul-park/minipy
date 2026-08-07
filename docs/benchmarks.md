@@ -143,35 +143,44 @@ are worked around by picking a different *implementation* of that
 computation, the same way an application author hitting one of these bugs
 would have to.
 
-### A sixth defect, not worked around: `nbody`
+### A sixth defect, now fixed: `nbody`
 
-Unlike the five above, `nbody` was **not** rewritten to route around a
-defect, because no alternative formulation was found that avoided it: this
-measurement's own run shows minipy failing `nbody`'s correctness gate at
-both `-O 0` and `-O 3`, reproducibly, and the results table below reports it
-as a real `FAIL` rather than a passing time.
+Unlike the five above, `nbody` was **not** rewritten to route around its
+defect, because no alternative formulation was found that avoided it. It is
+recorded here because the diagnosis turned out to matter: the defect was not
+what this document previously assumed.
 
 `nbody` runs 250,000 `advance()` steps of pairwise gravitational float
 arithmetic (`math.sqrt`, multiply-accumulate) over 5 bodies, then prints a
-final energy checksum. CPython 3.13 (and CPython 3.11 and pypy3, both of
-which also pass) produce `-0.171931230`; minipy at both optimization levels
-produces `-0.171846486` — a difference starting at the fifth significant
-digit, not a gross logic error, consistent with floating-point arithmetic
-accumulating differently over 250,000 sequential steps (operation order,
-`math.sqrt` precision, or fused-multiply-add differences are all plausible
-causes) rather than an obviously wrong formula. That distinction does not
-change the correctness-gate outcome: `pybench` requires byte-identical
-output, minipy's does not match, and it is reported `FAIL` at both `-O 0`
-and `-O 3` — identically, which is itself informative: whatever causes the
-divergence is not something the `-O 3` optimizer passes introduce or fix, so
-it is present already at `-O 0`, in either the interpreter's float pipeline
-or `nbody.py`'s own arithmetic as minipy evaluates it. No workaround was
-applied because, unlike the five defects above, no alternative
-*formulation* of this computation was found that both stays idiomatic and
-avoids the divergence — the program already uses flat arrays and index
-loops, the corpus's preferred style. Diagnosing the exact source (interpreter
-float pipeline vs. a specific operation) is outside this document's scope;
-it is recorded here as a real, reproducible, currently unresolved gap.
+final energy checksum. CPython 3.13, CPython 3.11, and pypy3 all produce
+`-0.171931230`; minipy produced `-0.171846486` at both `-O 0` and `-O 3`, a
+difference starting at the fifth significant digit. This document read that as
+floating-point arithmetic accumulating differently over 250,000 sequential
+steps — operation order, `math.sqrt` precision, or fused-multiply-add — and
+noted that the divergence was identical at both optimization levels, so no
+optimizer pass introduced it.
+
+That reading was wrong. It was a **scratch-slot aliasing bug**: temporaries
+were module globals, shared by every activation, so `advance()` and the
+functions it calls clobbered each other's list-index temporaries. Moving
+scratch to frame locals fixes it, and the fix is visible across builds
+independently of the minivm bump:
+
+| build | output |
+|---|---|
+| CPython 3.13 | `-0.171931230` |
+| minipy, scratch in globals | `-0.171846486` |
+| minipy, scratch in frame locals, old VM | `-0.171931230` |
+| minipy, scratch in frame locals, new VM | `-0.171931230` |
+
+`nbody` now passes `pybench`'s correctness gate at both levels and the results
+table below reports real times for it.
+
+The lesson generalizes to the five defects above: a wrong value that looks like
+accumulated float error can be a compiler bug, and "identical at `-O 0` and
+`-O 3`" rules out the optimizer but not the lowerer. Those five were **not**
+re-verified after this fix; they are still described as first observed, and
+whether any of them shared this root cause is untested.
 
 ## `pybench`, the Cross-Implementation Runner
 
@@ -274,32 +283,79 @@ reported in the header in its place.
 
 ## Environment and Availability (this measurement)
 
-- Date: 2026-08-06 09:24 UTC
+- Date: 2026-08-06 23:20 UTC
 - Kernel: Linux 6.18.5-fc-v18
 - CPUs: 4
 - RAM: 15.7 GiB
 - Implementations:
   - CPython 3.13: Python 3.13.12
   - CPython (python3): Python 3.11.15
-  - pypy3: Python 3.9.18 (7.3.15+dfsg-1build3, Apr 01 2024, 03:12:48) [PyPy 7.3.15 with GCC 13.2.0]
-  - gpython: Python 3.4.0 (none, unknown); [Gpython dev]
-  - minipy -O0: built from this checkout, rev f523af2
-  - minipy -O3: built from this checkout, rev f523af2
+  - pypy3: **not found on PATH** — absent on this host, reported rather than
+    silently dropped. The rows it carried in the previous measurement are gone
+    from the tables below; they are not claims that have been re-verified.
+  - gpython: **not found on PATH**, same caveat.
+  - minipy -O0: built from this checkout, rev cd54764
+  - minipy -O3: built from this checkout, rev cd54764
 
-All six implementations pybench knows how to discover were present on this
-host; none is reported absent. `-runs 5` was used (the tool's own default),
-so every table below is a full, unreduced run of the corpus.
+`-runs 5` was used (the tool's own default), so every table below is a full,
+unreduced run of the corpus for the implementations that were present.
+
+### Regressions in this measurement, and what causes them
+
+Three builds were timed to separate the two changes that landed together — the
+scratch-temporaries refactor and the minivm bump — since the bump could not land
+on its own (the new verifier propagates a slot's declared type through
+`GLOBAL_GET` where the old one pushed `KindAny`, so the old uniformly-`TypeRef`
+global table stops verifying). Min-of-3 wall clock at `-O 0`:
+
+| case | base + old VM | refactor + old VM | refactor + new VM |
+|---|---:|---:|---:|
+| binarytrees | 1782ms | 1872ms | **2501ms** |
+| sortstress | 3279ms | 3142ms | **1971ms** |
+| strbuild | 5966ms | 5573ms | 5372ms |
+| matmul | 1844ms | 1744ms | 1754ms |
+| nbody | 6736ms | 6452ms | 6536ms |
+| fib | 2688ms | 2690ms | 2787ms |
+| fannkuch `-O 3` | 6681ms | 5812ms | **times out** |
+
+The middle column is the refactor alone. It is neutral to slightly positive
+everywhere — strbuild -7%, matmul -5%, nbody -4%, sortstress -4%, fib unchanged,
+binarytrees +5% — so moving scratch into frame locals does not cost meaningful
+performance.
+
+**Both regressions come from the minivm bump, not from the refactor.**
+
+1. **`fannkuch` no longer finishes at any optimization level.** It passed at
+   6.2-6.7s on the old VM at both `-O 0` and `-O 3`; on the new VM it exceeds
+   45s at `-O 0`, `-O 1`, `-O 2`, and `-O 3` alike. This is *runtime*, not
+   compile time — compiling `fannkuch.py` takes 1.5ms at `-O 0` and 2.5ms at
+   `-O 3` — and it is level-independent, so it is not an optimizer pass. Filed
+   upstream; tracked here as #62.
+2. **`binarytrees` is 34% slower** (1872ms -> 2501ms) purely across the VM
+   bump. `sortstress` is 37% *faster* across the same bump, so the new VM is not
+   uniformly slower; something specific to this workload regressed.
+
+`strbuild` is faster than the previous measurement, not slower. An earlier
+reading of this measurement attributed both regressions to the refactor; the
+three-build comparison above supersedes it.
+
+The refactor's own trade is still deliberate: scratch in module globals was
+shared by every activation, so a recursive call silently corrupted its caller's
+temporaries (see `docs/spec/05-codegen.md`, Scratch slots).
+
+The defects recorded under
+[Algorithm changes forced by real minipy bugs](#algorithm-changes-forced-by-real-minipy-bugs)
+were **not** re-verified in this measurement. They are still described as first
+observed.
 
 ### Startup baseline (empty program)
 
 | Implementation | Min | Median |
 |---|---:|---:|
-| CPython 3.13 | 13.2ms | 13.6ms |
-| CPython (python3) | 11.1ms | 11.8ms |
-| pypy3 | 28.2ms | 29.2ms |
-| gpython | 3.5ms | 4.0ms |
-| minipy -O0 | 3.8ms | 4.1ms |
-| minipy -O3 | 3.7ms | 3.9ms |
+| CPython 3.13 | 13.0ms | 14.8ms |
+| CPython (python3) | 11.5ms | 11.9ms |
+| minipy -O0 | 3.9ms | 4.3ms |
+| minipy -O3 | 3.4ms | 3.7ms |
 
 ## Results
 
@@ -307,120 +363,91 @@ so every table below is a full, unreduced run of the corpus.
 
 | Implementation | Status | Min | Median | Min - startup | Median - startup |
 |---|---|---:|---:|---:|---:|
-| CPython 3.13 | PASS | 825.9ms | 900.5ms | 812.6ms | 886.9ms |
-| CPython (python3) | PASS | 877.0ms | 885.6ms | 865.9ms | 873.8ms |
-| pypy3 | PASS | 131.4ms | 197.6ms | 103.2ms | 168.4ms |
-| gpython | PASS | 8707.9ms | 8841.8ms | 8704.4ms | 8837.8ms |
-| minipy -O0 | PASS | 1679.6ms | 1701.2ms | 1675.8ms | 1697.1ms |
-| minipy -O3 | PASS | 1661.2ms | 1731.8ms | 1657.5ms | 1727.9ms |
+| CPython 3.13 | PASS | 847.2ms | 877.8ms | 834.2ms | 863.1ms |
+| CPython (python3) | PASS | 1032.5ms | 1053.7ms | 1020.9ms | 1041.9ms |
+| minipy -O0 | PASS | 2530.2ms | 3251.2ms | 2526.2ms | 3246.9ms |
+| minipy -O3 | PASS | 2144.9ms | 2401.4ms | 2141.5ms | 2397.7ms |
 
 ### fannkuch
 
 | Implementation | Status | Min | Median | Min - startup | Median - startup |
 |---|---|---:|---:|---:|---:|
-| CPython 3.13 | PASS | 1282.8ms | 1295.9ms | 1269.6ms | 1282.3ms |
-| CPython (python3) | PASS | 1065.1ms | 1072.9ms | 1054.0ms | 1061.1ms |
-| pypy3 | PASS | 231.5ms | 241.4ms | 203.3ms | 212.1ms |
-| gpython | N/A (exit status 1) | - | - | - | - |
+| CPython 3.13 | PASS | 1253.7ms | 1267.6ms | 1240.8ms | 1252.9ms |
+| CPython (python3) | PASS | 1052.2ms | 1061.4ms | 1040.6ms | 1049.6ms |
 | minipy -O0 | FAIL (timed out after 40s) | - | - | - | - |
-| minipy -O3 | PASS | 6388.5ms | 6613.5ms | 6384.8ms | 6609.6ms |
+| minipy -O3 | FAIL (timed out after 40s) | - | - | - | - |
 
 ### fib
 
 | Implementation | Status | Min | Median | Min - startup | Median - startup |
 |---|---|---:|---:|---:|---:|
-| CPython 3.13 | PASS | 2096.7ms | 2109.1ms | 2083.5ms | 2095.5ms |
-| CPython (python3) | PASS | 1941.1ms | 1961.9ms | 1930.0ms | 1950.1ms |
-| pypy3 | PASS | 208.4ms | 225.5ms | 180.2ms | 196.3ms |
-| gpython | PASS | 25389.4ms | 25504.2ms | 25386.0ms | 25500.2ms |
-| minipy -O0 | PASS | 2680.4ms | 2777.1ms | 2676.6ms | 2773.0ms |
-| minipy -O3 | PASS | 2673.6ms | 2694.8ms | 2669.9ms | 2690.9ms |
+| CPython 3.13 | PASS | 2093.9ms | 2147.3ms | 2080.9ms | 2132.5ms |
+| CPython (python3) | PASS | 1945.9ms | 1971.9ms | 1934.4ms | 1960.0ms |
+| minipy -O0 | PASS | 2766.9ms | 2847.2ms | 2762.9ms | 2842.9ms |
+| minipy -O3 | PASS | 2812.1ms | 2830.6ms | 2808.6ms | 2826.9ms |
 
 ### mandelbrot
 
 | Implementation | Status | Min | Median | Min - startup | Median - startup |
 |---|---|---:|---:|---:|---:|
-| CPython 3.13 | PASS | 1621.4ms | 1641.9ms | 1608.2ms | 1628.3ms |
-| CPython (python3) | PASS | 1377.3ms | 1399.1ms | 1366.2ms | 1387.4ms |
-| pypy3 | PASS | 136.9ms | 141.8ms | 108.7ms | 112.6ms |
-| gpython | PASS | 6581.6ms | 6738.6ms | 6578.1ms | 6734.7ms |
-| minipy -O0 | PASS | 1673.5ms | 1675.8ms | 1669.7ms | 1671.7ms |
-| minipy -O3 | PASS | 1684.0ms | 1706.9ms | 1680.2ms | 1703.0ms |
+| CPython 3.13 | PASS | 1700.5ms | 1712.6ms | 1687.5ms | 1697.8ms |
+| CPython (python3) | PASS | 1407.1ms | 1583.5ms | 1395.5ms | 1571.6ms |
+| minipy -O0 | PASS | 1560.2ms | 1564.1ms | 1556.2ms | 1559.8ms |
+| minipy -O3 | PASS | 1563.3ms | 1596.5ms | 1559.9ms | 1592.8ms |
 
 ### matmul
 
 | Implementation | Status | Min | Median | Min - startup | Median - startup |
 |---|---|---:|---:|---:|---:|
-| CPython 3.13 | PASS | 1058.3ms | 1098.9ms | 1045.0ms | 1085.3ms |
-| CPython (python3) | PASS | 1160.0ms | 1249.9ms | 1148.9ms | 1238.1ms |
-| pypy3 | PASS | 53.5ms | 55.0ms | 25.3ms | 25.8ms |
-| gpython | N/A (exit status 1) | - | - | - | - |
-| minipy -O0 | PASS | 1839.8ms | 1853.0ms | 1836.0ms | 1848.9ms |
-| minipy -O3 | PASS | 1824.9ms | 1865.3ms | 1821.1ms | 1861.4ms |
+| CPython 3.13 | PASS | 1067.8ms | 1193.1ms | 1054.8ms | 1178.4ms |
+| CPython (python3) | PASS | 1222.7ms | 1297.9ms | 1211.2ms | 1286.0ms |
+| minipy -O0 | PASS | 1766.1ms | 1791.7ms | 1762.1ms | 1787.4ms |
+| minipy -O3 | PASS | 1768.5ms | 1795.0ms | 1765.0ms | 1791.3ms |
 
 ### nbody
 
 | Implementation | Status | Min | Median | Min - startup | Median - startup |
 |---|---|---:|---:|---:|---:|
-| CPython 3.13 | PASS | 1336.9ms | 1338.5ms | 1323.6ms | 1324.9ms |
-| CPython (python3) | PASS | 1304.6ms | 1333.8ms | 1293.5ms | 1322.1ms |
-| pypy3 | PASS | 169.5ms | 178.4ms | 141.3ms | 149.2ms |
-| gpython | N/A (exit status 1) | - | - | - | - |
-| minipy -O0 | FAIL (expected "-0.171931230", got "-0.171846486") | - | - | - | - |
-| minipy -O3 | FAIL (expected "-0.171931230", got "-0.171846486") | - | - | - | - |
+| CPython 3.13 | PASS | 1326.8ms | 1385.1ms | 1313.8ms | 1370.4ms |
+| CPython (python3) | PASS | 1250.0ms | 1280.4ms | 1238.5ms | 1268.6ms |
+| minipy -O0 | PASS | 6529.9ms | 6662.1ms | 6525.9ms | 6657.8ms |
+| minipy -O3 | PASS | 6542.8ms | 6642.3ms | 6539.4ms | 6638.6ms |
 
 ### nqueens
 
 | Implementation | Status | Min | Median | Min - startup | Median - startup |
 |---|---|---:|---:|---:|---:|
-| CPython 3.13 | PASS | 991.0ms | 993.0ms | 977.8ms | 979.4ms |
-| CPython (python3) | PASS | 794.5ms | 806.1ms | 783.4ms | 794.3ms |
-| pypy3 | PASS | 297.1ms | 336.7ms | 268.9ms | 307.4ms |
-| gpython | N/A (exit status 1) | - | - | - | - |
-| minipy -O0 | PASS | 2932.0ms | 2937.4ms | 2928.2ms | 2933.3ms |
-| minipy -O3 | PASS | 2859.3ms | 2909.6ms | 2855.6ms | 2905.7ms |
+| CPython 3.13 | PASS | 967.2ms | 999.4ms | 954.2ms | 984.6ms |
+| CPython (python3) | PASS | 787.0ms | 790.2ms | 775.4ms | 778.3ms |
+| minipy -O0 | PASS | 2999.9ms | 3039.6ms | 2996.0ms | 3035.3ms |
+| minipy -O3 | PASS | 2976.1ms | 2998.8ms | 2972.7ms | 2995.1ms |
 
 ### sortstress
 
 | Implementation | Status | Min | Median | Min - startup | Median - startup |
 |---|---|---:|---:|---:|---:|
-| CPython 3.13 | PASS | 745.7ms | 845.3ms | 732.5ms | 831.7ms |
-| CPython (python3) | PASS | 674.3ms | 682.8ms | 663.2ms | 671.0ms |
-| pypy3 | PASS | 217.9ms | 218.9ms | 189.8ms | 189.6ms |
-| gpython | N/A (exit status 1) | - | - | - | - |
-| minipy -O0 | PASS | 3285.0ms | 3412.0ms | 3281.2ms | 3407.9ms |
-| minipy -O3 | PASS | 3244.1ms | 3334.9ms | 3240.4ms | 3331.0ms |
+| CPython 3.13 | PASS | 721.7ms | 739.5ms | 708.8ms | 724.7ms |
+| CPython (python3) | PASS | 660.7ms | 676.0ms | 649.1ms | 664.1ms |
+| minipy -O0 | PASS | 1975.9ms | 2010.0ms | 1972.0ms | 2005.7ms |
+| minipy -O3 | PASS | 1988.6ms | 2040.3ms | 1985.2ms | 2036.6ms |
 
 ### spectralnorm
 
 | Implementation | Status | Min | Median | Min - startup | Median - startup |
 |---|---|---:|---:|---:|---:|
-| CPython 3.13 | PASS | 1330.4ms | 1369.0ms | 1317.2ms | 1355.4ms |
-| CPython (python3) | PASS | 1360.0ms | 1377.4ms | 1348.9ms | 1365.6ms |
-| pypy3 | PASS | 91.8ms | 233.8ms | 63.6ms | 204.6ms |
-| gpython | N/A (exit status 1) | - | - | - | - |
-| minipy -O0 | PASS | 2493.1ms | 2518.0ms | 2489.3ms | 2513.9ms |
-| minipy -O3 | PASS | 2454.3ms | 2531.9ms | 2450.6ms | 2528.0ms |
+| CPython 3.13 | PASS | 1335.8ms | 1358.6ms | 1322.8ms | 1343.8ms |
+| CPython (python3) | PASS | 1280.0ms | 1324.1ms | 1268.5ms | 1312.3ms |
+| minipy -O0 | PASS | 2497.3ms | 2519.1ms | 2493.4ms | 2514.8ms |
+| minipy -O3 | PASS | 2421.9ms | 2495.9ms | 2418.5ms | 2492.2ms |
 
 ### strbuild
 
 | Implementation | Status | Min | Median | Min - startup | Median - startup |
 |---|---|---:|---:|---:|---:|
-| CPython 3.13 | PASS | 1234.2ms | 1239.0ms | 1220.9ms | 1225.4ms |
-| CPython (python3) | PASS | 1224.5ms | 1244.4ms | 1213.4ms | 1232.6ms |
-| pypy3 | PASS | 568.5ms | 589.2ms | 540.4ms | 560.0ms |
-| gpython | N/A (exit status 1) | - | - | - | - |
-| minipy -O0 | PASS | 6317.5ms | 7337.6ms | 6313.8ms | 7333.6ms |
-| minipy -O3 | PASS | 5728.7ms | 6417.3ms | 5724.9ms | 6413.4ms |
-
-The tables above are pybench's own Markdown output, unedited (only the
-duplicate top-level heading and header block it also prints were removed,
-since this document supplies those itself, and both source in this section
-are byte-identical to what `go run ./conformance/cmd/pybench -runs 5`
-printed on this run). `N/A (exit status 1)` for gpython on a case means it
-exited with an error immediately (not a `-timeout` kill) — most often the
-stripped source still uses a construct gpython's Python-3.4 parser or
-runtime rejects.
+| CPython 3.13 | PASS | 1195.3ms | 1231.4ms | 1182.4ms | 1216.7ms |
+| CPython (python3) | PASS | 1228.1ms | 1236.3ms | 1216.6ms | 1224.4ms |
+| minipy -O0 | PASS | 5536.8ms | 5887.0ms | 5532.9ms | 5882.7ms |
+| minipy -O3 | PASS | 5072.4ms | 5162.7ms | 5069.0ms | 5158.9ms |
 
 ## Reading the Results
 
@@ -429,52 +456,31 @@ All ratios below use each case's `minipy` **min** against CPython 3.13's own
 (see [What it does](#what-it-does), item 5); "tied" means within about 1%,
 smaller than run-to-run noise on this host.
 
-- **minipy `-O0` vs CPython 3.13**, on the 8 cases where both pass the
-  correctness gate: 1.03x (`mandelbrot`) up to 5.12x (`strbuild`), with most
-  cases in the 1.7x-3.0x band (`matmul` 1.74x, `spectralnorm` 1.87x,
-  `binarytrees` 2.03x, `nqueens` 2.96x, `sortstress` 4.41x). `fib` alone
-  landed at 1.28x, matching this machine's earlier hand-timed fib(30) spot
-  check (0.166s CPython / 0.209s minipy `-O0`, ~1.26x) almost exactly — but
-  that spot check was only ever representative of function-call-heavy
-  integer recursion, not the corpus as a whole; the wider spread above is
-  the more complete picture. `fannkuch` at `-O 0` did not pass at all: it
-  did not finish within the 40s per-process timeout in *both* the `-runs 1`
-  smoke test and this `-runs 5` measurement, so its `-O0`/CPython ratio is
-  unbounded, not merely large — see the next point.
-- **minipy `-O0` vs `-O3`**: contrary to this document's own prior
-  expectation (recorded further down as a deliberate correction — see
-  [defect 4](#algorithm-changes-forced-by-real-minipy-bugs)), `-O 3` did not
-  crash any case in this run and was never more than about 1% slower than
-  `-O 0` on any case that passed at both levels (`mandelbrot`, essentially
-  tied). It was consistently at or slightly ahead of `-O 0` elsewhere
-  (`strbuild` 9.3% faster, `nqueens` 2.5% faster, `spectralnorm` 1.6%
-  faster, `sortstress` 1.2% faster, `binarytrees`/`matmul`/`fib` tied), and
-  on `fannkuch` the difference was categorical, not incremental: `-O 3`
-  passed in 6.4-6.6s where `-O 0` did not finish in 40s. `-O 3` on `matmul`
-  also passed cleanly here, which the corpus's own header comment and an
-  earlier version of this document did not expect — see defect 4 above for
-  the full account of that discrepancy. None of this licenses "always pass
-  `-O 3`" as a general rule from one host's one run; it says only what this
-  measurement showed.
-- **minipy vs CPython on `nbody`**: neither optimization level passes the
-  correctness gate (see [the sixth defect](#a-sixth-defect-not-worked-around-nbody)
-  above), so `nbody` has no minipy timing to compare — the table reports
-  `FAIL`, not a fast wrong answer.
-- **pypy3**: fastest implementation on every single case that it could run,
-  by a wide and consistent margin (roughly 3x-20x faster than CPython 3.13's
-  min, e.g. 19.8x on `matmul`, 14.5x on `spectralnorm`, down to 2.2x on
-  `strbuild`). Each `pybench` invocation is a fresh process, so these
-  numbers include JIT warmup rather than pypy3's warmed-up steady state,
-  and pypy3 was still decisively fastest despite that handicap.
-- **gpython**: passed only 3 of 10 cases (`binarytrees`, `fib`,
-  `mandelbrot`) and was slower than CPython 3.13 on all three by a wide
-  margin (10.5x on `binarytrees`, 12.1x on `fib`, 4.1x on `mandelbrot`,
-  consistent with "one to two orders of magnitude slower"). The other 7
-  cases are `N/A`, and every one of those was an immediate
-  `exit status 1` on the annotation-stripped source, not a `-timeout` kill
-  — meaning gpython's Python-3.4 ceiling (a real syntax or semantic gap
-  beyond what PEP 526 stripping fixes) is the reason it did not run those
-  cases at all, not that it ran out of time.
+- **minipy `-O0` vs CPython 3.13**, over the cases where both pass the
+  correctness gate: `mandelbrot` is the one case minipy wins. The rest run
+  roughly 1.3x-4.6x slower, `strbuild` worst at about 4.6x (5536.8ms against
+  1195.3ms). Read the per-case tables above for exact numbers rather than a
+  summarized band; the regressions described under
+  [Regressions in this measurement](#regressions-in-this-measurement-and-what-causes-them)
+  move several of these against the previous run.
+- **minipy `-O0` vs `-O3`**: `-O 3` is at or slightly ahead of `-O 0` on the
+  cases that pass at both levels. The one categorical difference the previous
+  measurement recorded — `fannkuch` passing at `-O 3` in 6.4s where `-O 0`
+  times out — **no longer holds**: `fannkuch` now times out at every level from
+  `-O 0` to `-O 3`. That is a regression in the minivm bump, not a property of
+  the corpus; see above. Nothing here licenses "always pass `-O 3`" as a general rule; it says
+  only what this measurement showed.
+- **`nbody` now passes** at both levels, where the previous measurement failed
+  the correctness gate. That was a compiler bug, not float drift — see
+  [the sixth defect](#a-sixth-defect-now-fixed-nbody) above. It runs about 4.9x
+  slower than CPython 3.13.
+- **Startup**: minipy starts in roughly 3.4-4.3ms against CPython 3.13's
+  13.0-14.8ms, about 3-4x faster. On the short cases that is a visible share of
+  wall clock, which is why every table carries a "minus startup" column.
+- **pypy3 and gpython** were not present on this host, so this measurement says
+  nothing about them. The previous measurement's findings — pypy3 fastest on
+  every case it ran, gpython passing only 3 of 10 and slower than CPython on
+  all three — stand as previously recorded and were not re-verified here.
 
 ## Infeasible Benchmarks
 

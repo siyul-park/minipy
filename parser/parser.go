@@ -1614,7 +1614,22 @@ func (p *Parser) parseCall(callee ast.Expr) ast.Expr {
 			p.advance()
 			keywords = append(keywords, &ast.Keyword{Base: ast.Base{Position: key.Pos}, Name: key.Literal, Value: p.parseExpression()})
 		default:
-			args = append(args, p.parseExpression())
+			arg := p.parseExpression()
+			// A bare generator expression: `sum(i * i for i in xs)`. CPython
+			// allows the parentheses to be elided only when the generator is
+			// the sole argument, so anything following it is a syntax error
+			// rather than another argument.
+			if p.at(token.FOR) || p.at(token.ASYNC) {
+				clauses := p.parseComprehensionClauses()
+				arg = &ast.GeneratorExp{Base: ast.Base{Position: arg.Pos()}, Elem: arg, Clauses: clauses}
+				args = append(args, arg)
+				if !p.at(token.RPAREN) {
+					p.errs.Add(p.cur().Pos, token.UnsupportedFeature,
+						"a generator expression must be parenthesized when it is not the only argument")
+				}
+				break
+			}
+			args = append(args, arg)
 		}
 		if p.at(token.COMMA) {
 			p.advance()

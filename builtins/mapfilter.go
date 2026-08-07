@@ -7,6 +7,7 @@ import (
 	"github.com/siyul-park/minipy/types"
 
 	"github.com/siyul-park/minivm/instr"
+	vmtypes "github.com/siyul-park/minivm/types"
 )
 
 // mapCheck type-checks map(fn, list) -> list[R].
@@ -81,11 +82,11 @@ func filterCheck(c module.Checker, args []ast.Expr, pos token.Pos) types.Type {
 
 // emitMap lowers map(fn, list) to an inline iteration loop.
 func emitMap(e module.Emitter, args []ast.Expr) {
-	fnSlot := e.Tmp()
-	listSlot := e.Tmp()
-	outSlot := e.Tmp()
-	idxSlot := e.Tmp()
-	elemSlot := e.Tmp()
+	fnSlot := e.Tmp(vmtypes.TypeRef)
+	listSlot := e.Tmp(vmtypes.TypeRef)
+	outSlot := e.Tmp(vmtypes.TypeRef)
+	idxSlot := e.Tmp(vmtypes.TypeI64)
+	elemSlot := e.Tmp(vmtypes.TypeRef)
 
 	resultType := types.NewList(e.Type(args[0]).(*types.Callable).Return)
 
@@ -130,7 +131,7 @@ func emitMap(e module.Emitter, args []ast.Expr) {
 	e.Emit(instr.CALL)
 
 	// append result to output: output, value, 1, ARRAY_APPEND, DROP
-	resultSlot := e.Tmp()
+	resultSlot := e.Tmp(vmtypes.TypeRef)
 	e.Emit(instr.GLOBAL_SET, uint64(resultSlot))
 	e.Emit(instr.GLOBAL_GET, uint64(outSlot))
 	e.Emit(instr.GLOBAL_GET, uint64(resultSlot))
@@ -151,11 +152,11 @@ func emitMap(e module.Emitter, args []ast.Expr) {
 
 // emitFilter lowers filter(fn, list) to an inline iteration loop.
 func emitFilter(e module.Emitter, args []ast.Expr) {
-	fnSlot := e.Tmp()
-	listSlot := e.Tmp()
-	outSlot := e.Tmp()
-	idxSlot := e.Tmp()
-	elemSlot := e.Tmp()
+	fnSlot := e.Tmp(vmtypes.TypeRef)
+	listSlot := e.Tmp(vmtypes.TypeRef)
+	outSlot := e.Tmp(vmtypes.TypeRef)
+	idxSlot := e.Tmp(vmtypes.TypeI64)
+	elemSlot := e.Tmp(vmtypes.TypeRef)
 
 	resultType := e.Type(args[1])
 

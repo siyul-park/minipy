@@ -36,6 +36,10 @@ owned by `docs/spec/`; compatibility status is summarized in
 - CLI `run` and REPL entry points.
 - Compile options for output sink, optimization level, and module search roots.
 - Accumulated diagnostics through `token.ErrorList`.
+- Scratch temporaries are frame locals with declared types, pooled per statement
+  where safe (a frame containing a `try` or `with` keeps one slot per site), so a
+  recursive call cannot clobber the scratch its caller still holds
+  (`docs/spec/05-codegen.md`, Scratch slots).
 
 ### Static type system ✅
 
@@ -153,24 +157,6 @@ These are implemented with deliberate limits, not undocumented bugs.
   whenever syntax support moves between parse-only and lowered states.
 - Add focused regression tests for every compatibility-matrix row that is marked
   ✅ or ◐.
-
-### P0 defects found by the conformance corpus
-
-Each was reproduced against CPython 3.13 while porting `conformance/testdata/`.
-The corpus deliberately avoids these rather than pinning minipy's answer as a
-divergence, so fixing one means adding its case.
-
-- `int ** negative_int` and `pow(int, negative_int)` trap instead of producing a
-  float.
-- `str.split()` with no separator neither collapses whitespace runs nor treats
-  tabs and newlines as separators.
-- `str.format()` ignores every embedded format spec. F-strings honor width,
-  precision, and alignment, but not `,` grouping or `#` alternate form.
-
-- Float arithmetic in the `nbody` benchmark diverges from CPython:
-  minipy prints `-0.171846486` where CPython 3.13 prints `-0.171931230`,
-  identically at `-O0` and `-O3`. The benchmark fails `pybench`'s correctness
-  gate and is reported rather than worked around.
 
 ### P1 language/runtime improvements
 

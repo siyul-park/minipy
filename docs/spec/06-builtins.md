@@ -649,3 +649,14 @@ runtime dispatch is used.
 - `docs/spec/04-static-semantics.md` — checker rules for calls and exceptions.
 - `docs/spec/05-codegen.md` — lowering of native symbols and host helpers.
 - `docs/compatibility.md` — user-facing builtin/operator support status.
+
+### Format specs
+
+`str.format()` and f-strings share one implementation of the format-spec
+mini-language `[[fill]align][sign]['#']['0'][width][grouping]['.'precision][type]`,
+so a spec behaves identically on both surfaces. `,` and `_` group the integral
+part in threes, leaving any fraction alone; `#` prefixes `b`/`o`/`x`/`X` with
+`0b`/`0o`/`0x`/`0X`.
+
+`str.format()` supports auto-numbered `{}` and explicit `{0}` fields. Attribute
+and element access inside a field (`{0.attr}`, `{0[1]}`) is not supported.

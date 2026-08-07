@@ -47,9 +47,14 @@ func (c *lowerer) expr(n ast.Expr) {
 	case *ast.UnaryExpr:
 		c.unary(x)
 	case *ast.BinaryExpr:
-		c.emitBinary(x.Op, c.types[x.X], c.types[x.Y],
-			func() { c.expr(x.X) },
-			func() { c.expr(x.Y) })
+		left, right := c.types[x.X], c.types[x.Y]
+		pushLeft, pushRight := func() { c.expr(x.X) }, func() { c.expr(x.Y) }
+		if operator.PowFloatResult(x.Op, x.Y) &&
+			types.Equal(types.Erase(left), types.Int) && types.Equal(types.Erase(right), types.Int) {
+			operator.EmitPowFloat(c, left, right, pushLeft, pushRight)
+			return
+		}
+		c.emitBinary(x.Op, left, right, pushLeft, pushRight)
 	case *ast.BoolOp:
 		c.boolOp(x)
 	case *ast.Compare:
@@ -92,7 +97,7 @@ func (c *lowerer) expr(n ast.Expr) {
 func (c *lowerer) listLit(x *ast.ListLit) {
 	t := c.types[x].(*types.List)
 	if hasStarredExpr(x.Elems) {
-		slot := c.tmp()
+		slot := c.tmp(vmtypes.TypeRef)
 		c.emit(instr.I32_CONST, 0)
 		c.emit(instr.ARRAY_NEW_DEFAULT, c.typeIndex(t))
 		c.emit(instr.GLOBAL_SET, uint64(slot))
@@ -141,7 +146,7 @@ func (c *lowerer) bytesLit(x *ast.BytesLit) {
 func (c *lowerer) dictLit(x *ast.DictLit) {
 	t := c.types[x].(*types.Dict)
 	if hasDictUnpack(x) {
-		slot := c.tmp()
+		slot := c.tmp(vmtypes.TypeRef)
 		c.emit(instr.I32_CONST, 0)
 		c.emit(instr.MAP_NEW, c.typeIndex(t))
 		c.emit(instr.GLOBAL_SET, uint64(slot))
@@ -196,7 +201,7 @@ func (c *lowerer) appendListSlot(slot int, emitElem func()) {
 }
 
 func (c *lowerer) appendTupleToListSlot(slot int, tupleExpr ast.Expr, tuple *types.Tuple) {
-	tupleSlot := c.tmp()
+	tupleSlot := c.tmp(vmtypes.TypeRef)
 	c.expr(tupleExpr)
 	c.emit(instr.GLOBAL_SET, uint64(tupleSlot))
 	for i := range tuple.Elems {
@@ -212,7 +217,7 @@ func (c *lowerer) appendTupleToListSlot(slot int, tupleExpr ast.Expr, tuple *typ
 func (c *lowerer) setLit(x *ast.SetLit) {
 	t := c.types[x].(*types.Set)
 	if hasStarredExpr(x.Elems) {
-		slot := c.tmp()
+		slot := c.tmp(vmtypes.TypeRef)
 		c.emit(instr.I32_CONST, 0)
 		c.emit(instr.MAP_NEW, c.typeIndex(t))
 		c.emit(instr.GLOBAL_SET, uint64(slot))
@@ -250,7 +255,7 @@ func (c *lowerer) lambda(x *ast.LambdaExpr) {
 
 func (c *lowerer) listComp(x *ast.ListComp) {
 	t := c.types[x].(*types.List)
-	slot := c.tmp()
+	slot := c.tmp(vmtypes.TypeRef)
 	c.emit(instr.I32_CONST, 0)
 	c.emit(instr.ARRAY_NEW_DEFAULT, c.typeIndex(t))
 	c.emit(instr.GLOBAL_SET, uint64(slot))
@@ -262,7 +267,7 @@ func (c *lowerer) listComp(x *ast.ListComp) {
 
 func (c *lowerer) dictComp(x *ast.DictComp) {
 	t := c.types[x].(*types.Dict)
-	slot := c.tmp()
+	slot := c.tmp(vmtypes.TypeRef)
 	c.emit(instr.I32_CONST, 0)
 	c.emit(instr.MAP_NEW, c.typeIndex(t))
 	c.emit(instr.GLOBAL_SET, uint64(slot))
@@ -277,7 +282,7 @@ func (c *lowerer) dictComp(x *ast.DictComp) {
 
 func (c *lowerer) setComp(x *ast.SetComp) {
 	t := c.types[x].(*types.Set)
-	slot := c.tmp()
+	slot := c.tmp(vmtypes.TypeRef)
 	c.emit(instr.I32_CONST, 0)
 	c.emit(instr.MAP_NEW, c.typeIndex(t))
 	c.emit(instr.GLOBAL_SET, uint64(slot))
@@ -307,7 +312,7 @@ func (c *lowerer) comp(clauses []*ast.Comprehension, body func()) {
 			return
 		}
 		clause := clauses[i]
-		targetSlot := c.tmp()
+		targetSlot := c.slotFor(clause.Target)
 		prev, hadPrev := c.temps[clause.Target.Name]
 		c.temps[clause.Target.Name] = targetSlot
 		defer func() {
@@ -328,8 +333,8 @@ func (c *lowerer) comp(clauses []*ast.Comprehension, body func()) {
 	emit(0)
 }
 func (c *lowerer) iterComp(clause *ast.Comprehension, targetSlot int, body func()) {
-	iterSlot := c.tmp()
-	idxSlot := c.tmp()
+	iterSlot := c.tmp(vmtypes.TypeRef)
+	idxSlot := c.tmp(vmtypes.TypeI64)
 	c.expr(clause.Iter)
 	c.emit(instr.GLOBAL_SET, uint64(iterSlot))
 	c.emit(instr.I64_CONST, 0)
@@ -365,7 +370,7 @@ func (c *lowerer) iterComp(clause *ast.Comprehension, targetSlot int, body func(
 }
 
 func (c *lowerer) iteratorComp(clause *ast.Comprehension, targetSlot int, emitIter func(), body func()) {
-	iterSlot := c.tmp()
+	iterSlot := c.tmp(vmtypes.TypeRef)
 	emitIter()
 	c.emit(instr.GLOBAL_SET, uint64(iterSlot))
 	top := c.label()
@@ -658,17 +663,22 @@ func (c *lowerer) compare(x *ast.Compare) {
 		c.emitCmpStack(x.Ops[0], c.types[x.X], c.types[x.Comparators[0]])
 		return
 	}
-	leftSlot := c.tmp()
+	// One slot per carried operand rather than one reused slot: a chain may mix
+	// kinds (1 < 2.0 < 3), and a slot's declared kind is what the verifier sees
+	// at every read of it.
+	slots := make([]int, len(x.Ops))
+	slots[0] = c.slotFor(x.X)
 	end := c.label()
 	c.expr(x.X)
-	c.emit(instr.GLOBAL_SET, uint64(leftSlot))
+	c.emit(instr.GLOBAL_SET, uint64(slots[0]))
 	left := x.X
 	for i, op := range x.Ops {
-		c.emit(instr.GLOBAL_GET, uint64(leftSlot))
+		c.emit(instr.GLOBAL_GET, uint64(slots[i]))
 		c.expr(x.Comparators[i])
 		if i+1 < len(x.Ops) {
+			slots[i+1] = c.slotFor(x.Comparators[i])
 			c.emit(instr.DUP)
-			c.emit(instr.GLOBAL_SET, uint64(leftSlot))
+			c.emit(instr.GLOBAL_SET, uint64(slots[i+1]))
 		}
 		c.emitCmpStack(op, c.types[left], c.types[x.Comparators[i]])
 		left = x.Comparators[i]
@@ -999,7 +1009,8 @@ func (c *lowerer) methodCall(x *ast.CallExpr, attr *ast.Attribute) {
 		c.callHost(c.strLower())
 	case "split":
 		if len(x.Args) == 0 {
-			c.constGet(vmtypes.String(" "))
+			c.callHost(c.strSplitWhitespace())
+			return
 		}
 		c.callHost(c.strSplit())
 	case "join":
@@ -1099,16 +1110,15 @@ func (c *lowerer) emitStrFormat(x *ast.CallExpr) {
 	// Save each arg (top of stack last pushed) into a temporary slot,
 	// converting non-string args to string along the way.
 	argSlots := make([]int, n)
+	argTypes := make([]types.Type, n)
 	for i := n - 1; i >= 0; i-- {
-		if !types.Equal(c.types[x.Args[i]], types.Str) {
-			c.callHost(hostabi.StringFunction(c.types[x.Args[i]]))
-		}
-		slot := c.tmp()
+		argTypes[i] = c.types[x.Args[i]]
+		slot := c.slotFor(x.Args[i])
 		argSlots[i] = slot
 		c.emit(instr.GLOBAL_SET, uint64(slot))
 	}
 	// Receiver (format string) is now on top - already a string.
-	recvSlot := c.tmp()
+	recvSlot := c.tmp(vmtypes.TypeRef)
 	c.emit(instr.GLOBAL_SET, uint64(recvSlot))
 
 	// Push in order: format_string, arg0_str, arg1_str, ...
@@ -1116,7 +1126,7 @@ func (c *lowerer) emitStrFormat(x *ast.CallExpr) {
 	for _, slot := range argSlots {
 		c.emit(instr.GLOBAL_GET, uint64(slot))
 	}
-	c.callHost(c.strFormatMethod(n))
+	c.callHost(c.strFormatMethod(argTypes))
 }
 
 // emitBool pushes a bool literal as an i1 value. There is no i1 const opcode,
@@ -1156,8 +1166,8 @@ func (c *lowerer) emitZeroValue(t types.Type) {
 // or still out of range, is left for the following ARRAY_GET/ARRAY_SET/
 // ARRAY_DELETE bounds check to trap.
 func (c *lowerer) emitListIndexNormalize() {
-	idxSlot := c.tmp()
-	listSlot := c.tmp()
+	idxSlot := c.tmp(vmtypes.TypeI64)
+	listSlot := c.tmp(vmtypes.TypeRef)
 	c.emit(instr.GLOBAL_SET, uint64(idxSlot))
 	c.emit(instr.GLOBAL_SET, uint64(listSlot))
 
@@ -1187,7 +1197,7 @@ func (c *lowerer) emitListIndexNormalize() {
 // index, value] -> [list, i32 index, value]. Subscript-assignment writes push
 // the stored value after the index, so the index to normalize is not on top.
 func (c *lowerer) emitListIndexNormalizeUnderValue() {
-	valueSlot := c.tmp()
+	valueSlot := c.tmp(vmtypes.TypeRef)
 	c.emit(instr.GLOBAL_SET, uint64(valueSlot))
 	c.emitListIndexNormalize()
 	c.emit(instr.GLOBAL_GET, uint64(valueSlot))
@@ -1199,11 +1209,11 @@ func (c *lowerer) emitArrayDelete() {
 }
 
 func (c *lowerer) emitListInsert() {
-	valueSlot := c.tmp()
-	idxSlot := c.tmp()
-	listSlot := c.tmp()
-	lenSlot := c.tmp()
-	iSlot := c.tmp()
+	valueSlot := c.tmp(vmtypes.TypeRef)
+	idxSlot := c.tmp(vmtypes.TypeI64)
+	listSlot := c.tmp(vmtypes.TypeRef)
+	lenSlot := c.tmp(vmtypes.TypeI64)
+	iSlot := c.tmp(vmtypes.TypeI64)
 
 	c.emit(instr.GLOBAL_SET, uint64(valueSlot))
 	c.emit(instr.GLOBAL_SET, uint64(idxSlot))
@@ -1291,10 +1301,10 @@ func (c *lowerer) emitListInsert() {
 }
 
 func (c *lowerer) emitListExtend() {
-	srcSlot := c.tmp()
-	listSlot := c.tmp()
-	lenSlot := c.tmp()
-	iSlot := c.tmp()
+	srcSlot := c.tmp(vmtypes.TypeRef)
+	listSlot := c.tmp(vmtypes.TypeRef)
+	lenSlot := c.tmp(vmtypes.TypeI64)
+	iSlot := c.tmp(vmtypes.TypeI64)
 
 	c.emit(instr.GLOBAL_SET, uint64(srcSlot))
 	c.emit(instr.GLOBAL_SET, uint64(listSlot))
@@ -1330,10 +1340,10 @@ func (c *lowerer) emitListExtend() {
 }
 
 func (c *lowerer) emitListReverse() {
-	listSlot := c.tmp()
-	iSlot := c.tmp()
-	jSlot := c.tmp()
-	tmpSlot := c.tmp()
+	listSlot := c.tmp(vmtypes.TypeRef)
+	iSlot := c.tmp(vmtypes.TypeI64)
+	jSlot := c.tmp(vmtypes.TypeI64)
+	tmpSlot := c.tmp(vmtypes.TypeRef)
 
 	c.emit(instr.GLOBAL_SET, uint64(listSlot))
 	c.emit(instr.I64_CONST, 0)

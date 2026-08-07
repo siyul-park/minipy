@@ -114,6 +114,25 @@ func LoadStr(i *interp.Interpreter, v vmtypes.Boxed) (string, error) {
 	return string(s), nil
 }
 
+// BoxInt boxes an int64 result, spilling to a heap cell when the value does not
+// fit inline. minivm's boxed representation carries a 49-bit payload, so
+// vmtypes.BoxI64 silently truncates anything outside [-2^48, 2^48-1]; a host
+// function returning a large int must allocate instead. This is the write-side
+// counterpart of LoadI64, which already accepts either form.
+//
+// The returned box owns its heap cell when it spilled, under the same ownership
+// rule as AllocString.
+func BoxInt(i *interp.Interpreter, v int64) (vmtypes.Boxed, error) {
+	if vmtypes.IsBoxable(v) {
+		return vmtypes.BoxI64(v), nil
+	}
+	addr, err := i.Alloc(vmtypes.I64(v))
+	if err != nil {
+		return vmtypes.BoxedNull, err
+	}
+	return vmtypes.BoxRef(addr), nil
+}
+
 // LoadI64 reads an int64 argument whether it arrived inline or spilled to a
 // heap cell.
 func LoadI64(i *interp.Interpreter, v vmtypes.Boxed) (int64, error) {

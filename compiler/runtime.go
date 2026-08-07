@@ -889,6 +889,32 @@ func (c *lowerer) strSlice() *interp.HostFunction {
 	)
 }
 
+// strSplitWhitespace backs the no-argument str.split(). CPython treats that as
+// a different algorithm from split(sep), not as split(" "): it splits on runs of
+// any whitespace and drops leading and trailing empty fields, so "  a  b\tc "
+// yields ["a", "b", "c"] rather than ["", "", "a", "", "b\tc", ""].
+func (c *lowerer) strSplitWhitespace() *interp.HostFunction {
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeString}, Returns: []vmtypes.Type{vmtypes.NewArrayType(vmtypes.TypeString)}},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			text, err := hostabi.LoadStr(i, params[0])
+			if err != nil {
+				return nil, err
+			}
+			fields := strings.Fields(text)
+			out := make([]vmtypes.Boxed, 0, len(fields))
+			for _, field := range fields {
+				box, err := hostabi.AllocString(i, field)
+				if err != nil {
+					return nil, err
+				}
+				out = append(out, box[0])
+			}
+			return hostabi.AllocArray(i, vmtypes.NewArrayType(vmtypes.TypeString), out)
+		},
+	)
+}
+
 func (c *lowerer) strSplit() *interp.HostFunction {
 	return interp.NewHostFunction(
 		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeString, vmtypes.TypeString}, Returns: []vmtypes.Type{vmtypes.NewArrayType(vmtypes.TypeString)}},
@@ -1418,11 +1444,15 @@ func (c *lowerer) strEncode() *interp.HostFunction {
 // semantics. It takes the format string as the first parameter and argCount
 // string parameters (already converted to str by the lowerer). It handles
 // both auto-numbered {} and explicitly-numbered {0}, {1} placeholders.
-func (c *lowerer) strFormatMethod(argCount int) *interp.HostFunction {
-	params := make([]vmtypes.Type, 1+argCount)
+// strFormatMethod backs str.format(). The arguments arrive in their own types
+// rather than pre-stringified, because a replacement field may carry a format
+// spec and pyFormat needs the value to apply it — the same spec support
+// f-strings already have.
+func (c *lowerer) strFormatMethod(argTypes []types.Type) *interp.HostFunction {
+	params := make([]vmtypes.Type, 1+len(argTypes))
 	params[0] = vmtypes.TypeString
-	for j := 1; j <= argCount; j++ {
-		params[j] = vmtypes.TypeString
+	for j, t := range argTypes {
+		params[j+1] = hostabi.VMParamType(t)
 	}
 	return interp.NewHostFunction(
 		&vmtypes.FunctionType{Params: params, Returns: []vmtypes.Type{vmtypes.TypeString}},
@@ -1431,14 +1461,10 @@ func (c *lowerer) strFormatMethod(argCount int) *interp.HostFunction {
 			if err != nil {
 				return nil, err
 			}
-			args := make([]string, len(ps)-1)
-			for j := 1; j < len(ps); j++ {
-				args[j-1], err = hostabi.LoadStr(i, ps[j])
-				if err != nil {
-					return nil, err
-				}
+			result, err := applyStrFormat(i, format, ps[1:])
+			if err != nil {
+				return nil, err
 			}
-			result := applyStrFormat(format, args)
 			return hostabi.AllocString(i, result)
 		},
 	)
@@ -1447,61 +1473,65 @@ func (c *lowerer) strFormatMethod(argCount int) *interp.HostFunction {
 // applyStrFormat processes a Python format string, replacing {} with the next
 // positional argument and {N} with the N-th argument. Escaped {{ and }} are
 // converted to literal { and }.
-func applyStrFormat(format string, args []string) string {
+// applyStrFormat renders a str.format() template. A replacement field is
+// [index][":" spec]; an omitted index auto-numbers, and the spec is the same
+// mini-language f-strings use, applied by pyFormat.
+func applyStrFormat(i *interp.Interpreter, format string, args []vmtypes.Boxed) (string, error) {
 	var b strings.Builder
 	autoIdx := 0
-	i := 0
-	for i < len(format) {
-		ch := format[i]
+	pos := 0
+	for pos < len(format) {
+		ch := format[pos]
 		if ch == '{' {
-			if i+1 < len(format) && format[i+1] == '{' {
+			if pos+1 < len(format) && format[pos+1] == '{' {
 				b.WriteByte('{')
-				i += 2
+				pos += 2
 				continue
 			}
-			// Find closing }
-			end := strings.IndexByte(format[i+1:], '}')
+			end := strings.IndexByte(format[pos+1:], '}')
 			if end < 0 {
 				b.WriteByte(ch)
-				i++
+				pos++
 				continue
 			}
-			field := format[i+1 : i+1+end]
-			if field == "" {
-				// Auto-numbering: {}
-				if autoIdx < len(args) {
-					b.WriteString(args[autoIdx])
-				}
+			field := format[pos+1 : pos+1+end]
+			name, spec, _ := strings.Cut(field, ":")
+
+			idx := autoIdx
+			if name == "" {
 				autoIdx++
 			} else {
-				// Explicit index: {0}, {1}, ...
-				idx := 0
-				for _, c := range field {
+				idx = 0
+				for _, c := range name {
 					if c >= '0' && c <= '9' {
 						idx = idx*10 + int(c-'0')
 					} else {
 						break
 					}
 				}
-				if idx < len(args) {
-					b.WriteString(args[idx])
-				}
 			}
-			i += 1 + end + 1
+			if idx < len(args) {
+				text, err := pyFormat(i, args[idx], spec)
+				if err != nil {
+					return "", err
+				}
+				b.WriteString(text)
+			}
+			pos += 1 + end + 1
 		} else if ch == '}' {
-			if i+1 < len(format) && format[i+1] == '}' {
+			if pos+1 < len(format) && format[pos+1] == '}' {
 				b.WriteByte('}')
-				i += 2
+				pos += 2
 				continue
 			}
 			b.WriteByte(ch)
-			i++
+			pos++
 		} else {
 			b.WriteByte(ch)
-			i++
+			pos++
 		}
 	}
-	return b.String()
+	return b.String(), nil
 }
 
 func (c *lowerer) exc() *interp.HostFunction {
@@ -1572,8 +1602,9 @@ func parseFormatSpec(spec string) formatSpec {
 		f.sign = spec[i]
 		i++
 	}
-	// ['#'] alternate form — accepted but not applied
+	// ['#'] alternate form: prefix binary/octal/hex with 0b/0o/0x
 	if i < len(spec) && spec[i] == '#' {
+		f.alt = true
 		i++
 	}
 	// ['0'] zero-padding implies '=' alignment with '0' fill
@@ -1589,8 +1620,9 @@ func parseFormatSpec(spec string) formatSpec {
 		f.width = f.width*10 + int(spec[i]-'0')
 		i++
 	}
-	// [grouping] — accepted but not applied
+	// [grouping] thousands separator
 	if i < len(spec) && (spec[i] == ',' || spec[i] == '_') {
+		f.group = spec[i]
 		i++
 	}
 	// ['.'precision]
@@ -1690,19 +1722,51 @@ func intBody(n int64, f formatSpec) (body, sign string, numeric bool) {
 	if n < 0 {
 		n = -n
 	}
+	prefix := ""
 	switch f.typ {
 	case 'b':
-		body = strconv.FormatInt(n, 2)
+		body, prefix = strconv.FormatInt(n, 2), "0b"
 	case 'o':
-		body = strconv.FormatInt(n, 8)
+		body, prefix = strconv.FormatInt(n, 8), "0o"
 	case 'x':
-		body = strconv.FormatInt(n, 16)
+		body, prefix = strconv.FormatInt(n, 16), "0x"
 	case 'X':
-		body = strings.ToUpper(strconv.FormatInt(n, 16))
+		body, prefix = strings.ToUpper(strconv.FormatInt(n, 16)), "0X"
 	default:
 		body = strconv.FormatInt(n, 10)
 	}
+	if f.group != 0 {
+		body = groupDigits(body, f.group)
+	}
+	if f.alt {
+		body = prefix + body
+	}
 	return body, sign, true
+}
+
+// groupDigits inserts sep every three digits from the right, which is what a
+// format spec's ',' or '_' asks for. Only the integral part is grouped; a
+// fractional part after '.' is left alone, matching CPython.
+func groupDigits(body string, sep byte) string {
+	integral, fraction, hasFraction := strings.Cut(body, ".")
+	if len(integral) > 3 {
+		var b strings.Builder
+		lead := len(integral) % 3
+		if lead > 0 {
+			b.WriteString(integral[:lead])
+		}
+		for at := lead; at < len(integral); at += 3 {
+			if b.Len() > 0 {
+				b.WriteByte(sep)
+			}
+			b.WriteString(integral[at : at+3])
+		}
+		integral = b.String()
+	}
+	if hasFraction {
+		return integral + "." + fraction
+	}
+	return integral
 }
 
 func floatBody(x float64, f formatSpec) (body, sign string, numeric bool) {
@@ -1729,6 +1793,9 @@ func floatBody(x float64, f formatSpec) (body, sign string, numeric bool) {
 		}
 	}
 	body = strconv.FormatFloat(x, verb, prec, 64)
+	if f.group != 0 {
+		body = groupDigits(body, f.group)
+	}
 	if f.typ == 'E' || f.typ == 'G' {
 		body = strings.ToUpper(body)
 	}

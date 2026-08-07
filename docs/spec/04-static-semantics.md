@@ -442,3 +442,13 @@ Python exception class declared in `token/error.go`.
 - `docs/spec/05-codegen.md` — lowering of checked forms.
 - `docs/spec/06-builtins.md` — native builtin and operator checker rules.
 - `docs/compatibility.md` — user-facing support matrix.
+
+### Power with a negative exponent
+
+`int ** int` is an `int`, except when the exponent is a negative integer
+literal, where it is a `float` — CPython's `2 ** -1` is `0.5`. This is a type
+rule that depends on a value, so only the literal case is decided statically;
+a computed negative exponent keeps the `int` result type and raises at runtime.
+`pow(int, int)` follows the same rule. `operator.PowFloatResult` owns it, and
+both the checker and the lowerer consult it so the two phases agree on which
+`**` takes the float path.

@@ -36,6 +36,22 @@ func TestFunctoolsModule(t *testing.T) {
 }
 
 func TestFunctoolsModuleErrors(t *testing.T) {
+	// The accumulator is one slot carrying the element type across the whole
+	// fold, so a callback returning something else would change what that slot
+	// holds mid-loop. Before this was checked, the fold silently dropped every
+	// step but the last: reduce over [1, 2, 3] with an int -> float adder
+	// printed 3.0 instead of 6.0.
+	t.Run("reduce with a function returning a different type", func(t *testing.T) {
+		src := "from functools import reduce\n" +
+			"def f(a: int, b: int) -> float:\n" +
+			"    return float(a) + float(b)\n" +
+			"xs: list[int] = [1, 2, 3]\n" +
+			"print(reduce(f, xs))\n"
+		_, err := Compile(strings.NewReader(src))
+		require.Error(t, err)
+		code(t, err, token.TypeMismatch)
+	})
+
 	t.Run("reduce with non-list second argument", func(t *testing.T) {
 		src := "from functools import reduce\nreduce(lambda a, b: a + b, 5)\n"
 		_, err := Compile(strings.NewReader(src))

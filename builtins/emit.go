@@ -7,9 +7,11 @@ import (
 	"github.com/siyul-park/minipy/hostabi"
 	"github.com/siyul-park/minipy/module"
 	"github.com/siyul-park/minipy/operator"
+	"github.com/siyul-park/minipy/token"
 	"github.com/siyul-park/minipy/types"
 
 	"github.com/siyul-park/minivm/instr"
+	vmtypes "github.com/siyul-park/minivm/types"
 )
 
 func emitPrint(e module.Emitter, args []ast.Expr) {
@@ -273,9 +275,17 @@ func emitDivmod(e module.Emitter, args []ast.Expr) {
 }
 
 func emitPow(e module.Emitter, args []ast.Expr) {
+	left, right := e.Type(args[0]), e.Type(args[1])
+	if operator.PowFloatResult(token.DOUBLESTAR, args[1]) &&
+		types.Equal(types.Erase(left), types.Int) && types.Equal(types.Erase(right), types.Int) {
+		operator.EmitPowFloat(e, left, right,
+			func() { e.Expr(args[0]) },
+			func() { e.Expr(args[1]) })
+		return
+	}
 	e.Expr(args[0])
 	e.Expr(args[1])
-	e.CallHost(powHost(e.Type(args[0]), e.Type(args[1])))
+	e.CallHost(powHost(left, right))
 }
 
 func emitHex(e module.Emitter, args []ast.Expr) {
@@ -309,7 +319,7 @@ func emitChr(e module.Emitter, args []ast.Expr) {
 }
 
 func emitNext(e module.Emitter, args []ast.Expr) {
-	valSlot := e.Tmp()
+	valSlot := e.Tmp(vmtypes.TypeRef)
 	done := e.Label()
 	end := e.Label()
 	e.Expr(args[0])

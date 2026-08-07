@@ -2483,19 +2483,20 @@ func TestCompiler_lowerFailure(t *testing.T) {
 		require.EqualError(t, c.err, "first")
 	})
 
-	t.Run("adopts a child's failure and temp high-water mark", func(t *testing.T) {
-		c := &lowerer{next: 3}
+	t.Run("adopts a child's failure but not its scratch slots", func(t *testing.T) {
+		c := &lowerer{}
 		child := c.child(target{}, &function{}, nil, nil, nil)
 		child.fail(errors.New("boom"))
-		child.tmp()
-		child.tmp()
+		child.tmp(vmtypes.TypeI64)
+		child.tmp(vmtypes.TypeRef)
 
 		require.False(t, c.failed())
 		c.adopt(child)
 
 		require.True(t, c.failed())
 		require.EqualError(t, c.err, "boom")
-		require.Equal(t, child.next, c.next)
+		require.Len(t, child.scratch, 2)
+		require.Empty(t, c.scratch, "each frame declares its own scratch pool")
 	})
 }
 
