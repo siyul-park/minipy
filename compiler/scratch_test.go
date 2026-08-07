@@ -1,9 +1,11 @@
 package compiler
 
 import (
+	"context"
 	"strings"
 	"testing"
 
+	"github.com/siyul-park/minivm/interp"
 	"github.com/stretchr/testify/require"
 )
 
@@ -232,4 +234,41 @@ func TestCompileLargeIntHostBoundary(t *testing.T) {
 			require.Equal(t, tt.want, run(t, tt.src))
 		})
 	}
+}
+
+// TestCompilePowNegativeExponent pins CPython's rule that int ** negative-int
+// is a float. It is a type rule that depends on a value, so only the case a
+// static checker can decide is supported: a negative integer literal. A
+// computed negative exponent still raises, which the last case pins so the
+// boundary stays visible.
+func TestCompilePowNegativeExponent(t *testing.T) {
+	tests := []struct {
+		name string
+		src  string
+		want string
+	}{
+		{name: "operator with a negative literal", src: "print(2 ** -1)\n", want: "0.5\n"},
+		{name: "operator with a smaller negative literal", src: "print(2 ** -2)\n", want: "0.25\n"},
+		{name: "operator result is usable as a float", src: "x: float = 2 ** -1\nprint(x + 0.5)\n", want: "1.0\n"},
+		{name: "operator with a non-negative literal stays int", src: "print(2 ** 10)\n", want: "1024\n"},
+		{name: "pow builtin with a negative literal", src: "print(pow(2, -1))\n", want: "0.5\n"},
+		{name: "pow builtin with a non-negative literal stays int", src: "print(pow(2, 10))\n", want: "1024\n"},
+		{name: "float base with a negative literal", src: "print(2.0 ** -1)\n", want: "0.5\n"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, run(t, tt.src))
+		})
+	}
+
+	t.Run("a computed negative exponent still raises", func(t *testing.T) {
+		src := "n = -1\nprint(2 ** n)\n"
+		prog, err := Compile(strings.NewReader(src))
+		require.NoError(t, err, "the checker cannot decide this statically, so it compiles")
+
+		vm := interp.New(prog)
+		defer vm.Close()
+		require.Error(t, vm.Run(context.Background()))
+	})
 }

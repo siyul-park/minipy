@@ -12,6 +12,26 @@ import (
 	vmtypes "github.com/siyul-park/minivm/types"
 )
 
+// EmitPowFloat lowers `base ** exp` on the float path, promoting integer
+// operands, for the case PowFloatResult admits: both operands are ints but the
+// exponent is a negative literal, so the result is a float.
+func EmitPowFloat(e module.Emitter, left, right types.Type, pushLeft, pushRight func()) {
+	pushLeft()
+	emitPowFloatTail(e, left, right, pushRight)
+}
+
+// emitPowFloatTail completes the float power path with the base already pushed.
+func emitPowFloatTail(e module.Emitter, left, right types.Type, pushRight func()) {
+	if types.Equal(types.Erase(left), types.Int) {
+		e.Emit(instr.I64_TO_F64_S)
+	}
+	pushRight()
+	if types.Equal(types.Erase(right), types.Int) {
+		e.Emit(instr.I64_TO_F64_S)
+	}
+	e.CallHost(powFloat())
+}
+
 // EmitBinary lowers a checked binary operation. pushLeft and pushRight evaluate
 // the operands exactly once; this package owns the complete opcode/host lowering
 // selected by the checker rules in BinaryType.
@@ -70,14 +90,7 @@ func EmitBinary(e module.Emitter, op token.Type, left, right types.Type, pushLef
 			pushRight()
 			e.CallHost(powInt())
 		} else {
-			if types.Equal(types.Erase(left), types.Int) {
-				e.Emit(instr.I64_TO_F64_S)
-			}
-			pushRight()
-			if types.Equal(types.Erase(right), types.Int) {
-				e.Emit(instr.I64_TO_F64_S)
-			}
-			e.CallHost(powFloat())
+			emitPowFloatTail(e, left, right, pushRight)
 		}
 	case token.PLUS:
 		pushLeft()

@@ -47,9 +47,14 @@ func (c *lowerer) expr(n ast.Expr) {
 	case *ast.UnaryExpr:
 		c.unary(x)
 	case *ast.BinaryExpr:
-		c.emitBinary(x.Op, c.types[x.X], c.types[x.Y],
-			func() { c.expr(x.X) },
-			func() { c.expr(x.Y) })
+		left, right := c.types[x.X], c.types[x.Y]
+		pushLeft, pushRight := func() { c.expr(x.X) }, func() { c.expr(x.Y) }
+		if operator.PowFloatResult(x.Op, x.Y) &&
+			types.Equal(types.Erase(left), types.Int) && types.Equal(types.Erase(right), types.Int) {
+			operator.EmitPowFloat(c, left, right, pushLeft, pushRight)
+			return
+		}
+		c.emitBinary(x.Op, left, right, pushLeft, pushRight)
 	case *ast.BoolOp:
 		c.boolOp(x)
 	case *ast.Compare:

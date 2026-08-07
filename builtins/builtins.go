@@ -8,6 +8,7 @@ package builtins
 import (
 	"github.com/siyul-park/minipy/ast"
 	"github.com/siyul-park/minipy/module"
+	"github.com/siyul-park/minipy/operator"
 	"github.com/siyul-park/minipy/token"
 	"github.com/siyul-park/minipy/types"
 
@@ -51,7 +52,7 @@ func New() *module.NativeModule {
 		callSymbol("all", spec{1, 1, anyAllResult}, emitAll, nil),
 		callSymbol("round", spec{1, 2, roundResult}, emitRound, nil),
 		callSymbol("divmod", spec{2, 2, divmodResult}, emitDivmod, nil),
-		callSymbol("pow", spec{2, 2, powResult}, emitPow, nil),
+		module.NewSymbol("pow", powCheck, emitPow, nil),
 		callSymbol("hex", spec{1, 1, hexOctBinResult}, emitHex, nil),
 		callSymbol("oct", spec{1, 1, hexOctBinResult}, emitOct, nil),
 		callSymbol("bin", spec{1, 1, hexOctBinResult}, emitBin, nil),
@@ -64,6 +65,18 @@ func New() *module.NativeModule {
 	}
 	symbols = append(symbols, dynamicSymbols()...)
 	return module.NewNative(Name, symbols...)
+}
+
+// powCheck applies the generic builtin rules, then the one rule that depends on
+// an argument's value rather than its type: pow(int, negative-int-literal) is a
+// float, as `**` is. operator.PowFloatResult owns that rule for both surfaces.
+func powCheck(c module.Checker, args []ast.Expr, pos token.Pos) types.Type {
+	result := checkBuiltin(c, "pow", spec{2, 2, powResult}, args, pos)
+	if len(args) == 2 && types.Equal(result, types.Int) &&
+		operator.PowFloatResult(token.DOUBLESTAR, args[1]) {
+		return types.Float
+	}
+	return result
 }
 
 func callSymbol(name string, sp spec, emit module.EmitFunc, value module.ValueFunc) *module.NativeSymbol {

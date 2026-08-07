@@ -7,6 +7,32 @@ import (
 	"github.com/siyul-park/minipy/types"
 )
 
+// PowFloatResult reports whether `base ** exp` yields a float even though both
+// operands are ints. CPython returns a float for any negative exponent, which
+// is a type rule that depends on a value; a negative integer literal is the
+// case a static checker can decide, so it is the case minipy supports. A
+// computed negative exponent still raises at runtime.
+//
+// The checker and the lowerer both consult this, so the two phases agree on
+// which `**` takes the float path without either of them owning the rule.
+func PowFloatResult(op token.Type, exp ast.Expr) bool {
+	if op != token.DOUBLESTAR {
+		return false
+	}
+	switch e := exp.(type) {
+	case *ast.IntLit:
+		return e.Value < 0
+	case *ast.UnaryExpr:
+		if e.Op != token.MINUS {
+			return false
+		}
+		lit, ok := e.X.(*ast.IntLit)
+		return ok && lit.Value > 0
+	default:
+		return false
+	}
+}
+
 // BinaryType applies the arithmetic/bitwise/shift typing rules
 // (docs/spec/04-static-semantics.md). Mixed int/float and bool arithmetic are
 // rejected; strings, bytes, and homogeneous lists have only their declared

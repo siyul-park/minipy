@@ -725,6 +725,10 @@ func (c *checker) unaryType(n *ast.UnaryExpr) types.Type {
 func (c *checker) binary(n *ast.BinaryExpr) types.Type {
 	left := c.expr(n.X)
 	right := c.expr(n.Y)
+	if operator.PowFloatResult(n.Op, n.Y) &&
+		types.Equal(types.Erase(left), types.Int) && types.Equal(types.Erase(right), types.Int) {
+		return types.Float
+	}
 	return c.binaryType(left, n.Op, right, n.Pos())
 }
 

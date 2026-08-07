@@ -164,8 +164,6 @@ Each was reproduced against CPython 3.13 while porting `conformance/testdata/`.
 The corpus deliberately avoids these rather than pinning minipy's answer as a
 divergence, so fixing one means adding its case.
 
-- `int ** negative_int` and `pow(int, negative_int)` trap instead of producing a
-  float.
 - `str.format()` ignores every embedded format spec. F-strings honor width,
   precision, and alignment, but not `,` grouping or `#` alternate form.
 
