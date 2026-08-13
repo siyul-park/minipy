@@ -199,6 +199,16 @@ func TestCompileStrSplitNoSeparator(t *testing.T) {
 			want: "['a', 'b', 'c']\n",
 		},
 		{
+			name: "splits on Python C0 whitespace separators",
+			src:  "print(\"a\\x1cb\\x1dc\\x1ed\\x1fe\".split())\n",
+			want: "['a', 'b', 'c', 'd', 'e']\n",
+		},
+		{
+			name: "splits on Unicode whitespace",
+			src:  "print(\"a\\u00a0b\\u2003c\".split())\n",
+			want: "['a', 'b', 'c']\n",
+		},
+		{
 			name: "all-whitespace input yields no fields",
 			src:  "print(\"   \".split())\n",
 			want: "[]\n",

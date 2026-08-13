@@ -500,7 +500,6 @@ func (c *lowerer) listSliceDelete(receiver types.Type) *interp.HostFunction {
 	)
 }
 
-
 func (c *lowerer) listIndex(receiver types.Type) *interp.HostFunction {
 	elem := receiver.(*types.List).Elem
 	return interp.NewHostFunction(
@@ -892,7 +891,9 @@ func (c *lowerer) strSlice() *interp.HostFunction {
 // strSplitWhitespace backs the no-argument str.split(). CPython treats that as
 // a different algorithm from split(sep), not as split(" "): it splits on runs of
 // any whitespace and drops leading and trailing empty fields, so "  a  b\tc "
-// yields ["a", "b", "c"] rather than ["", "", "a", "", "b\tc", ""].
+// yields ["a", "b", "c"] rather than ["", "", "a", "", "b\tc", ""]. The
+// explicit C0 separators U+001C..U+001F are included because CPython treats them
+// as whitespace while unicode.IsSpace does not.
 func (c *lowerer) strSplitWhitespace() *interp.HostFunction {
 	return interp.NewHostFunction(
 		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeString}, Returns: []vmtypes.Type{vmtypes.NewArrayType(vmtypes.TypeString)}},
@@ -901,7 +902,23 @@ func (c *lowerer) strSplitWhitespace() *interp.HostFunction {
 			if err != nil {
 				return nil, err
 			}
-			fields := strings.Fields(text)
+			fields := make([]string, 0)
+			start := -1
+			for pos, r := range text {
+				if unicode.IsSpace(r) || (r >= '\x1c' && r <= '\x1f') {
+					if start >= 0 {
+						fields = append(fields, text[start:pos])
+						start = -1
+					}
+					continue
+				}
+				if start < 0 {
+					start = pos
+				}
+			}
+			if start >= 0 {
+				fields = append(fields, text[start:])
+			}
 			out := make([]vmtypes.Boxed, 0, len(fields))
 			for _, field := range fields {
 				box, err := hostabi.AllocString(i, field)
