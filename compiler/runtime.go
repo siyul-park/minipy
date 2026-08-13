@@ -892,7 +892,9 @@ func (c *lowerer) strSlice() *interp.HostFunction {
 // strSplitWhitespace backs the no-argument str.split(). CPython treats that as
 // a different algorithm from split(sep), not as split(" "): it splits on runs of
 // any whitespace and drops leading and trailing empty fields, so "  a  b\tc "
-// yields ["a", "b", "c"] rather than ["", "", "a", "", "b\tc", ""].
+// yields ["a", "b", "c"] rather than ["", "", "a", "", "b\tc", ""]. The
+// explicit C0 separators U+001C..U+001F are included because CPython treats them
+// as whitespace while unicode.IsSpace does not.
 func (c *lowerer) strSplitWhitespace() *interp.HostFunction {
 	return interp.NewHostFunction(
 		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeString}, Returns: []vmtypes.Type{vmtypes.NewArrayType(vmtypes.TypeString)}},
@@ -901,7 +903,7 @@ func (c *lowerer) strSplitWhitespace() *interp.HostFunction {
 			if err != nil {
 				return nil, err
 			}
-			fields := strings.Fields(text)
+			fields := strings.FieldsFunc(text, isPythonWhitespace)
 			out := make([]vmtypes.Boxed, 0, len(fields))
 			for _, field := range fields {
 				box, err := hostabi.AllocString(i, field)
@@ -973,7 +975,7 @@ func (c *lowerer) strStripNoArg() *interp.HostFunction {
 			if err != nil {
 				return nil, err
 			}
-			return hostabi.AllocString(i, strings.TrimSpace(text))
+			return hostabi.AllocString(i, strings.TrimFunc(text, isPythonWhitespace))
 		},
 	)
 }
@@ -1003,7 +1005,7 @@ func (c *lowerer) strLStripNoArg() *interp.HostFunction {
 			if err != nil {
 				return nil, err
 			}
-			return hostabi.AllocString(i, strings.TrimLeft(text, " \t\n\r\x0b\x0c"))
+			return hostabi.AllocString(i, strings.TrimLeftFunc(text, isPythonWhitespace))
 		},
 	)
 }
@@ -1033,7 +1035,7 @@ func (c *lowerer) strRStripNoArg() *interp.HostFunction {
 			if err != nil {
 				return nil, err
 			}
-			return hostabi.AllocString(i, strings.TrimRight(text, " \t\n\r\x0b\x0c"))
+			return hostabi.AllocString(i, strings.TrimRightFunc(text, isPythonWhitespace))
 		},
 	)
 }
@@ -1209,13 +1211,17 @@ func (c *lowerer) strIsSpace() *interp.HostFunction {
 				return []vmtypes.Boxed{vmtypes.BoxI1(false)}, nil
 			}
 			for _, r := range text {
-				if !unicode.IsSpace(r) {
+				if !isPythonWhitespace(r) {
 					return []vmtypes.Boxed{vmtypes.BoxI1(false)}, nil
 				}
 			}
 			return []vmtypes.Boxed{vmtypes.BoxI1(true)}, nil
 		},
 	)
+}
+
+func isPythonWhitespace(r rune) bool {
+	return unicode.IsSpace(r) || (r >= '\x1c' && r <= '\x1f')
 }
 
 func (c *lowerer) strCapitalize() *interp.HostFunction {

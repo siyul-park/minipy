@@ -1,7 +1,15 @@
 ['a', 'b', '', 'c']
 4
 ['one', 'two', 'three']
+['a', 'b', 'c']
+['a', 'b', 'c']
+['a', 'b', 'c', 'd', 'e']
+['a', 'b', 'c']
 x-y-z
 only
 ['the', 'quick', 'brown', 'fox']
 the quick brown fox
+True
+a  b
+a  b
+a  b
