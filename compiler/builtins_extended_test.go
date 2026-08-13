@@ -54,10 +54,10 @@ print(len(seen))
 
 	t.Run("sorted key reverse stable", func(t *testing.T) {
 		got := run(t, `
-x: list[str] = ["bb", "a", "cc", "d"]
+x: list[str] = ["bb", "a", "cc", "ee", "d"]
 print(sorted(x, key=lambda s: len(s), reverse=True))
 `)
-		require.Equal(t, "['bb', 'cc', 'a', 'd']\n", got)
+		require.Equal(t, "['bb', 'cc', 'ee', 'a', 'd']\n", got)
 	})
 
 	t.Run("sorted key named function", func(t *testing.T) {

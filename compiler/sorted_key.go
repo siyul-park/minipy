@@ -33,12 +33,11 @@ func (c *checker) checkSortedCall(sym module.Symbol, n *ast.CallExpr) types.Type
 			c.errs.Add(kw.Pos(), token.UnsupportedFeature, "sorted() keyword argument %q is not supported yet", kw.Name)
 		}
 	}
-	if reverse == nil {
-		reverse = &ast.BoolLit{Base: ast.Base{Position: n.Pos()}, Value: false}
-	}
-	reverseType := c.expr(reverse)
-	if reverseType != types.Invalid && !types.Equal(reverseType, types.Bool) {
-		c.errs.Add(reverse.Pos(), token.TypeMismatch, "sorted() argument 'reverse' must be bool, got %s", reverseType)
+	if reverse != nil {
+		reverseType := c.expr(reverse)
+		if reverseType != types.Invalid && !types.Equal(reverseType, types.Bool) {
+			c.errs.Add(reverse.Pos(), token.TypeMismatch, "sorted() argument 'reverse' must be bool, got %s", reverseType)
+		}
 	}
 
 	listType := sym.Check(c, n.Args, n.Pos())
@@ -47,7 +46,11 @@ func (c *checker) checkSortedCall(sym module.Symbol, n *ast.CallExpr) types.Type
 		return types.Invalid
 	}
 	if key == nil {
-		c.callArgs[n] = []ast.Expr{n.Args[0], reverse}
+		if reverse == nil {
+			c.callArgs[n] = n.Args
+		} else {
+			c.callArgs[n] = []ast.Expr{n.Args[0], reverse}
+		}
 		return listType
 	}
 
@@ -56,7 +59,11 @@ func (c *checker) checkSortedCall(sym module.Symbol, n *ast.CallExpr) types.Type
 		return types.Invalid
 	}
 	if types.Equal(keyType, types.None) {
-		c.callArgs[n] = []ast.Expr{n.Args[0], reverse}
+		if reverse == nil {
+			c.callArgs[n] = n.Args
+		} else {
+			c.callArgs[n] = []ast.Expr{n.Args[0], reverse}
+		}
 		return listType
 	}
 	callable, ok := keyType.(*types.Callable)
@@ -71,6 +78,9 @@ func (c *checker) checkSortedCall(sym module.Symbol, n *ast.CallExpr) types.Type
 	if !types.Orderable(callable.Return) {
 		c.errs.Add(key.Pos(), token.NotComparable, "sorted() key result %s is not orderable", callable.Return)
 		return types.Invalid
+	}
+	if reverse == nil {
+		reverse = &ast.BoolLit{Base: ast.Base{Position: n.Pos()}, Value: false}
 	}
 
 	rewrite := c.sortedKeyRewrite(n, list, key, reverse, callable.Return)
@@ -92,11 +102,26 @@ func (c *checker) sortedKeyRewrite(n *ast.CallExpr, list *types.List, key, rever
 	subscript := func(base, index ast.Expr) ast.Expr {
 		return &ast.Subscript{Base: ast.Base{Position: pos}, X: base, Index: index}
 	}
-	pairIndex := &ast.IfExp{
-		Base:   ast.Base{Position: pos},
-		Cond:   rev,
-		Body:   &ast.UnaryExpr{Base: ast.Base{Position: pos}, Op: token.MINUS, X: index},
-		Orelse: index,
+	pairIndex := ast.Expr(index)
+	originalIndex := ast.Expr(&ast.Subscript{Base: ast.Base{Position: pos}, X: pair, Index: &ast.IntLit{Base: ast.Base{Position: pos}, Value: 1}})
+	if literal, ok := reverse.(*ast.BoolLit); ok {
+		if literal.Value {
+			pairIndex = &ast.UnaryExpr{Base: ast.Base{Position: pos}, Op: token.MINUS, X: index}
+			originalIndex = &ast.UnaryExpr{Base: ast.Base{Position: pos}, Op: token.MINUS, X: originalIndex}
+		}
+	} else {
+		pairIndex = &ast.IfExp{
+			Base:   ast.Base{Position: pos},
+			Cond:   rev,
+			Body:   &ast.UnaryExpr{Base: ast.Base{Position: pos}, Op: token.MINUS, X: index},
+			Orelse: index,
+		}
+		originalIndex = &ast.IfExp{
+			Base:   ast.Base{Position: pos},
+			Cond:   rev,
+			Body:   &ast.UnaryExpr{Base: ast.Base{Position: pos}, Op: token.MINUS, X: originalIndex},
+			Orelse: originalIndex,
+		}
 	}
 	decorated := &ast.ListComp{
 		Base: ast.Base{Position: pos},
@@ -121,13 +146,6 @@ func (c *checker) sortedKeyRewrite(n *ast.CallExpr, list *types.List, key, rever
 			Name:  "reverse",
 			Value: rev,
 		}},
-	}
-	pairIndexAt := subscript(pair, &ast.IntLit{Base: ast.Base{Position: pos}, Value: 1})
-	originalIndex := &ast.IfExp{
-		Base:   ast.Base{Position: pos},
-		Cond:   rev,
-		Body:   &ast.UnaryExpr{Base: ast.Base{Position: pos}, Op: token.MINUS, X: pairIndexAt},
-		Orelse: pairIndexAt,
 	}
 	result := &ast.ListComp{
 		Base:    ast.Base{Position: pos},

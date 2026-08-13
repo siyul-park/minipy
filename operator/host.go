@@ -283,10 +283,17 @@ func setBinary(op token.Type, typ types.Type) *interp.HostFunction {
 			if err != nil {
 				return nil, err
 			}
-			left, right := mapKeys(leftVal), mapKeys(rightVal)
+			left := mapKeys(leftVal)
+			var right []vmtypes.Boxed
+			if op == token.PIPE || op == token.CARET {
+				right = mapKeys(rightVal)
+			}
 			keys := make([]vmtypes.Boxed, 0, len(left)+len(right))
 			for _, key := range left {
-				_, found := mapGet(rightVal, key)
+				found := false
+				if op != token.PIPE {
+					_, found = mapGet(rightVal, key)
+				}
 				switch op {
 				case token.MINUS:
 					if !found {
@@ -296,18 +303,15 @@ func setBinary(op token.Type, typ types.Type) *interp.HostFunction {
 					if found {
 						keys = append(keys, key)
 					}
-				case token.PIPE:
-					keys = append(keys, key)
-				case token.CARET:
-					if !found {
+				case token.PIPE, token.CARET:
+					if op == token.PIPE || !found {
 						keys = append(keys, key)
 					}
 				}
 			}
 			if op == token.PIPE || op == token.CARET {
 				for _, key := range right {
-					_, found := mapGet(leftVal, key)
-					if !found {
+					if _, found := mapGet(leftVal, key); !found {
 						keys = append(keys, key)
 					}
 				}
@@ -329,7 +333,7 @@ func setRelation(op token.Type, typ types.Type) *interp.HostFunction {
 			if err != nil {
 				return nil, err
 			}
-			left, right := mapKeys(leftVal), mapKeys(rightVal)
+			left := mapKeys(leftVal)
 			subset := func(keys []vmtypes.Boxed, set vmtypes.Value) bool {
 				for _, key := range keys {
 					if _, found := mapGet(set, key); !found {
@@ -341,13 +345,13 @@ func setRelation(op token.Type, typ types.Type) *interp.HostFunction {
 			var ok bool
 			switch op {
 			case token.LT:
-				ok = len(left) < len(right) && subset(left, rightVal)
+				ok = len(left) < mapLen(rightVal) && subset(left, rightVal)
 			case token.LE:
 				ok = subset(left, rightVal)
 			case token.GT:
-				ok = len(left) > len(right) && subset(right, leftVal)
+				ok = len(left) > mapLen(rightVal) && subset(mapKeys(rightVal), leftVal)
 			case token.GE:
-				ok = subset(right, leftVal)
+				ok = subset(mapKeys(rightVal), leftVal)
 			}
 			return []vmtypes.Boxed{vmtypes.BoxI1(ok)}, nil
 		},
