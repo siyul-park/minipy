@@ -126,7 +126,7 @@ These are implemented with deliberate limits, not undocumented bugs.
 - `getattr` and `hasattr` accept only concrete class instances and literal names
   of declared/inherited fields. They do not expose methods, defaults, dynamic
   strings, runtime namespace lookup, or compiler-internal fields.
-- Keyword/starred calls are restricted outside direct minipy function calls.
+- Keyword/starred calls remain restricted outside direct minipy function calls, except `sorted(..., key=None, reverse=bool)` and `sorted(..., key=Callable[[T], K], reverse=bool)` when K is statically orderable.
 - Dynamic `**expr` call unpacking is not supported.
 - Dynamic code uses explicit `dict[str, Any]` namespaces. Omitting both namespaces
   creates an empty mapping rather than exposing the caller frame, and code that

@@ -30,14 +30,14 @@ func minMaxCheck(c module.Checker, name string, args []ast.Expr, pos token.Pos) 
 			c.Error(pos, token.TypeMismatch, "%s() does not accept these arguments", name)
 			return types.Invalid
 		}
-		if !comparable(list.Elem) {
+		if !types.Orderable(list.Elem) {
 			c.Error(pos, token.TypeMismatch, "%s() does not accept these arguments", name)
 			return types.Invalid
 		}
 		return list.Elem
 	}
 	first := argTypes[0]
-	if !comparable(first) {
+	if !types.Orderable(first) {
 		c.Error(pos, token.TypeMismatch, "%s() does not accept these arguments", name)
 		return types.Invalid
 	}

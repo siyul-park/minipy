@@ -705,6 +705,10 @@ func (c *lowerer) emitResumeIterator(slot int) {
 
 // call lowers a direct native, class, function, or callable-value call.
 func (c *lowerer) call(x *ast.CallExpr) {
+	if rewrite := c.callRewrite[x]; rewrite != nil {
+		c.expr(rewrite)
+		return
+	}
 	if attr, ok := x.Fn.(*ast.Attribute); ok {
 		c.methodCall(x, attr)
 		return
@@ -756,7 +760,7 @@ func (c *lowerer) call(x *ast.CallExpr) {
 		return
 	}
 	if sym, ok := c.reg.SymbolByKey(c.symbol(name.Name)); ok {
-		sym.Emit(c, x.Args)
+		sym.Emit(c, c.checkedArgs(x))
 	}
 }
 
@@ -878,7 +882,7 @@ func (c *lowerer) applyFieldDefaults(cls *class) {
 
 func (c *lowerer) methodCall(x *ast.CallExpr, attr *ast.Attribute) {
 	if native := c.attrNative[attr]; native != nil {
-		native.Emit(c, x.Args)
+		native.Emit(c, c.checkedArgs(x))
 		return
 	}
 	if key := c.attrSym[attr]; key != "" {

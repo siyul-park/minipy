@@ -118,7 +118,7 @@ func chrResult(args []types.Type) (types.Type, bool) {
 
 func sortedResult(args []types.Type) (types.Type, bool) {
 	if len(args) == 1 {
-		if list, ok := args[0].(*types.List); ok && comparable(list.Elem) {
+		if list, ok := args[0].(*types.List); ok && types.Orderable(list.Elem) {
 			return args[0], true
 		}
 	}
@@ -204,11 +204,6 @@ func reprResult(args []types.Type) (types.Type, bool) {
 		return types.Str, true
 	}
 	return types.Invalid, false
-}
-
-func comparable(t types.Type) bool {
-	return types.Equal(t, types.Int) || types.Equal(t, types.Float) ||
-		types.Equal(t, types.Str) || types.Equal(t, types.Bool)
 }
 
 func convertible(t types.Type) bool {

@@ -771,6 +771,21 @@ func mapKeys(val vmtypes.Value) []vmtypes.Boxed {
 	return keys
 }
 
+func mapKey(key vmtypes.Boxed) vmtypes.MapKey {
+	bits := uint64(key.Ref())
+	switch key.Kind() {
+	case vmtypes.KindI1:
+		bits = uint64(uint32(key.I32()))
+	case vmtypes.KindI64:
+		bits = uint64(key.I64())
+	case vmtypes.KindF32:
+		bits = uint64(math.Float32bits(key.F32()))
+	case vmtypes.KindF64:
+		bits = math.Float64bits(key.F64())
+	}
+	return vmtypes.MapKey{Kind: key.Kind(), Bits: bits}
+}
+
 // mapGet retrieves a value from a map by key, returning (value, found).
 func mapGet(val vmtypes.Value, key vmtypes.Boxed) (vmtypes.Boxed, bool) {
 	switch m := val.(type) {
@@ -785,20 +800,7 @@ func mapGet(val vmtypes.Value, key vmtypes.Boxed) (vmtypes.Boxed, bool) {
 	case *vmtypes.TypedMap[float64]:
 		return m.Get(key.F64())
 	case *vmtypes.Map:
-		mk := vmtypes.MapKey{Kind: key.Kind(), Bits: uint64(key.Ref())}
-		switch key.Kind() {
-		case vmtypes.KindI1:
-			mk.Bits = uint64(uint32(key.I32()))
-		case vmtypes.KindI64:
-			mk.Bits = uint64(key.I64())
-		case vmtypes.KindF32:
-			mk.Bits = uint64(math.Float32bits(key.F32()))
-		case vmtypes.KindF64:
-			mk.Bits = math.Float64bits(key.F64())
-		case vmtypes.KindRef:
-			mk.Bits = uint64(key.Ref())
-		}
-		entry, ok := m.Get(mk)
+		entry, ok := m.Get(mapKey(key))
 		return entry.Value, ok
 	default:
 		return 0, false

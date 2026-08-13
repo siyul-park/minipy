@@ -76,7 +76,8 @@ Implemented builtin functions:
 | `isinstance(x, T)` | 2 | value plus supported type/class expression | `bool` |
 | `ord(s)` | 1 | `str` (exactly one codepoint) | `int` |
 | `chr(n)` | 1 | `int` (`0 <= n <= 0x10FFFF`) | `str` |
-| `sorted(xs)` | 1 | `list[T]` where T is comparable (`int`, `float`, `str`, `bool`) | `list[T]` |
+| `sorted(xs, key=None, reverse=bool)` | 1 | `list[T]` whose elements are orderable | `list[T]` |
+| `sorted(xs, key=Callable[[T], K], reverse=bool)` | 1 | `list[T]` where K is orderable (`int`, `float`, `str`, `bool`, or nested comparable tuples) | `list[T]` |
 | `reversed(xs)` | 1 | `list[T]` | `list[T]` |
 | `min(a, b, ...)` | 2+ | same comparable type (`int`, `float`, `str`, `bool`) | `T` |
 | `min(xs)` | 1 | `list[T]` where T is comparable | `T` |
@@ -436,9 +437,10 @@ calling them is rejected before lowering.
 
 ## Native Call Restrictions
 
-Native calls do not support keyword arguments, starred arguments, or dynamic
-`**kwargs` unpacking. Those forms are parsed, then rejected by the checker for
-native symbols.
+Native calls do not support starred arguments or dynamic `**kwargs` unpacking.
+The builtin `sorted` additionally accepts the `key` (`None` or a statically
+orderable callable) and `reverse=bool` keywords; other native keyword arguments
+are rejected by the checker.
 
 Native modules may be imported explicitly:
 

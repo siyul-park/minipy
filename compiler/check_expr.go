@@ -838,8 +838,8 @@ func (c *checker) classLenCall(n *ast.CallExpr) (types.Type, bool) {
 	return types.Int, true
 }
 
-// checkNativeCall type-checks a native call, rejecting starred and keyword
-// arguments (unsupported for native functions) before delegating to the symbol.
+// checkNativeCall type-checks a native call, normalizing the supported native
+// keyword arguments before delegating to the symbol.
 func (c *checker) checkNativeCall(sym module.Symbol, n *ast.CallExpr) types.Type {
 	if len(n.StarArgs) > 0 {
 		for _, a := range n.StarArgs {
@@ -848,6 +848,9 @@ func (c *checker) checkNativeCall(sym module.Symbol, n *ast.CallExpr) types.Type
 		}
 		return types.Invalid
 	}
+	if sym.Name() == "sorted" && len(n.Keywords) > 0 {
+		return c.checkSortedCall(sym, n)
+	}
 	if len(n.Keywords) > 0 {
 		for _, kw := range n.Keywords {
 			c.expr(kw.Value)
@@ -855,6 +858,7 @@ func (c *checker) checkNativeCall(sym module.Symbol, n *ast.CallExpr) types.Type
 		}
 		return types.Invalid
 	}
+	c.callArgs[n] = n.Args
 	return sym.Check(c, n.Args, n.Pos())
 }
 

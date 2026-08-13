@@ -67,6 +67,14 @@ func TestContainerComparisons(t *testing.T) {
 		{"dict eq different value", "{\"a\": 1} == {\"a\": 2}", "False\n"},
 		{"dict eq different key", "{\"a\": 1} == {\"b\": 1}", "False\n"},
 		{"set eq different size", "{1, 2} == {1, 2, 3}", "False\n"},
+		{"set union", "sorted([v for v in ({1, 2} | {2, 3})])", "[1, 2, 3]\n"},
+		{"set intersection", "sorted([v for v in ({1, 2} & {2, 3})])", "[2]\n"},
+		{"set difference", "sorted([v for v in ({1, 2} - {2, 3})])", "[1]\n"},
+		{"set symmetric difference", "sorted([v for v in ({1, 2} ^ {2, 3})])", "[1, 3]\n"},
+		{"set subset", "{1, 2} <= {1, 2, 3}", "True\n"},
+		{"set proper subset", "{1, 2} < {1, 2, 3}", "True\n"},
+		{"set superset", "{1, 2, 3} >= {1, 2}", "True\n"},
+		{"set proper superset", "{1, 2, 3} > {1, 2}", "True\n"},
 		{"tuple lt", "(1, 2) < (1, 3)", "True\n"},
 		{"str list lt", "[\"a\", \"b\"] < [\"a\", \"c\"]", "True\n"},
 	}
@@ -77,9 +85,8 @@ func TestContainerComparisons(t *testing.T) {
 	}
 }
 
-// TestContainerOrderingRejected confirms dict/set ordering is a clean
-// TypeError-shaped diagnostic (token.NotComparable) rather than a panic —
-// the exact regression named in the bug report ({"a": 1} < {"b": 2}).
+// TestContainerOrderingRejected confirms unsupported container ordering is a
+// clean TypeError-shaped diagnostic rather than a panic.
 func TestContainerOrderingRejected(t *testing.T) {
 	tests := []struct {
 		name string
@@ -87,7 +94,6 @@ func TestContainerOrderingRejected(t *testing.T) {
 	}{
 		{"dict lt", "{\"a\": 1} < {\"b\": 2}"},
 		{"dict le", "{\"a\": 1} <= {\"b\": 2}"},
-		{"set lt", "{1, 2} < {1, 2, 3}"},
 		{"nested list lt", "[[1], [2]] < [[1], [3]]"},
 		{"tuple with list field lt", "([1],) < ([2],)"},
 	}

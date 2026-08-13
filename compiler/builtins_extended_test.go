@@ -23,6 +23,58 @@ print(sorted(x))
 		require.Equal(t, "['apple', 'banana', 'cherry']\n", got)
 	})
 
+	t.Run("sorted reverse keyword", func(t *testing.T) {
+		got := run(t, `
+x: list[int] = [3, 1, 2]
+print(sorted(x, reverse=True))
+`)
+		require.Equal(t, "[3, 2, 1]\n", got)
+	})
+
+	t.Run("sorted key lambda", func(t *testing.T) {
+		got := run(t, `
+x: list[int] = [3, 1, 2]
+print(sorted(x, key=lambda n: -n))
+`)
+		require.Equal(t, "[3, 2, 1]\n", got)
+	})
+
+	t.Run("sorted key evaluated once", func(t *testing.T) {
+		got := run(t, `
+seen: list[int] = []
+def key(n: int) -> int:
+    seen.append(n)
+    return n
+x: list[int] = [3, 1, 2]
+sorted(x, key=key)
+print(len(seen))
+`)
+		require.Equal(t, "3\n", got)
+	})
+
+	t.Run("sorted key reverse stable", func(t *testing.T) {
+		got := run(t, `
+x: list[str] = ["bb", "a", "cc", "ee", "d"]
+print(sorted(x, key=lambda s: len(s), reverse=True))
+`)
+		require.Equal(t, "['bb', 'cc', 'ee', 'a', 'd']\n", got)
+	})
+
+	t.Run("sorted key named function", func(t *testing.T) {
+		got := run(t, `
+def size(s: str) -> int:
+    return len(s)
+x: list[str] = ["bbb", "a", "cc"]
+print(sorted(x, key=size))
+`)
+		require.Equal(t, "['a', 'cc', 'bbb']\n", got)
+	})
+
+	t.Run("sorted key none", func(t *testing.T) {
+		got := run(t, "x: list[int] = [3, 1, 2]\nprint(sorted(x, key=None))\n")
+		require.Equal(t, "[1, 2, 3]\n", got)
+	})
+
 	t.Run("sorted does not mutate original", func(t *testing.T) {
 		got := run(t, `
 x: list[int] = [3, 1, 2]

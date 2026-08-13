@@ -1414,22 +1414,23 @@ func (c *checker) specialize(info *function, argTypes []types.Type) *specializat
 	}
 
 	errMark := len(c.errs)
-	savedTypes, savedNarrow, savedCalls, savedArgs := c.types, c.narrowed, c.callSpec, c.callArgs
+	savedTypes, savedNarrow, savedCalls, savedArgs, savedRewrite := c.types, c.narrowed, c.callSpec, c.callArgs, c.callRewrite
 	c.types = map[ast.Expr]types.Type{}
 	c.narrowed = map[string]types.Type{}
 	c.callSpec = map[*ast.CallExpr]*specialization{}
 	c.callArgs = map[*ast.CallExpr][]ast.Expr{}
+	c.callRewrite = map[*ast.CallExpr]ast.Expr{}
 	c.specActive[guard] = true
 	c.checkFunctionBody(clone.body, clone.astParams, clone, token.Pos{})
 	delete(c.specActive, guard)
-	itypes, icalls, iargs := c.types, c.callSpec, c.callArgs
-	c.types, c.narrowed, c.callSpec, c.callArgs = savedTypes, savedNarrow, savedCalls, savedArgs
+	itypes, icalls, iargs, irewrite := c.types, c.callSpec, c.callArgs, c.callRewrite
+	c.types, c.narrowed, c.callSpec, c.callArgs, c.callRewrite = savedTypes, savedNarrow, savedCalls, savedArgs, savedRewrite
 
 	if len(c.errs) > errMark {
 		c.errs = c.errs[:errMark] // discard: this tuple cannot specialize
 		return nil
 	}
-	spec := &specialization{key: key, params: signature, info: clone, types: itypes, calls: icalls, args: iargs}
+	spec := &specialization{key: key, params: signature, info: clone, types: itypes, calls: icalls, args: iargs, rewrite: irewrite}
 	info.instances = append(info.instances, spec)
 	return spec
 }

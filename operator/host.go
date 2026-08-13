@@ -271,6 +271,132 @@ func containerCompare(t types.Type) *interp.HostFunction {
 	)
 }
 
+func setBinary(op token.Type, typ types.Type) *interp.HostFunction {
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: []vmtypes.Type{typ.VM(), typ.VM()}, Returns: []vmtypes.Type{typ.VM()}},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			leftVal, err := loadMap(i, params[0])
+			if err != nil {
+				return nil, err
+			}
+			rightVal, err := loadMap(i, params[1])
+			if err != nil {
+				return nil, err
+			}
+			left := mapKeys(leftVal)
+			var right []vmtypes.Boxed
+			if op == token.PIPE || op == token.CARET {
+				right = mapKeys(rightVal)
+			}
+			keys := make([]vmtypes.Boxed, 0, len(left)+len(right))
+			for _, key := range left {
+				found := false
+				if op != token.PIPE {
+					_, found = mapGet(rightVal, key)
+				}
+				switch op {
+				case token.MINUS:
+					if !found {
+						keys = append(keys, key)
+					}
+				case token.AMP:
+					if found {
+						keys = append(keys, key)
+					}
+				case token.PIPE, token.CARET:
+					if op == token.PIPE || !found {
+						keys = append(keys, key)
+					}
+				}
+			}
+			if op == token.PIPE || op == token.CARET {
+				for _, key := range right {
+					if _, found := mapGet(leftVal, key); !found {
+						keys = append(keys, key)
+					}
+				}
+			}
+			return newSet(i, leftVal, keys)
+		},
+	)
+}
+
+func setRelation(op token.Type, typ types.Type) *interp.HostFunction {
+	return interp.NewHostFunction(
+		&vmtypes.FunctionType{Params: []vmtypes.Type{typ.VM(), typ.VM()}, Returns: []vmtypes.Type{vmtypes.TypeI1}},
+		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+			leftVal, err := loadMap(i, params[0])
+			if err != nil {
+				return nil, err
+			}
+			rightVal, err := loadMap(i, params[1])
+			if err != nil {
+				return nil, err
+			}
+			left := mapKeys(leftVal)
+			subset := func(keys []vmtypes.Boxed, set vmtypes.Value) bool {
+				for _, key := range keys {
+					if _, found := mapGet(set, key); !found {
+						return false
+					}
+				}
+				return true
+			}
+			var ok bool
+			switch op {
+			case token.LT:
+				ok = len(left) < mapLen(rightVal) && subset(left, rightVal)
+			case token.LE:
+				ok = subset(left, rightVal)
+			case token.GT:
+				ok = len(left) > mapLen(rightVal) && subset(mapKeys(rightVal), leftVal)
+			case token.GE:
+				ok = subset(mapKeys(rightVal), leftVal)
+			}
+			return []vmtypes.Boxed{vmtypes.BoxI1(ok)}, nil
+		},
+	)
+}
+
+func loadMap(i *interp.Interpreter, ref vmtypes.Boxed) (vmtypes.Value, error) {
+	if ref.Kind() != vmtypes.KindRef || ref.Ref() == 0 {
+		return nil, interp.ErrTypeMismatch
+	}
+	return i.Load(ref.Ref())
+}
+
+func newSet(i *interp.Interpreter, left vmtypes.Value, keys []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+	mt, ok := left.Type().(*vmtypes.MapType)
+	if !ok {
+		return nil, interp.ErrTypeMismatch
+	}
+	out := vmtypes.NewMapForType(mt, len(keys))
+	zero := vmtypes.Zero(mt.ElemKind)
+	for _, key := range keys {
+		switch m := out.(type) {
+		case *vmtypes.TypedMap[bool]:
+			m.Set(key.Bool(), zero)
+		case *vmtypes.TypedMap[int32]:
+			m.Set(key.I32(), zero)
+		case *vmtypes.TypedMap[int64]:
+			m.Set(key.I64(), zero)
+		case *vmtypes.TypedMap[float32]:
+			m.Set(key.F32(), zero)
+		case *vmtypes.TypedMap[float64]:
+			m.Set(key.F64(), zero)
+		case *vmtypes.Map:
+			m.Set(mapKey(key), vmtypes.MapEntry{Key: key, Value: zero})
+		default:
+			return nil, interp.ErrTypeMismatch
+		}
+	}
+	addr, err := i.Alloc(out)
+	if err != nil {
+		return nil, err
+	}
+	return []vmtypes.Boxed{vmtypes.BoxRef(addr)}, nil
+}
+
 // structuralEqual dispatches container equality by the static element type,
 // recursing into nested lists/tuples/dicts/sets. Dynamic element types
 // (Any/union, e.g. list[Any]) fall back to the dynamic comparison used for
