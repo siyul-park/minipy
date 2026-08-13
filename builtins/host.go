@@ -353,17 +353,21 @@ func bytesIter() *interp.HostFunction {
 func sortedHost(arg types.Type) *interp.HostFunction {
 	list := arg.(*types.List)
 	return interp.NewHostFunction(
-		&vmtypes.FunctionType{Params: []vmtypes.Type{arg.VM()}, Returns: []vmtypes.Type{arg.VM()}},
+		&vmtypes.FunctionType{Params: []vmtypes.Type{arg.VM(), vmtypes.TypeI1}, Returns: []vmtypes.Type{arg.VM()}},
 		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
 			typ, elems, err := hostabi.ArrayElems(i, params[0])
 			if err != nil {
 				return nil, err
 			}
+			reverse := params[1].Bool()
 			copied := append([]vmtypes.Boxed(nil), elems...)
 			var sortErr error
 			sort.SliceStable(copied, func(a, b int) bool {
 				if sortErr != nil {
 					return false
+				}
+				if reverse {
+					return boxedLess(i, copied[b], copied[a], list.Elem, &sortErr)
 				}
 				return boxedLess(i, copied[a], copied[b], list.Elem, &sortErr)
 			})
@@ -826,10 +830,30 @@ func reprHost(t types.Type) *interp.HostFunction {
 }
 
 func boxedLess(i *interp.Interpreter, a, b vmtypes.Boxed, elem types.Type, errp *error) bool {
+	if tuple, ok := types.Erase(elem).(*types.Tuple); ok {
+		sa, err := tupleValue(i, a)
+		if err != nil {
+			*errp = err
+			return false
+		}
+		sb, err := tupleValue(i, b)
+		if err != nil {
+			*errp = err
+			return false
+		}
+		for index, field := range tuple.Elems {
+			left, right := sa.Field(index), sb.Field(index)
+			if boxedLess(i, left, right, field, errp) {
+				return true
+			}
+			if boxedLess(i, right, left, field, errp) {
+				return false
+			}
+		}
+		return false
+	}
 	switch {
 	case types.Equal(elem, types.Int):
-		// Read through LoadI64: an int past the inline payload arrives as a
-		// heap ref, and comparing the raw boxes would order the truncations.
 		na, e := hostabi.LoadI64(i, a)
 		if e != nil {
 			*errp = e
@@ -859,6 +883,21 @@ func boxedLess(i *interp.Interpreter, a, b vmtypes.Boxed, elem types.Type, errp 
 		return sa < sb
 	}
 	return false
+}
+
+func tupleValue(i *interp.Interpreter, value vmtypes.Boxed) (*vmtypes.Struct, error) {
+	if value.Kind() != vmtypes.KindRef || value.Ref() == 0 {
+		return nil, interp.ErrTypeMismatch
+	}
+	obj, err := i.Load(value.Ref())
+	if err != nil {
+		return nil, err
+	}
+	tuple, ok := obj.(*vmtypes.Struct)
+	if !ok {
+		return nil, interp.ErrTypeMismatch
+	}
+	return tuple, nil
 }
 
 func intPow(base, exp int64) (int64, error) {

@@ -2147,22 +2147,22 @@ func TestCompileForTupleNotIterable(t *testing.T) {
 
 func TestCompileErrors(t *testing.T) {
 	cases := map[string]token.Code{
-		"x: int = 1.5\n":                      token.TypeMismatch,
+		"x: int = 1.5\n": token.TypeMismatch,
 		"def f() -> int:\n    x: float = 1.0\n    return x\n": token.TypeMismatch,
-		"x: int = 99999999999999999999999\n":  token.IntOverflow,
-		"print(str(y))\n":                     token.UndefinedName,
-		"print()\n":                           token.ArityMismatch,
-		"print(1, 2)\n":                       token.ArityMismatch,
-		"x: int = True\n":                     token.TypeMismatch,
-		"print(str(True + 1))\n":              token.TypeMismatch,
-		"x: int\nprint(str(x))\n":             token.UseBeforeDefinition,
-		"x: int = 1\nx: str = \"a\"\n":        token.TypeMismatch,
-		"print(str(not 1))\n":                 token.TypeMismatch,
-		"print(str(1.5 & 2))\n":               token.TypeMismatch,
-		"x: int = 1\nprint(str(x == None))\n": token.UnsupportedFeature,
-		"print(str(True and 1))\n":            token.TypeMismatch,
-		"print(str(1 < \"a\"))\n":             token.NotComparable,
-		"z += 1\n":                            token.UndefinedName,
+		"x: int = 99999999999999999999999\n":                  token.IntOverflow,
+		"print(str(y))\n":                                     token.UndefinedName,
+		"print()\n":                                           token.ArityMismatch,
+		"print(1, 2)\n":                                       token.ArityMismatch,
+		"x: int = True\n":                                     token.TypeMismatch,
+		"print(str(True + 1))\n":                              token.TypeMismatch,
+		"x: int\nprint(str(x))\n":                             token.UseBeforeDefinition,
+		"x: int = 1\nx: str = \"a\"\n":                        token.TypeMismatch,
+		"print(str(not 1))\n":                                 token.TypeMismatch,
+		"print(str(1.5 & 2))\n":                               token.TypeMismatch,
+		"x: int = 1\nprint(str(x == None))\n":                 token.UnsupportedFeature,
+		"print(str(True and 1))\n":                            token.TypeMismatch,
+		"print(str(1 < \"a\"))\n":                             token.NotComparable,
+		"z += 1\n":                                            token.UndefinedName,
 		// control flow
 		"x: int = 1\nif x:\n    pass\n":                           token.TypeMismatch,
 		"for i in 5:\n    pass\n":                                 token.NotIterable,
@@ -2245,15 +2245,17 @@ func TestCompileErrors(t *testing.T) {
 		"def f(x):\n    return await x\n":                  token.UnsupportedFeature,
 		"def f(*a: int, *b: int):\n    return None\n":      token.SyntaxError,
 		"def f(*xs: int):\n    return None\nf(1, \"a\")\n": token.TypeMismatch,
-		"xs = [*ys]\n":                                     token.UndefinedName,
-		"g = (x for x in xs)\n":                            token.UndefinedName,
-		"print(str(1 @ 2))\n":                              token.UnsupportedFeature,
-		"try:\n    pass\nexcept* ValueError:\n    pass\n":  token.UnsupportedFeature,
+		"xs = [*ys]\n":          token.UndefinedName,
+		"g = (x for x in xs)\n": token.UndefinedName,
+		"print(str(1 @ 2))\n":   token.UnsupportedFeature,
+		"try:\n    pass\nexcept* ValueError:\n    pass\n": token.UnsupportedFeature,
 		// ord/chr
 		"ord(1)\n":            token.TypeMismatch,
 		"chr(\"A\")\n":        token.TypeMismatch,
 		"ord(\"A\", \"B\")\n": token.ArityMismatch,
 		"chr()\n":             token.ArityMismatch,
+		"xs: list[int] = [1]\nsorted(xs, True)\n":             token.ArityMismatch,
+		"xs: list[list[int]] = [[1]]\nsorted(xs, key=None)\n": token.TypeMismatch,
 		// bytes: immutability and typing rejections
 		"b: bytes = b\"ab\"\nb[0] = 1\n":                token.NotIndexable,
 		"b: bytes = b\"ab\"\nb[0:1] = b\"x\"\n":         token.NotIndexable,
@@ -2485,7 +2487,7 @@ func TestCompiler_lowerFailure(t *testing.T) {
 
 	t.Run("adopts a child's failure but not its scratch slots", func(t *testing.T) {
 		c := &lowerer{}
-		child := c.child(target{}, &function{}, nil, nil, nil)
+		child := c.child(target{}, &function{}, nil, nil, nil, nil)
 		child.fail(errors.New("boom"))
 		child.tmp(vmtypes.TypeI64)
 		child.tmp(vmtypes.TypeRef)

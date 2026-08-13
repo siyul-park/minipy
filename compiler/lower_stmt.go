@@ -1518,7 +1518,7 @@ func (c *lowerer) buildSpec(spec *specialization) {
 		Params:  vmParams(info),
 		Returns: vmReturns(info.result),
 	})
-	child := c.child(fnTarget(fb), info, spec.types, spec.calls, spec.args)
+	child := c.child(fnTarget(fb), info, spec.types, spec.calls, spec.args, spec.rewrite)
 	child.protected = containsTry(info.body)
 	child.block(info.body)
 	child.emitNoneReturn()
@@ -1561,7 +1561,7 @@ func (c *lowerer) funcValue(info *function, body []ast.Stmt) {
 	}
 	fb.Captures(vmCaps(info)...)
 
-	child := c.child(fnTarget(fb), info, nil, nil, nil)
+	child := c.child(fnTarget(fb), info, nil, nil, nil, nil)
 	child.protected = containsTry(body)
 	child.block(body)
 	child.emitNoneReturn()
@@ -1600,11 +1600,11 @@ func (c *lowerer) funcValue(info *function, body []ast.Stmt) {
 
 // child derives a fresh lowerer for a nested function or specialization body:
 // code, current, mod, and locals switch to the child's function; types,
-// callSpec, and callArgs are overridden only when non-nil (specializations
+// callSpec, callArgs, and callRewrite are overridden only when non-nil (specializations
 // narrow them, plain nested functions inherit the parent's); loops, finally,
 // excepts, tries, temps, scratch, boxed, and err reset to fresh zero values. The caller must
 // call adopt(child) once the child finishes lowering its body.
-func (c *lowerer) child(code target, info *function, types map[ast.Expr]types.Type, callSpec map[*ast.CallExpr]*specialization, callArgs map[*ast.CallExpr][]ast.Expr) *lowerer {
+func (c *lowerer) child(code target, info *function, types map[ast.Expr]types.Type, callSpec map[*ast.CallExpr]*specialization, callArgs map[*ast.CallExpr][]ast.Expr, callRewrite map[*ast.CallExpr]ast.Expr) *lowerer {
 	child := *c
 	child.code = code
 	child.current = info
@@ -1618,6 +1618,9 @@ func (c *lowerer) child(code target, info *function, types map[ast.Expr]types.Ty
 	}
 	if callArgs != nil {
 		child.callArgs = callArgs
+	}
+	if callRewrite != nil {
+		child.callRewrite = callRewrite
 	}
 	child.loops = nil
 	child.finally = nil

@@ -472,6 +472,23 @@ func Printable(t Type) bool {
 	}
 }
 
+// Orderable reports whether t supports the ordering required by sorted(), min(), and max().
+func Orderable(t Type) bool {
+	t = Erase(t)
+	if Equal(t, Int) || Equal(t, Float) || Equal(t, Bool) || Equal(t, Str) {
+		return true
+	}
+	if tuple, ok := t.(*Tuple); ok {
+		for _, elem := range tuple.Elems {
+			if !Orderable(elem) {
+				return false
+			}
+		}
+		return true
+	}
+	return false
+}
+
 // Resolve maps a scalar annotation name to a source type. Container annotations
 // are parsed structurally by the checker.
 func Resolve(name string) (Type, bool) {

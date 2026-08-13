@@ -76,7 +76,23 @@ func BinaryType(c module.Checker, left types.Type, op token.Type, right types.Ty
 			return types.Any
 		}
 		return arith(c, left, op, right, pos)
-	case token.MINUS, token.DOUBLESLASH, token.PERCENT, token.DOUBLESTAR:
+	case token.MINUS:
+		if _, ok := left.(*types.Set); ok && types.Equal(left, right) {
+			return left
+		}
+		return arith(c, left, op, right, pos)
+	case token.AMP, token.PIPE, token.CARET:
+		if _, ok := left.(*types.Set); ok && types.Equal(left, right) {
+			return left
+		}
+		if types.Equal(left, types.Int) && types.Equal(right, types.Int) {
+			return types.Int
+		}
+		if isDynamic(left) || isDynamic(right) {
+			return types.Any
+		}
+		return mismatch(c, op, left, right, pos)
+	case token.DOUBLESLASH, token.PERCENT, token.DOUBLESTAR:
 		return arith(c, left, op, right, pos)
 	case token.SLASH:
 		if types.Equal(left, types.Int) && types.Equal(right, types.Int) {
@@ -94,7 +110,7 @@ func BinaryType(c module.Checker, left types.Type, op token.Type, right types.Ty
 			return types.Any
 		}
 		return mismatch(c, op, left, right, pos)
-	case token.AMP, token.PIPE, token.CARET, token.LSHIFT, token.RSHIFT:
+	case token.LSHIFT, token.RSHIFT:
 		if types.Equal(left, types.Int) && types.Equal(right, types.Int) {
 			return types.Int
 		}
@@ -233,10 +249,16 @@ func Comparable(c module.Checker, op token.Type, left, right types.Type, pos tok
 	// Same-typed operands reach here for every op, including ==/!= on
 	// containers (structural equality) and identity-only reference types
 	// (Class, Iterator, Callable). Ordering additionally requires an
-	// orderable type: dict, set, class, iterator, callable, and containers
-	// whose element type CmpOpcode does not natively compare are rejected.
-	if isOrderingOp(op) && !orderable(left) {
-		c.Error(pos, token.NotComparable, "'%s' not supported between instances of %s and %s", op, left, right)
+	// orderable type: dict, class, iterator, callable, and containers whose
+	// element type CmpOpcode does not natively compare are rejected. Sets use
+	// subset/superset ordering instead.
+	if isOrderingOp(op) {
+		if _, ok := left.(*types.Set); ok {
+			return
+		}
+		if !orderable(left) {
+			c.Error(pos, token.NotComparable, "'%s' not supported between instances of %s and %s", op, left, right)
+		}
 	}
 }
 

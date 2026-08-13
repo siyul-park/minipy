@@ -136,8 +136,18 @@ func EmitBinary(e module.Emitter, op token.Type, left, right types.Type, pushLef
 	case token.MINUS:
 		pushLeft()
 		pushRight()
-		if isMixedNumeric(left, right) {
+		if _, ok := types.Erase(left).(*types.Set); ok {
+			e.CallHost(setBinary(token.MINUS, left))
+		} else if isMixedNumeric(left, right) {
 			emitMixedArith(e, op, left, right)
+		} else {
+			e.Emit(simpleBinOp(op, types.Erase(left)))
+		}
+	case token.AMP, token.PIPE, token.CARET:
+		pushLeft()
+		pushRight()
+		if _, ok := types.Erase(left).(*types.Set); ok {
+			e.CallHost(setBinary(op, left))
 		} else {
 			e.Emit(simpleBinOp(op, types.Erase(left)))
 		}
@@ -189,6 +199,10 @@ func EmitCompareStack(e module.Emitter, op token.Type, left, right types.Type) {
 		return
 	}
 	el := types.Erase(left)
+	if _, ok := el.(*types.Set); ok && isOrderingOp(op) {
+		e.CallHost(setRelation(op, left))
+		return
+	}
 	if isContainerType(el) {
 		emitContainerCompare(e, op, el)
 		return

@@ -123,6 +123,15 @@ func TestPrintable(t *testing.T) {
 	require.False(t, Printable(NewTuple(Int, NewClass("Point", nil))))
 }
 
+func TestOrderable(t *testing.T) {
+	for _, ty := range []Type{Int, Float, Bool, Str, NewTuple(Int, NewTuple(Str, Bool))} {
+		require.Truef(t, Orderable(ty), "%s should be orderable", ty)
+	}
+	for _, ty := range []Type{nil, Invalid, None, Bytes, NewList(Int), NewClass("Point", nil), NewTuple(Int, NewClass("Point", nil))} {
+		require.Falsef(t, Orderable(ty), "%v should not be orderable", ty)
+	}
+}
+
 func TestBytes(t *testing.T) {
 	t.Run("name", func(t *testing.T) {
 		require.Equal(t, "bytes", Bytes.String())

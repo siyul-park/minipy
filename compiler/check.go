@@ -36,17 +36,18 @@ type checker struct {
 	temps map[string]types.Type
 	// callSpec maps a call site to the specialization it links to; specActive
 	// guards against unbounded re-instantiation of recursive specializations.
-	callSpec   map[*ast.CallExpr]*specialization
-	callArgs   map[*ast.CallExpr][]ast.Expr
-	specActive map[string]bool
-	loader     *loader
-	reg        *module.Registry
-	modules    map[string]*moduleInfo
-	mod        *moduleInfo
-	attrSym    map[*ast.Attribute]string
-	attrMod    map[*ast.Attribute]string
-	attrNative map[*ast.Attribute]module.Symbol
-	nameNative map[*ast.Name]module.Symbol
+	callSpec    map[*ast.CallExpr]*specialization
+	callArgs    map[*ast.CallExpr][]ast.Expr
+	callRewrite map[*ast.CallExpr]ast.Expr
+	specActive  map[string]bool
+	loader      *loader
+	reg         *module.Registry
+	modules     map[string]*moduleInfo
+	mod         *moduleInfo
+	attrSym     map[*ast.Attribute]string
+	attrMod     map[*ast.Attribute]string
+	attrNative  map[*ast.Attribute]module.Symbol
+	nameNative  map[*ast.Name]module.Symbol
 	// lenDunder marks len() call sites whose argument is a class instance, so
 	// the compiler lowers them to a direct obj.__len__() call instead of the
 	// native len builtin.
@@ -60,28 +61,29 @@ func newChecker(ld *loader) *checker {
 		ld = newLoader(nil, nil)
 	}
 	c := &checker{
-		types:      map[ast.Expr]types.Type{},
-		globals:    map[string]*global{},
-		functions:  map[string]*function{},
-		classes:    map[string]*class{},
-		aliases:    map[string]*alias{},
-		aliasDecls: map[*ast.AnnAssign]bool{},
-		lambdas:    map[*ast.LambdaExpr]*function{},
-		genExprs:   map[*ast.GeneratorExp]*function{},
-		narrowed:   map[string]types.Type{},
-		temps:      map[string]types.Type{},
-		callSpec:   map[*ast.CallExpr]*specialization{},
-		callArgs:   map[*ast.CallExpr][]ast.Expr{},
-		specActive: map[string]bool{},
-		loader:     ld,
-		reg:        ld.reg,
-		modules:    ld.modules,
-		attrSym:    map[*ast.Attribute]string{},
-		attrMod:    map[*ast.Attribute]string{},
-		attrNative: map[*ast.Attribute]module.Symbol{},
-		nameNative: map[*ast.Name]module.Symbol{},
-		lenDunder:  map[*ast.CallExpr]bool{},
-		checked:    map[*moduleInfo]bool{},
+		types:       map[ast.Expr]types.Type{},
+		globals:     map[string]*global{},
+		functions:   map[string]*function{},
+		classes:     map[string]*class{},
+		aliases:     map[string]*alias{},
+		aliasDecls:  map[*ast.AnnAssign]bool{},
+		lambdas:     map[*ast.LambdaExpr]*function{},
+		genExprs:    map[*ast.GeneratorExp]*function{},
+		narrowed:    map[string]types.Type{},
+		temps:       map[string]types.Type{},
+		callSpec:    map[*ast.CallExpr]*specialization{},
+		callArgs:    map[*ast.CallExpr][]ast.Expr{},
+		callRewrite: map[*ast.CallExpr]ast.Expr{},
+		specActive:  map[string]bool{},
+		loader:      ld,
+		reg:         ld.reg,
+		modules:     ld.modules,
+		attrSym:     map[*ast.Attribute]string{},
+		attrMod:     map[*ast.Attribute]string{},
+		attrNative:  map[*ast.Attribute]module.Symbol{},
+		nameNative:  map[*ast.Name]module.Symbol{},
+		lenDunder:   map[*ast.CallExpr]bool{},
+		checked:     map[*moduleInfo]bool{},
 	}
 	c.declareBuiltinExceptions()
 	return c

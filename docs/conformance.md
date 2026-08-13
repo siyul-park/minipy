@@ -91,7 +91,7 @@ compatibility matrix in `docs/compatibility.md`:
 - Container bindings must be annotated: `xs: list[int] = [1, 2, 3]`.
 - No `list()`, `dict()`, `set()`, `tuple()`, `type()`, `super()`, or
   `object()` calls.
-- No `key=` or `reverse=` keyword arguments on `sorted`, `min`, or `max`.
+- `sorted(..., key=None, reverse=bool)` and `sorted(..., key=Callable[[T], K], reverse=bool)` are allowed; callable K must be statically orderable. `key=`/`reverse=` on `min` or `max` remain unsupported.
 - No `unittest`; imports are limited to `math`, `string`, `functools`,
   `sys`, `typing`, and `operator`.
 - No `if __name__ == "__main__":` — `__name__` is undefined in minipy.

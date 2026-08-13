@@ -269,9 +269,11 @@ Direct calls to known minipy functions support:
 - `*args` and `**kwargs` parameters
 - `*tuple` expansion when the tuple has statically known arity
 
-Unsupported call forms include dynamic `**expr`, keyword/starred calls to native
-functions, keyword/starred calls through dynamic callable values, and starred
-arguments to builtin methods. Constructor calls support keywords/starred arguments
+Unsupported call forms include dynamic `**expr`, unsupported keyword/starred calls
+to native functions, keyword/starred calls through dynamic callable values, and
+starred arguments to builtin methods. `sorted(..., key=None, reverse=bool)` and
+`sorted(..., key=Callable[[T], K], reverse=bool)` are the supported native keyword
+exceptions; K must be statically orderable. Constructor calls support keywords/starred arguments
 only through dataclass or `__init__`-derived constructor parameter information.
 
 Native functions cannot be first-class values. Class and module objects are also

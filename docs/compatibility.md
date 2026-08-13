@@ -123,7 +123,7 @@ full CPython compatibility.
 | Arithmetic operations | ✅ | Supported numeric/operator combinations only. |
 | Power `**` | ✅ | Through operator semantics. |
 | Matrix multiply `@` | ⏳ | Tokenized/parsed, no semantics. |
-| Comparisons | ✅ | Chained comparisons included. `==`/`!=` on `list`/`tuple`/`dict`/`set` is structural (CPython semantics); `<`/`<=`/`>`/`>=` on `list`/`tuple` is lexicographic and only when every element position is `int`/`float`/`bool`/`str`. Ordering on `dict`, `set`, class, `Iterator`, or `Callable` is a diagnostic (`NotComparable`), not a runtime error. `==`/`!=` between two same-typed class/`Iterator`/`Callable` operands is identity-only (no structural/field equality, e.g. `@dataclass` field comparison). |
+| Comparisons | ✅ | Chained comparisons included. `==`/`!=` on `list`/`tuple`/`dict`/`set` is structural (CPython semantics); `<`/`<=`/`>`/`>=` on `list`/`tuple` is lexicographic and only when every element position is `int`/`float`/`bool`/`str`. Set `<`/`<=`/`>`/`>=` implements proper subset/subset and proper superset/superset. Ordering on `dict`, class, `Iterator`, or `Callable` is a diagnostic (`NotComparable`), not a runtime error. `==`/`!=` between two same-typed class/`Iterator`/`Callable` operands is identity-only (no structural/field equality, e.g. `@dataclass` field comparison). |
 | `is` / `is not` | ✅ | Especially used for `None` narrowing. |
 | `in` / `not in` | ✅ | Supported containers/strings/iterators. List membership compares elements structurally (like `==`), e.g. a tuple/list value matches an equal element of `list[tuple[...]]`/`list[list[...]]` even when it is not the same reference. |
 | Conditional expressions | ✅ | Arms must have same type. |
@@ -131,7 +131,7 @@ full CPython compatibility.
 | Lambdas | ◐ | Need expected `Callable` context. |
 | Calls | ✅ | Direct minipy calls support args, kwargs, defaults, `*tuple`, `*args`, `**kwargs` parameters. |
 | Dynamic `**kwargs` call unpack | ⏳ | Parsed, rejected. |
-| Keyword/star native calls | ⏳ | Rejected for native/builtin method/dynamic callable paths. |
+| Keyword/star native calls | ◐ | `sorted(..., key=Callable[[T], K], reverse=bool)` is supported for statically known orderable K; other native keyword/starred calls remain rejected. |
 | Attribute access | ◐ | Classes/modules supported; arbitrary object attributes out of scope. Literal-only `getattr`/`hasattr` support declared class fields. |
 | Indexing | ✅ | Lists, dicts, strings, constant tuple indexes. A missing dict key raises `KeyError` (message quotes string keys, e.g. `'zz'`, matching CPython) for `d[k]` reads, `d[k] += ...`, and `del d[k]`; `d[k] = v` still inserts a missing key rather than raising. Negative `list[T]` indexes (`xs[-1]`, `xs[-1] = v`, `xs[-1] += v`) normalize like negative string indexing and slicing: `i < 0` becomes `len(xs) + i`. |
 | Slicing | ✅ | Lists and strings. |
@@ -140,7 +140,7 @@ full CPython compatibility.
 | List methods | ◐ | `append`, `pop`, `index`, `insert`, `extend`, `reverse`, `sort`, `copy`, `count`, `clear`, `remove`; statically typed homogeneous lists only. |
 | String methods | ◐ | `upper`, `lower`, `split`, `join`, `find`, `strip`, `lstrip`, `rstrip`, `startswith`, `endswith`, `replace`, `count`, `isdigit`, `isalpha`, `isalnum`, `isspace`, `capitalize`, `title`, `swapcase`, `center`, `ljust`, `rjust`, `zfill`, `encode`, `format`; statically typed. |
 | Dict methods | ◐ | `get`, `keys`, `values`, `items`, `pop` (with optional default), `update`, `setdefault`, `clear`, `copy`; statically typed homogeneous dicts only. `d.get(k)` with no default returns `V \| None` for a missing key (matching CPython's `None`), narrowable with `d.get(k) is None`; `d.get(k, default)` still returns `V`. |
-| Set methods | ◐ | `add`, `remove`, `discard`, `pop`, `clear`, `union`, `intersection`, `difference`, `issubset`, `issuperset`, `copy`; statically typed homogeneous sets only. |
+| Set operations and methods | ✅ | `|`, `&`, `-`, `^`, `<`, `<=`, `>`, `>=` plus `add`, `remove`, `discard`, `pop`, `clear`, `union`, `intersection`, `difference`, `issubset`, `issuperset`, `copy`; statically typed homogeneous sets only. |
 | Dict literals | ✅ | Homogeneous; empty needs hint; scalar hashable keys. Iteration order (`for`, `.keys()`, `.values()`, `.items()`) is unspecified and may differ between runs — unlike CPython's guaranteed insertion order since 3.7. `print`/`str` renders entries sorted by their rendered string for deterministic output, which does not track insertion order and need not match iteration order; see `docs/spec/02-types.md#iteration-order`. |
 | Set literals | ✅ | Homogeneous; empty needs hint; scalar hashable elements. Iteration order is unspecified and may differ between runs, the same as dict; `print`/`str` renders entries sorted by their rendered string for deterministic output. See `docs/spec/02-types.md#iteration-order`. |
 | Tuple literals | ✅ | Fixed arity, heterogeneous. |
@@ -185,7 +185,7 @@ full CPython compatibility.
 | `ord`, `chr` | ✅ | Unicode codepoint conversion; static `str->int` / `int->str`; `ValueError` for invalid inputs. `chr` rejects surrogate codepoints (`0xD800..0xDFFF`), diverging from CPython. |
 | `range`, `iter`, `next` | ✅ | Iterator paths. |
 | `enumerate`, `zip` | ✅ | List-based eager helpers. |
-| `sorted`, `reversed` | ✅ | Return new lists; `sorted` requires comparable element types. |
+| `sorted`, `reversed` | ✅ | Return new lists; `sorted` supports scalar or comparable-tuple elements and `key=Callable[[T], K]` with statically known orderable K, plus `reverse: bool`. |
 | `min`, `max` | ✅ | Variadic (2+ same-type args) or single list of comparable elements. |
 | `sum` | ✅ | Accepts `list[int]` or `list[float]`. |
 | `any`, `all` | ✅ | Accept `list[bool]`; short-circuit evaluation. |

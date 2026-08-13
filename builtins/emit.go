@@ -211,6 +211,11 @@ func emitIter(e module.Emitter, args []ast.Expr) {
 
 func emitSorted(e module.Emitter, args []ast.Expr) {
 	e.Expr(args[0])
+	if len(args) == 1 {
+		e.Emit(instr.I32_CONST, 0)
+	} else {
+		e.Expr(args[1])
+	}
 	e.CallHost(sortedHost(e.Type(args[0])))
 }
 

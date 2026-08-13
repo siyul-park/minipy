@@ -66,12 +66,13 @@ type function struct {
 // a clone whose parameters are bound to a concrete argument tuple, with its own
 // per-node type table so the same body lowers differently per instantiation.
 type specialization struct {
-	key    string
-	params []types.Type
-	info   *function
-	types  map[ast.Expr]types.Type
-	calls  map[*ast.CallExpr]*specialization
-	args   map[*ast.CallExpr][]ast.Expr
+	key     string
+	params  []types.Type
+	info    *function
+	types   map[ast.Expr]types.Type
+	calls   map[*ast.CallExpr]*specialization
+	args    map[*ast.CallExpr][]ast.Expr
+	rewrite map[*ast.CallExpr]ast.Expr
 }
 
 type classField struct {

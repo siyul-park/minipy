@@ -121,23 +121,24 @@ type lowerer struct {
 	base    int
 
 	// checker-produced metadata
-	entry      *moduleInfo
-	types      map[ast.Expr]types.Type
-	globals    map[string]*global
-	functions  map[string]*function
-	classes    map[string]*class
-	aliasDecls map[*ast.AnnAssign]bool
-	modules    map[string]*moduleInfo
-	mod        *moduleInfo
-	attrSym    map[*ast.Attribute]string
-	attrMod    map[*ast.Attribute]string
-	attrNative map[*ast.Attribute]module.Symbol
-	nameNative map[*ast.Name]module.Symbol
-	lambdas    map[*ast.LambdaExpr]*function
-	genExprs   map[*ast.GeneratorExp]*function
-	callSpec   map[*ast.CallExpr]*specialization
-	callArgs   map[*ast.CallExpr][]ast.Expr
-	lenDunder  map[*ast.CallExpr]bool
+	entry       *moduleInfo
+	types       map[ast.Expr]types.Type
+	globals     map[string]*global
+	functions   map[string]*function
+	classes     map[string]*class
+	aliasDecls  map[*ast.AnnAssign]bool
+	modules     map[string]*moduleInfo
+	mod         *moduleInfo
+	attrSym     map[*ast.Attribute]string
+	attrMod     map[*ast.Attribute]string
+	attrNative  map[*ast.Attribute]module.Symbol
+	nameNative  map[*ast.Name]module.Symbol
+	lambdas     map[*ast.LambdaExpr]*function
+	genExprs    map[*ast.GeneratorExp]*function
+	callSpec    map[*ast.CallExpr]*specialization
+	callArgs    map[*ast.CallExpr][]ast.Expr
+	callRewrite map[*ast.CallExpr]ast.Expr
+	lenDunder   map[*ast.CallExpr]bool
 
 	// lowering-owned phase state
 	emitted  map[*moduleInfo]bool
@@ -174,31 +175,32 @@ type lowerer struct {
 // module's symbol tables. Compiler.Compile calls this once per Compile call.
 func newLowerer(b *program.Builder, checked *checkedProgram, native *nativeRuntime) *lowerer {
 	c := &lowerer{
-		prog:       b,
-		code:       mainTarget(b),
-		entry:      checked.entry,
-		types:      checked.types,
-		globals:    checked.globals,
-		functions:  checked.functions,
-		classes:    checked.classes,
-		aliasDecls: checked.aliasDecls,
-		modules:    checked.modules,
-		attrSym:    checked.attrSym,
-		attrMod:    checked.attrMod,
-		attrNative: checked.attrNative,
-		nameNative: checked.nameNative,
-		reg:        checked.reg,
-		lambdas:    checked.lambdas,
-		genExprs:   checked.genExprs,
-		callSpec:   checked.callSpec,
-		callArgs:   checked.callArgs,
-		lenDunder:  checked.lenDunder,
-		emitted:    map[*moduleInfo]bool{},
-		specs:      map[*specialization]int{},
-		building:   map[*specialization]bool{},
-		temps:      map[string]int{},
-		native:     native,
-		boxed:      map[*local]bool{},
+		prog:        b,
+		code:        mainTarget(b),
+		entry:       checked.entry,
+		types:       checked.types,
+		globals:     checked.globals,
+		functions:   checked.functions,
+		classes:     checked.classes,
+		aliasDecls:  checked.aliasDecls,
+		modules:     checked.modules,
+		attrSym:     checked.attrSym,
+		attrMod:     checked.attrMod,
+		attrNative:  checked.attrNative,
+		nameNative:  checked.nameNative,
+		reg:         checked.reg,
+		lambdas:     checked.lambdas,
+		genExprs:    checked.genExprs,
+		callSpec:    checked.callSpec,
+		callArgs:    checked.callArgs,
+		callRewrite: checked.callRewrite,
+		lenDunder:   checked.lenDunder,
+		emitted:     map[*moduleInfo]bool{},
+		specs:       map[*specialization]int{},
+		building:    map[*specialization]bool{},
+		temps:       map[string]int{},
+		native:      native,
+		boxed:       map[*local]bool{},
 	}
 	c.names = make([]string, len(checked.globals))
 	for name, global := range checked.globals {
