@@ -500,6 +500,7 @@ func (c *lowerer) listSliceDelete(receiver types.Type) *interp.HostFunction {
 	)
 }
 
+
 func (c *lowerer) listIndex(receiver types.Type) *interp.HostFunction {
 	elem := receiver.(*types.List).Elem
 	return interp.NewHostFunction(
@@ -902,23 +903,7 @@ func (c *lowerer) strSplitWhitespace() *interp.HostFunction {
 			if err != nil {
 				return nil, err
 			}
-			fields := make([]string, 0)
-			start := -1
-			for pos, r := range text {
-				if isPythonWhitespace(r) {
-					if start >= 0 {
-						fields = append(fields, text[start:pos])
-						start = -1
-					}
-					continue
-				}
-				if start < 0 {
-					start = pos
-				}
-			}
-			if start >= 0 {
-				fields = append(fields, text[start:])
-			}
+			fields := strings.FieldsFunc(text, isPythonWhitespace)
 			out := make([]vmtypes.Boxed, 0, len(fields))
 			for _, field := range fields {
 				box, err := hostabi.AllocString(i, field)
