@@ -550,6 +550,7 @@ Verification failures are wrapped as `verify program: ...` errors.
 ## Related Docs
 
 - `docs/README.md` — documentation map and ownership guide.
+- `docs/codegen-quality.md` — what better emitted code means and how it is measured.
 - `docs/spec/02-types.md` — source types and runtime mapping.
 - `docs/spec/04-static-semantics.md` — checker guarantees consumed by lowering.
 - `docs/spec/06-builtins.md` — native symbol checker and emitter behavior.

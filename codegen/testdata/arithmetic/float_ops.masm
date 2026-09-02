@@ -1,0 +1,44 @@
+# instructions   24
+# functions      0
+# host functions 4
+# constants      4
+# types          0
+# globals        2
+# locals         0
+# handlers       0
+
+.code
+0000:	f64.const 0x3FF8000000000000
+0009:	global.set 0x0000
+0012:	i64.const 0x0000000000000002
+0021:	global.set 0x0001
+0024:	global.get 0x0000
+0027:	global.get 0x0001
+0030:	i64.to_f64_s
+0031:	f64.mul
+0032:	const.get 0x0000
+0035:	call
+0036:	const.get 0x0001
+0039:	call
+0040:	ref.null
+0041:	drop
+0042:	global.get 0x0000
+0045:	f64.const 0x4000000000000000
+0054:	f64.div
+0055:	const.get 0x0002
+0058:	call
+0059:	const.get 0x0003
+0062:	call
+0063:	ref.null
+0064:	drop
+0065:	nop
+
+.globals
+0000:	f64
+0001:	i64
+
+.constants
+0000:	<host> func(f64) string
+0001:	<host> func(string)
+0002:	<host> func(f64) string
+0003:	<host> func(string)

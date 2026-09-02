@@ -1,0 +1,164 @@
+# instructions   129
+# functions      1
+# host functions 5
+# constants      9
+# types          1
+# globals        1
+# locals         0
+# handlers       0
+
+.code
+0000:	const.get 0x0004
+0003:	global.set 0x0000
+0006:	i64.const 0x000000000000000A
+0015:	i64.const 0x0000000000000002
+0024:	global.get 0x0000
+0027:	call
+0028:	const.get 0x0005
+0031:	call
+0032:	const.get 0x0006
+0035:	call
+0036:	ref.null
+0037:	drop
+0038:	i64.const 0x000000000000000A
+0047:	i64.const 0x0000000000000000
+0056:	global.get 0x0000
+0059:	call
+0060:	const.get 0x0007
+0063:	call
+0064:	const.get 0x0008
+0067:	call
+0068:	ref.null
+0069:	drop
+0070:	nop
+
+.globals
+0000:	any
+
+.constants
+0000:	string "divide by zero"
+0001:	string "index out of range"
+0002:	string "type mismatch"
+0003:	<host> func(any) struct {i64; string}
+0004:	func(i64, i64) i64
+	0000:	local.get 0x00
+	0002:	local.set 0x02
+	0004:	local.get 0x01
+	0006:	local.set 0x03
+	0008:	local.get 0x02
+	0010:	local.get 0x03
+	0012:	i64.div_s
+	0013:	local.set 0x05
+	0015:	local.get 0x02
+	0017:	local.get 0x03
+	0019:	i64.rem_s
+	0020:	local.set 0x04
+	0022:	local.get 0x04
+	0024:	i64.const 0x0000000000000000
+	0033:	i64.ne
+	0034:	local.get 0x02
+	0036:	local.get 0x03
+	0038:	i64.xor
+	0039:	i64.const 0x0000000000000000
+	0048:	i64.lt_s
+	0049:	i32.and
+	0050:	i32.to_i64_s
+	0051:	local.get 0x05
+	0053:	swap
+	0054:	i64.sub
+	0055:	return
+	0056:	nop
+	0057:	br L0276
+	0060:	local.set 0x06
+	0062:	local.get 0x06
+	0064:	error.get
+	0065:	dup
+	0066:	ref.is_null
+	0067:	br_if L0073
+	0070:	br L0217
+	L0073:
+	0073:	drop
+	0074:	local.get 0x06
+	0076:	error.code
+	0077:	local.set 0x08
+	0079:	local.get 0x08
+	0081:	i32.const 0xFFFFFFF7
+	0086:	i32.eq
+	0087:	br_if L0115
+	0090:	local.get 0x08
+	0092:	i32.const 0xFFFFFFF6
+	0097:	i32.eq
+	0098:	br_if L0147
+	0101:	local.get 0x08
+	0103:	i32.const 0xFFFFFFF8
+	0108:	i32.eq
+	0109:	br_if L0179
+	0112:	br L0211
+	L0115:
+	0115:	struct.new_default 0x0000
+	0118:	dup
+	0119:	i32.const 0x00000000
+	0124:	i64.const 0x0000000000000005
+	0133:	struct.set
+	0134:	dup
+	0135:	i32.const 0x00000001
+	0140:	const.get 0x0000
+	0143:	struct.set
+	0144:	br L0217
+	L0147:
+	0147:	struct.new_default 0x0000
+	0150:	dup
+	0151:	i32.const 0x00000000
+	0156:	i64.const 0x0000000000000007
+	0165:	struct.set
+	0166:	dup
+	0167:	i32.const 0x00000001
+	0172:	const.get 0x0001
+	0175:	struct.set
+	0176:	br L0217
+	L0179:
+	0179:	struct.new_default 0x0000
+	0182:	dup
+	0183:	i32.const 0x00000000
+	0188:	i64.const 0x000000000000000A
+	0197:	struct.set
+	0198:	dup
+	0199:	i32.const 0x00000001
+	0204:	const.get 0x0002
+	0207:	struct.set
+	0208:	br L0217
+	L0211:
+	0211:	local.get 0x06
+	0213:	const.get 0x0003
+	0216:	call
+	L0217:
+	0217:	local.set 0x07
+	0219:	local.get 0x07
+	0221:	i32.const 0x00000000
+	0226:	struct.get
+	0227:	i64.const 0x0000000000000005
+	0236:	i64.ge_s
+	0237:	local.get 0x07
+	0239:	i32.const 0x00000000
+	0244:	struct.get
+	0245:	i64.const 0x0000000000000005
+	0254:	i64.le_s
+	0255:	i32.and
+	0256:	i32.eqz
+	0257:	br_if L0273
+	0260:	i64.const 0x0000000000000000
+	0269:	return
+	0270:	br L0276
+	L0273:
+	0273:	local.get 0x06
+	0275:	throw
+	L0276:
+	0276:	ref.null
+	0277:	return
+0005:	<host> func(i64) string
+0006:	<host> func(string)
+0007:	<host> func(i64) string
+0008:	<host> func(string)
+
+.types
+0000:	struct {i64; string}

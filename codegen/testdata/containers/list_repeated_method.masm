@@ -1,0 +1,125 @@
+# instructions   90
+# functions      0
+# host functions 5
+# constants      6
+# types          1
+# globals        2
+# locals         4
+# handlers       0
+
+.code
+0000:	i32.const 0x00000003
+0005:	array.new_default 0x0000
+0008:	dup
+0009:	i32.const 0x00000000
+0014:	i64.const 0x0000000000000003
+0023:	array.set
+0024:	dup
+0025:	i32.const 0x00000001
+0030:	i64.const 0x0000000000000001
+0039:	array.set
+0040:	dup
+0041:	i32.const 0x00000002
+0046:	i64.const 0x0000000000000002
+0055:	array.set
+0056:	global.set 0x0000
+0059:	i32.const 0x00000003
+0064:	array.new_default 0x0000
+0067:	dup
+0068:	i32.const 0x00000000
+0073:	i64.const 0x0000000000000006
+0082:	array.set
+0083:	dup
+0084:	i32.const 0x00000001
+0089:	i64.const 0x0000000000000005
+0098:	array.set
+0099:	dup
+0100:	i32.const 0x00000002
+0105:	i64.const 0x0000000000000004
+0114:	array.set
+0115:	global.set 0x0001
+0118:	global.get 0x0000
+0121:	const.get 0x0000
+0124:	call
+0125:	ref.null
+0126:	drop
+0127:	global.get 0x0001
+0130:	const.get 0x0001
+0133:	call
+0134:	ref.null
+0135:	drop
+0136:	global.get 0x0000
+0139:	i64.const 0x0000000000000000
+0148:	local.set 0x00
+0150:	local.set 0x01
+0152:	local.get 0x00
+0154:	i64.const 0x0000000000000000
+0163:	i64.lt_s
+0164:	br_if L0170
+0167:	br L0179
+L0170:
+0170:	local.get 0x00
+0172:	local.get 0x01
+0174:	array.len
+0175:	i32.to_i64_s
+0176:	i64.add
+0177:	local.set 0x00
+L0179:
+0179:	local.get 0x01
+0181:	local.get 0x00
+0183:	i64.to_i32
+0184:	array.get
+0185:	const.get 0x0002
+0188:	call
+0189:	const.get 0x0003
+0192:	string.concat
+0193:	global.get 0x0001
+0196:	i64.const 0x0000000000000000
+0205:	local.set 0x02
+0207:	local.set 0x03
+0209:	local.get 0x02
+0211:	i64.const 0x0000000000000000
+0220:	i64.lt_s
+0221:	br_if L0227
+0224:	br L0236
+L0227:
+0227:	local.get 0x02
+0229:	local.get 0x03
+0231:	array.len
+0232:	i32.to_i64_s
+0233:	i64.add
+0234:	local.set 0x02
+L0236:
+0236:	local.get 0x03
+0238:	local.get 0x02
+0240:	i64.to_i32
+0241:	array.get
+0242:	const.get 0x0004
+0245:	call
+0246:	string.concat
+0247:	const.get 0x0005
+0250:	call
+0251:	ref.null
+0252:	drop
+0253:	nop
+
+.locals
+0000:	i64
+0001:	any
+0002:	i64
+0003:	any
+
+.globals
+0000:	any
+0001:	any
+
+.constants
+0000:	<host> func([]i64)
+0001:	<host> func([]i64)
+0002:	<host> func(i64) string
+0003:	string " "
+0004:	<host> func(i64) string
+0005:	<host> func(string)
+
+.types
+0000:	[]i64

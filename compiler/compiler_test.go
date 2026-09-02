@@ -2081,7 +2081,7 @@ func ops(t *testing.T, constants []vmtypes.Value, ops ...instr.Opcode) {
 		}
 	}
 	for _, op := range ops {
-		require.Truef(t, seen[op], "expected function constant to contain %s", op)
+		require.Truef(t, seen[op], "expected function constant to contain %s", mnemonic(op))
 	}
 }
 
@@ -2092,7 +2092,7 @@ func programOps(t *testing.T, prog *program.Program, ops ...instr.Opcode) {
 		seen[ins.Opcode()] = true
 	}
 	for _, op := range ops {
-		require.Truef(t, seen[op], "expected program code to contain %s", op)
+		require.Truef(t, seen[op], "expected program code to contain %s", mnemonic(op))
 	}
 }
 
@@ -2121,12 +2121,16 @@ func requireFuncParam(t *testing.T, constants []vmtypes.Value, parameter vmtypes
 			seen[ins.Opcode()] = true
 		}
 		for _, op := range ops {
-			require.Equalf(t, wantOps, seen[op], "function with parameter %s opcode %s", parameter, op)
+			require.Equalf(t, wantOps, seen[op], "function with parameter %s opcode %s", parameter, mnemonic(op))
 		}
 		return
 	}
 	require.Failf(t, "missing function constant", "expected function constant with parameter %s", parameter)
 }
+
+// mnemonic names an opcode for a failure message. instr.Opcode is a byte with
+// no String method, so formatting one directly renders its numeric value.
+func mnemonic(op instr.Opcode) string { return instr.TypeOf(op).Mnemonic }
 
 // TestCompileForTupleNotIterable is a regression test for a bug introduced
 // alongside bare (unparenthesized) tuple expression-list support: iterating a

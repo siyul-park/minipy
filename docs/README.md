@@ -24,6 +24,8 @@ not duplicate the full content of each document.
 | builtins and native modules | `docs/spec/06-builtins.md` |
 | Python compatibility status | `docs/compatibility.md` |
 | cross-implementation performance | `docs/benchmarks.md` |
+| CPython-differential behavior corpus | `docs/conformance.md` |
+| emitted-bytecode quality and its corpus | `docs/codegen-quality.md` |
 | completed work and remaining gaps | `docs/roadmap.md` |
 | normative coding and compiler architecture standard | `docs/coding-patterns.md` (RFC 0001) |
 
@@ -48,6 +50,13 @@ not duplicate the full content of each document.
 2. `docs/spec/05-codegen.md` for lowering behavior.
 3. `docs/spec/06-builtins.md` for native symbol behavior.
 4. Tests near the package that owns the changed behavior.
+
+### Emitted-code change
+
+1. `docs/codegen-quality.md` for what "better code" means and how it is measured.
+2. `go test ./codegen -update`, then read the golden diff — it is the change's
+   own evidence and belongs in the commit.
+3. `docs/benchmarks.md` when a change is claimed to be faster.
 
 ## Document Roles
 
@@ -90,4 +99,6 @@ rules from the old location.
 - `docs/spec/00-overview.md` — compiler architecture and execution model.
 - `docs/compatibility.md` — feature support matrix.
 - `docs/benchmarks.md` — cross-implementation performance comparison.
+- `docs/conformance.md` — the CPython-differential behavior corpus.
+- `docs/codegen-quality.md` — emitted-bytecode quality and its golden corpus.
 - `docs/roadmap.md` — planned and deferred work.

@@ -1,0 +1,66 @@
+# instructions   40
+# functions      0
+# host functions 2
+# constants      4
+# types          0
+# globals        1
+# locals         3
+# handlers       0
+
+.code
+0000:	i64.const 0x0000000000000004
+0009:	global.set 0x0000
+0012:	global.get 0x0000
+0015:	local.set 0x00
+0017:	i64.const 0x0000000000000002
+0026:	local.set 0x01
+0028:	local.get 0x00
+0030:	local.get 0x01
+0032:	i64.rem_s
+0033:	local.set 0x02
+0035:	local.get 0x02
+0037:	i64.const 0x0000000000000000
+0046:	i64.ne
+0047:	local.get 0x00
+0049:	local.get 0x01
+0051:	i64.xor
+0052:	i64.const 0x0000000000000000
+0061:	i64.lt_s
+0062:	i32.and
+0063:	i32.to_i64_s
+0064:	local.get 0x01
+0066:	i64.mul
+0067:	local.get 0x02
+0069:	i64.add
+0070:	i64.const 0x0000000000000000
+0079:	i64.eq
+0080:	i32.eqz
+0081:	br_if L0096
+0084:	const.get 0x0000
+0087:	const.get 0x0001
+0090:	call
+0091:	ref.null
+0092:	drop
+0093:	br L0105
+L0096:
+0096:	const.get 0x0002
+0099:	const.get 0x0003
+0102:	call
+0103:	ref.null
+0104:	drop
+L0105:
+0105:	nop
+
+.locals
+0000:	i64
+0001:	i64
+0002:	i64
+
+.globals
+0000:	i64
+
+.constants
+0000:	string "even"
+0001:	<host> func(string)
+0002:	string "odd"
+0003:	<host> func(string)

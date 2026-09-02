@@ -1,0 +1,116 @@
+# instructions   84
+# functions      0
+# host functions 6
+# constants      6
+# types          1
+# globals        1
+# locals         2
+# handlers       0
+
+.code
+0000:	i32.const 0x00000003
+0005:	array.new_default 0x0000
+0008:	dup
+0009:	i32.const 0x00000000
+0014:	i64.const 0x0000000000000001
+0023:	array.set
+0024:	dup
+0025:	i32.const 0x00000001
+0030:	i64.const 0x0000000000000002
+0039:	array.set
+0040:	dup
+0041:	i32.const 0x00000002
+0046:	i64.const 0x0000000000000003
+0055:	array.set
+0056:	global.set 0x0000
+0059:	global.get 0x0000
+0062:	i64.const 0x0000000000000004
+0071:	i32.const 0x00000001
+0076:	array.append
+0077:	drop
+0078:	ref.null
+0079:	drop
+0080:	global.get 0x0000
+0083:	i64.const 0x0000000000000000
+0092:	local.set 0x00
+0094:	local.set 0x01
+0096:	local.get 0x00
+0098:	i64.const 0x0000000000000000
+0107:	i64.lt_s
+0108:	br_if L0114
+0111:	br L0123
+L0114:
+0114:	local.get 0x00
+0116:	local.get 0x01
+0118:	array.len
+0119:	i32.to_i64_s
+0120:	i64.add
+0121:	local.set 0x00
+L0123:
+0123:	local.get 0x01
+0125:	local.get 0x00
+0127:	i64.to_i32
+0128:	array.get
+0129:	const.get 0x0000
+0132:	call
+0133:	const.get 0x0001
+0136:	call
+0137:	ref.null
+0138:	drop
+0139:	global.get 0x0000
+0142:	i64.const 0x0000000000000000
+0151:	i64.const 0x0000000000000001
+0160:	i64.sub
+0161:	local.set 0x00
+0163:	local.set 0x01
+0165:	local.get 0x00
+0167:	i64.const 0x0000000000000000
+0176:	i64.lt_s
+0177:	br_if L0183
+0180:	br L0192
+L0183:
+0183:	local.get 0x00
+0185:	local.get 0x01
+0187:	array.len
+0188:	i32.to_i64_s
+0189:	i64.add
+0190:	local.set 0x00
+L0192:
+0192:	local.get 0x01
+0194:	local.get 0x00
+0196:	i64.to_i32
+0197:	array.get
+0198:	const.get 0x0002
+0201:	call
+0202:	const.get 0x0003
+0205:	call
+0206:	ref.null
+0207:	drop
+0208:	global.get 0x0000
+0211:	array.len
+0212:	i32.to_i64_s
+0213:	const.get 0x0004
+0216:	call
+0217:	const.get 0x0005
+0220:	call
+0221:	ref.null
+0222:	drop
+0223:	nop
+
+.locals
+0000:	i64
+0001:	any
+
+.globals
+0000:	any
+
+.constants
+0000:	<host> func(i64) string
+0001:	<host> func(string)
+0002:	<host> func(i64) string
+0003:	<host> func(string)
+0004:	<host> func(i64) string
+0005:	<host> func(string)
+
+.types
+0000:	[]i64

@@ -1,0 +1,140 @@
+# instructions   98
+# functions      0
+# host functions 2
+# constants      7
+# types          1
+# globals        1
+# locals         4
+# handlers       1
+
+.code
+0000:	const.get 0x0000
+0003:	local.set 0x00
+0005:	struct.new_default 0x0000
+0008:	dup
+0009:	i32.const 0x00000000
+0014:	i64.const 0x0000000000000010
+0023:	struct.set
+0024:	dup
+0025:	i32.const 0x00000001
+0030:	local.get 0x00
+0032:	struct.set
+0033:	i32.const 0x00000000
+0038:	error.new
+0039:	throw
+0040:	nop
+0041:	br L0264
+0044:	local.set 0x01
+0046:	local.get 0x01
+0048:	error.get
+0049:	dup
+0050:	ref.is_null
+0051:	br_if L0057
+0054:	br L0201
+L0057:
+0057:	drop
+0058:	local.get 0x01
+0060:	error.code
+0061:	local.set 0x03
+0063:	local.get 0x03
+0065:	i32.const 0xFFFFFFF7
+0070:	i32.eq
+0071:	br_if L0099
+0074:	local.get 0x03
+0076:	i32.const 0xFFFFFFF6
+0081:	i32.eq
+0082:	br_if L0131
+0085:	local.get 0x03
+0087:	i32.const 0xFFFFFFF8
+0092:	i32.eq
+0093:	br_if L0163
+0096:	br L0195
+L0099:
+0099:	struct.new_default 0x0000
+0102:	dup
+0103:	i32.const 0x00000000
+0108:	i64.const 0x0000000000000005
+0117:	struct.set
+0118:	dup
+0119:	i32.const 0x00000001
+0124:	const.get 0x0001
+0127:	struct.set
+0128:	br L0201
+L0131:
+0131:	struct.new_default 0x0000
+0134:	dup
+0135:	i32.const 0x00000000
+0140:	i64.const 0x0000000000000007
+0149:	struct.set
+0150:	dup
+0151:	i32.const 0x00000001
+0156:	const.get 0x0002
+0159:	struct.set
+0160:	br L0201
+L0163:
+0163:	struct.new_default 0x0000
+0166:	dup
+0167:	i32.const 0x00000000
+0172:	i64.const 0x000000000000000A
+0181:	struct.set
+0182:	dup
+0183:	i32.const 0x00000001
+0188:	const.get 0x0003
+0191:	struct.set
+0192:	br L0201
+L0195:
+0195:	local.get 0x01
+0197:	const.get 0x0004
+0200:	call
+L0201:
+0201:	local.set 0x02
+0203:	local.get 0x02
+0205:	i32.const 0x00000000
+0210:	struct.get
+0211:	i64.const 0x0000000000000010
+0220:	i64.ge_s
+0221:	local.get 0x02
+0223:	i32.const 0x00000000
+0228:	struct.get
+0229:	i64.const 0x0000000000000010
+0238:	i64.le_s
+0239:	i32.and
+0240:	i32.eqz
+0241:	br_if L0261
+0244:	local.get 0x02
+0246:	global.set 0x0000
+0249:	const.get 0x0005
+0252:	const.get 0x0006
+0255:	call
+0256:	ref.null
+0257:	drop
+0258:	br L0264
+L0261:
+0261:	local.get 0x01
+0263:	throw
+L0264:
+0264:	nop
+
+.locals
+0000:	any
+0001:	any
+0002:	any
+0003:	i32
+
+.globals
+0000:	any
+
+.constants
+0000:	string "boom"
+0001:	string "divide by zero"
+0002:	string "index out of range"
+0003:	string "type mismatch"
+0004:	<host> func(any) struct {i64; string}
+0005:	string "caught"
+0006:	<host> func(string)
+
+.types
+0000:	struct {i64; string}
+
+.handlers
+0000:	start=0 end=41 catch=44 depth=4
