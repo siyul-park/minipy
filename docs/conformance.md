@@ -129,6 +129,23 @@ module its semantics were derived from, for example:
 # Derived from CPython Lib/test/test_int.py (PSF License, docs/reference/SOURCES.md).
 ```
 
+### The `regression/` category
+
+`conformance/testdata/conformance/regression/` holds cases whose provenance is a
+minipy defect report rather than a CPython test module, so its cases name that
+report instead:
+
+```python
+# Derived from docs/benchmarks.md, "Algorithm changes forced by real minipy bugs" (finding 1).
+```
+
+A case belongs here when a defect was described in prose and nothing executed
+the shape that produced it — the state `docs/benchmarks.md` findings 1, 3 and 5
+were in, where the benchmark corpus was rewritten to route around each defect
+and so stopped covering it. The case still has to satisfy every rule above: it
+is a normal conformance case whose golden is real CPython output, and it passes
+or fails on that comparison like any other.
+
 ## Regenerating Goldens
 
 Never hand-write a golden. Goldens are always produced by running the real
