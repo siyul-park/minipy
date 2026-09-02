@@ -644,6 +644,13 @@ side effects and then discarded; the VM executes an UNREACHABLE instruction.
 When any argument has type `Any` or is dynamic, the result type is `None` and
 runtime dispatch is used.
 
+## Container and String Methods
+
+`list`, `dict`, `set`, and `str` methods are not native module symbols: they are
+methods on builtin types, and they live in one catalogue in `compiler/method.go`
+whose entry pairs a checker rule with an emitter. See
+`docs/spec/04-static-semantics.md`, "Builtin Method Catalogue".
+
 ## Related Docs
 
 - `docs/README.md` — documentation map and ownership guide.

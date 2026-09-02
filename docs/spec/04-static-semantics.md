@@ -436,6 +436,24 @@ Semantic errors use `token.Error` codes such as `TypeMismatch`, `UndefinedName`,
 `PatternError`, and related codes. The rendered error name follows the associated
 Python exception class declared in `token/error.go`.
 
+## Builtin Method Catalogue
+
+`list`, `dict`, `set`, and `str` methods are one catalogue
+(`compiler/method.go`), keyed by receiver kind and method name. Each entry owns
+both halves of its method's contract: the checker rule that admits a call and
+gives it a result type, and the emitter that lowers the same call. A method
+cannot exist with only one of the two.
+
+This replaces two switches that dispatched on different axes — receiver type
+first in the checker, method name alone in the lowerer, with the receiver
+re-discriminated inside every name several receivers share (`pop`, `copy`,
+`clear`, `count`, `remove`). Keeping them in agreement was a human obligation;
+it is now structural.
+
+Diagnostics are unchanged by the move. A container method reports a specific
+arity or argument-type error; a `str` method reports only the shared
+`method %s on %s is not supported`, which is all it ever reported.
+
 ## Related Docs
 
 - `docs/README.md` — documentation map and ownership guide.
