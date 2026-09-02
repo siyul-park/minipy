@@ -95,7 +95,8 @@ source -> tokens -> AST -> checked module graph -> lowered program
   checker or lowerer.
 - Mutable compilation state belongs to one invocation, not reusable compiler
   configuration.
-- Transform order remains visible; metadata removed for optimization is restored.
+- Transform order remains visible; the optimizer owns every table it rewrites
+  and its result is never overwritten with a pre-optimization copy.
 - Every returned minivm program is verified after all transforms.
 - User-facing behavior updates the owning spec and status documents.
 

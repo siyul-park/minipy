@@ -44,8 +44,7 @@ level and then verified with `program.Verify`.
    (`Builder.Locals`, `Builder.Globals`)
 7. build a minivm program
 8. optimize with `optimize.New(level)`
-9. restore type, handler, and global tables preserved across optimization
-10. verify the final program
+9. verify the final program
 
 The interpreter sizes its global table from `Program.Globals`, and `GLOBAL_*`
 past the declared count traps and fails verification, so every global slot the
@@ -505,10 +504,22 @@ metadata is rejected at `compile` time rather than lowered.
 
 ## Verification and Optimizer Notes
 
-The compiler preserves the program type pool and exception handler table around
-optimization, because the optimizer works on bytecode shape while those tables are
-part of the verified program contract. Verification failures are wrapped as
-`verify program: ...` errors.
+The optimized program the minivm pipeline returns is its whole product. The
+passes rewrite more than bytecode shape: `DedupPass` compacts the constant and
+type pools and renumbers the operands that address them, and the length-changing
+passes (`DCEPass`, `GVNPass`) repair the exception handler table against the code
+they relocate. The compiler therefore takes that program as it is. Writing a
+pre-optimization type or handler table back over it reinstates tables that no
+longer describe the emitted code — the failure mode it produced was
+`verify: slot 0, ip 0, throw: invalid exception handler range` on every
+`try` at `-O2` and above.
+
+`Program.Globals` is the one table no pass touches, because the global table is
+declared by the compiler and not addressed by any transform.
+
+Every level is a behavior contract, not only the default: the conformance corpus
+runs at `O0`, `O1`, `O2` and `O3` and must produce identical output at each.
+Verification failures are wrapped as `verify program: ...` errors.
 
 ## Related Docs
 

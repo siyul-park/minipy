@@ -333,8 +333,10 @@ minivm requirement.
 - Checked metadata MUST be immutable to the lowerer after checking completes.
 - The lowerer consumes AST plus checked metadata and emits a minivm program.
 - Optimizer passes MUST run in one visible order.
-- Metadata temporarily removed for a minivm transform MUST be restored before
-  verification and return.
+- An optimized program is the transform pipeline's whole product. A phase MUST
+  NOT write a pre-optimization constant, type, handler, or global table back
+  over it; the passes compact and repair those tables against the code they
+  rewrite, so a restored copy no longer describes the emitted program.
 
 A general public `Validate` method MUST NOT be exposed when constructors and
 phase boundaries can enforce validity directly.
@@ -557,7 +559,8 @@ Before completing a change, verify:
 - [ ] helpers remove real complexity;
 - [ ] phase products do not leak mutable implementation state;
 - [ ] checker/lowerer assumptions remain synchronized;
-- [ ] optimizer metadata restoration and final verification remain intact;
+- [ ] no pre-optimization table is written back over an optimized program, and
+      final verification remains intact;
 - [ ] errors preserve operational identity and diagnostics remain stable;
 - [ ] mutable values are defensively copied;
 - [ ] declarations and tests follow call/source order;

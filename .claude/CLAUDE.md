@@ -31,7 +31,8 @@ When compiler or runtime code changes, explicitly verify:
   exceptions, patterns, native calls, and containers;
 - native symbols retain a coherent checker/emitter/runtime contract;
 - malformed user source returns stable diagnostics rather than panic;
-- optimizer metadata is restored and every returned program is verified;
+- no pre-optimization table is written back over an optimized program, and
+  every returned program is verified;
 - tests observe public behavior or a protected returned program representation,
   never private implementation state;
 - owning specs and compatibility/status documents match current behavior.

@@ -13,10 +13,8 @@ import (
 	"github.com/siyul-park/minipy/parser"
 	"github.com/siyul-park/minipy/token"
 
-	"github.com/siyul-park/minivm/instr"
 	"github.com/siyul-park/minivm/optimize"
 	"github.com/siyul-park/minivm/program"
-	vmtypes "github.com/siyul-park/minivm/types"
 )
 
 // Option configures a Compiler.
@@ -161,18 +159,16 @@ func (c *compilation) lower(checked *checkedProgram) (*program.Program, error) {
 	return lowerer.lower()
 }
 
+// optimize runs the configured minivm pipeline. The passes own every table they
+// touch: they compact the constant and type pools and repair the handler table
+// against the code they relocate, so the returned program is the whole product.
+// Writing pre-optimization copies back over it reinstates tables that no longer
+// describe the emitted code.
 func (c *compilation) optimize(lowered *program.Program) (*program.Program, error) {
-	typesPool := append([]vmtypes.Type(nil), lowered.Types...)
-	handlers := append([]instr.Handler(nil), lowered.Handlers...)
-	globals := append([]vmtypes.Type(nil), lowered.Globals...)
-
 	optimized, err := optimize.New(c.config.level).Optimize(lowered)
 	if err != nil {
 		return nil, fmt.Errorf("optimize program: %w", err)
 	}
-	optimized.Types = typesPool
-	optimized.Handlers = handlers
-	optimized.Globals = globals
 	return optimized, nil
 }
 

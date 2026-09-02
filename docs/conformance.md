@@ -49,6 +49,13 @@ returns an error rather than panicking for any hygiene violation:
 as a hygiene assertion in its own right, then compiles and runs every case
 through minipy and requires its stdout equal the golden.
 
+Every case runs at **each** optimization level — `O0`, `O1`, `O2`, `O3` — as a
+subtest per level. An optimizer level changes which minivm passes rewrite the
+emitted program, never what the program means, so the corpus is a behavior
+contract for all four rather than for the default alone. Running only the
+default hid a miscompile that failed 17 cases at `O2` and `O3`
+(`docs/spec/05-codegen.md`, "Verification and Optimizer Notes").
+
 ## The Divergence Biconditional
 
 **A `.minipy` golden exists if and only if the source declares a
