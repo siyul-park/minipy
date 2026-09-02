@@ -144,6 +144,7 @@ type lowerer struct {
 	emitted  map[*moduleInfo]bool
 	specs    map[*specialization]int
 	building map[*specialization]bool
+	hosts    map[string]*interp.HostFunction
 
 	// current-function state
 	locals  map[string]*local
@@ -198,6 +199,7 @@ func newLowerer(b *program.Builder, checked *checkedProgram, native *nativeRunti
 		emitted:     map[*moduleInfo]bool{},
 		specs:       map[*specialization]int{},
 		building:    map[*specialization]bool{},
+		hosts:       map[string]*interp.HostFunction{},
 		temps:       map[string]int{},
 		native:      native,
 		boxed:       map[*local]bool{},

@@ -138,9 +138,17 @@ call is opaque to fusion, to the optimizer, and to the verifier's type flow.
 
 When a host function is unavoidable, intern **one value per distinct operation
 and receiver type** for the whole compilation. A factory called per call site
-produces a fresh closure each time, and pointer-identity interning cannot merge
-two closures, so the constant pool grows linearly with call sites for no
-behavioral difference.
+produces a fresh closure each time, and the constant pool interns by pointer
+identity, so it grows linearly with call sites for no behavioral difference.
+
+`compiler/runtime.go` does this through `(*lowerer).host`, keyed by the
+operation name and the types that shape it. Native module emitters
+(`builtins/`, `operator/`, `math/`, `random/`) do **not** yet: they call their
+producer per emission, so a module with several `str(n)` calls still interns one
+host function per call. Across the conformance and benchmark corpora, interning
+the compiler-side factories took host-function constants from 1653 to 1402 and
+the total constant pool from 2232 to 1981; the rest waits on
+`module.Emitter` gaining a way for a native symbol to name its operation.
 
 ### Let specialization do the narrowing
 

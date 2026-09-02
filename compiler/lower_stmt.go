@@ -545,9 +545,9 @@ func (c *lowerer) emitExceptionInstance(cls *class, args []ast.Expr) {
 		c.expr(args[0])
 		if msgType := c.types[args[0]]; !types.Equal(msgType, types.Str) {
 			if refDynamic(msgType) {
-				c.callHost(operator.DynStr())
+				c.callHost(c.host(hostKey("operator.str"), operator.DynStr))
 			} else {
-				c.callHost(hostabi.StringFunction(msgType))
+				c.callHost(c.stringHost(msgType))
 			}
 		}
 	} else {
@@ -1305,7 +1305,7 @@ func (c *lowerer) emitFor(n *ast.For) {
 	if refDynamic(c.types[n.Iter]) {
 		c.emitIteratorFor(n, func() {
 			c.expr(n.Iter)
-			c.callHost(operator.DynIter())
+			c.callHost(c.host(hostKey("operator.iter"), operator.DynIter))
 		})
 		return
 	}
@@ -1623,6 +1623,10 @@ func (c *lowerer) funcValue(info *function, body []ast.Stmt) {
 // narrow them, plain nested functions inherit the parent's); loops, finally,
 // excepts, tries, temps, scratch, boxed, and err reset to fresh zero values. The caller must
 // call adopt(child) once the child finishes lowering its body.
+//
+// Everything else is shared with the parent by design: emitted, specs,
+// building, and hosts all describe the one program being built, not the frame
+// being lowered into it.
 func (c *lowerer) child(code target, info *function, types map[ast.Expr]types.Type, callSpec map[*ast.CallExpr]*specialization, callArgs map[*ast.CallExpr][]ast.Expr, callRewrite map[*ast.CallExpr]ast.Expr) *lowerer {
 	child := *c
 	child.code = code

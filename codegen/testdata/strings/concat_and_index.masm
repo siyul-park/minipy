@@ -1,7 +1,7 @@
 # instructions   37
 # functions      0
-# host functions 8
-# constants      10
+# host functions 7
+# constants      9
 # types          0
 # globals        1
 # locals         0
@@ -29,18 +29,18 @@
 0044:	i64.const 0x0000000000000000
 0053:	i64.const 0x0000000000000001
 0062:	i64.sub
-0063:	const.get 0x0005
+0063:	const.get 0x0003
 0066:	call
-0067:	const.get 0x0006
+0067:	const.get 0x0005
 0070:	call
 0071:	ref.null
 0072:	drop
 0073:	global.get 0x0000
-0076:	const.get 0x0007
+0076:	const.get 0x0006
 0079:	call
-0080:	const.get 0x0008
+0080:	const.get 0x0007
 0083:	call
-0084:	const.get 0x0009
+0084:	const.get 0x0008
 0087:	call
 0088:	ref.null
 0089:	drop
@@ -55,8 +55,7 @@
 0002:	<host> func(string)
 0003:	<host> func(string, i64) string
 0004:	<host> func(string)
-0005:	<host> func(string, i64) string
-0006:	<host> func(string)
-0007:	<host> func(string) i64
-0008:	<host> func(i64) string
-0009:	<host> func(string)
+0005:	<host> func(string)
+0006:	<host> func(string) i64
+0007:	<host> func(i64) string
+0008:	<host> func(string)

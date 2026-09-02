@@ -163,6 +163,46 @@ func TestCompileUnions(t *testing.T) {
 	})
 }
 
+func TestCompileSharesHostFunctions(t *testing.T) {
+	t.Run("repeated calls to one operation share a host constant", func(t *testing.T) {
+		// A host-function factory allocates a fresh closure per call and the
+		// constant pool interns by pointer identity, so an uninterned factory
+		// grows the pool by one identical entry per call site.
+		src := "xs: list[int] = [3, 1, 2]\n" +
+			"ys: list[int] = [6, 5, 4]\n" +
+			"xs.sort()\n" +
+			"ys.sort()\n" +
+			"print(str(xs[0]) + str(ys[0]))\n"
+		prog, err := Compile(strings.NewReader(src), WithOutput(io.Discard))
+		require.NoError(t, err)
+
+		sorts := 0
+		for _, host := range hostConstants(prog.Constants) {
+			if host.Typ.String() == "func([]i64)" {
+				sorts++
+			}
+		}
+		require.Equal(t, 1, sorts, "both list.sort call sites must share one host constant")
+	})
+
+	t.Run("distinct receiver types keep distinct host constants", func(t *testing.T) {
+		src := "xs: list[int] = [3, 1, 2]\n" +
+			"ss: list[str] = [\"b\", \"a\"]\n" +
+			"xs.sort()\n" +
+			"ss.sort()\n" +
+			"print(str(xs[0]) + ss[0])\n"
+		prog, err := Compile(strings.NewReader(src), WithOutput(io.Discard))
+		require.NoError(t, err)
+
+		signatures := map[string]bool{}
+		for _, host := range hostConstants(prog.Constants) {
+			signatures[host.Typ.String()] = true
+		}
+		require.True(t, signatures["func([]i64)"], "list[int].sort keeps its own host function")
+		require.True(t, signatures["func([]string)"], "list[str].sort keeps its own host function")
+	})
+}
+
 func TestCompileInference(t *testing.T) {
 	t.Run("unannotated function compiles and runs via inference", func(t *testing.T) {
 		src := "def identity(x):\n" +

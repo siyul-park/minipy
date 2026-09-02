@@ -6,7 +6,6 @@ import (
 	"strings"
 
 	"github.com/siyul-park/minipy/ast"
-	"github.com/siyul-park/minipy/hostabi"
 	"github.com/siyul-park/minipy/module"
 	"github.com/siyul-park/minipy/operator"
 	"github.com/siyul-park/minipy/token"
@@ -419,7 +418,7 @@ func (c *lowerer) subscript(x *ast.Subscript) {
 	if refDynamic(c.types[x.X]) {
 		c.expr(x.X)
 		c.expr(x.Index)
-		c.callHost(operator.DynGetItem())
+		c.callHost(c.host(hostKey("operator.getitem"), operator.DynGetItem))
 		return
 	}
 	c.expr(x.X)
@@ -570,7 +569,7 @@ func (c *lowerer) fstringValue(p *ast.FStringExpr) {
 		valType = types.Str
 	case 's':
 		if !types.Equal(valType, types.Str) {
-			c.callHost(hostabi.StringFunction(valType))
+			c.callHost(c.stringHost(valType))
 		}
 		valType = types.Str
 	}
@@ -586,7 +585,7 @@ func (c *lowerer) fstringValue(p *ast.FStringExpr) {
 	}
 
 	if conv == 0 && !types.Equal(valType, types.Str) {
-		c.callHost(hostabi.StringFunction(valType))
+		c.callHost(c.stringHost(valType))
 	}
 }
 
