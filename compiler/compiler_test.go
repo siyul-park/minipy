@@ -141,6 +141,26 @@ func TestCompileUnions(t *testing.T) {
 			"print(g())\n"
 		require.Equal(t, "int:3\n", run(t, src))
 	})
+
+	t.Run("specializations are emitted in call-site order", func(t *testing.T) {
+		// Constant-pool indices follow specialization emission order, so
+		// building them by iterating the call map made one source compile to
+		// two differently numbered programs at random.
+		src := "def describe(x: int | str) -> str:\n" +
+			"    if isinstance(x, int):\n" +
+			"        return \"int:\" + str(x)\n" +
+			"    return \"str:\" + x\n" +
+			"print(describe(3))\n" +
+			"print(describe(\"hi\"))\n"
+
+		first, err := Compile(strings.NewReader(src), WithOutput(io.Discard))
+		require.NoError(t, err)
+		for range 8 {
+			again, err := Compile(strings.NewReader(src), WithOutput(io.Discard))
+			require.NoError(t, err)
+			require.Equal(t, first.String(), again.String(), "compiling one source twice must emit one program")
+		}
+	})
 }
 
 func TestCompileInference(t *testing.T) {

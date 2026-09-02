@@ -1,7 +1,9 @@
 package compiler
 
 import (
+	"cmp"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/siyul-park/minipy/ast"
@@ -1533,9 +1535,26 @@ func (c *lowerer) buildSpec(spec *specialization) {
 	c.specs[spec] = c.prog.Const(f)
 }
 
+// buildCallSpecs compiles every specialization the given call sites resolved
+// to, in the source order of those sites. The order decides constant-pool
+// indices, so iterating the call map directly would emit a differently
+// numbered — though equivalent — program on every compilation. A synthesized
+// call carries no position, so the specialization key breaks the remaining
+// ties.
 func (c *lowerer) buildCallSpecs(calls map[*ast.CallExpr]*specialization) {
-	for _, spec := range calls {
-		c.buildSpec(spec)
+	ordered := make([]*ast.CallExpr, 0, len(calls))
+	for call := range calls {
+		ordered = append(ordered, call)
+	}
+	slices.SortFunc(ordered, func(left, right *ast.CallExpr) int {
+		return cmp.Or(
+			cmp.Compare(left.Pos().Line, right.Pos().Line),
+			cmp.Compare(left.Pos().Column, right.Pos().Column),
+			cmp.Compare(calls[left].key, calls[right].key),
+		)
+	})
+	for _, call := range ordered {
+		c.buildSpec(calls[call])
 	}
 }
 
