@@ -440,7 +440,7 @@ func cleanDir(dir string) string {
 // defaultRegistry is the built-in native module set: builtins (the fallback for
 // unqualified names), operator, typing, math, string, and functools.
 func defaultRegistry() *module.Registry {
-	return module.NewRegistry(
+	return module.MustNewRegistry(
 		[]module.Module{builtins.New(), operator.New(), typing.New(), mathmod.New(), stringmod.New(), functools.New(), randommod.New(), sysmod.New()},
 		module.WithFallback(builtins.Name),
 	)

@@ -926,7 +926,7 @@ func (c *lowerer) methodCall(x *ast.CallExpr, attr *ast.Attribute) {
 		method.emit(c, recvType, x)
 		return
 	}
-	c.fail(fmt.Errorf("lower method %s on %T: unsupported", attr.Name, recvType))
+	c.unsupported(attr.Pos(), "method %s on %s is not supported", attr.Name, recvType)
 }
 
 // emitStrFormat lowers str.format(args...). At this point the stack holds

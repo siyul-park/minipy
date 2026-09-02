@@ -8,6 +8,7 @@ import (
 	"github.com/siyul-park/minipy/ast"
 	"github.com/siyul-park/minipy/hostabi"
 	"github.com/siyul-park/minipy/module"
+	"github.com/siyul-park/minipy/token"
 	"github.com/siyul-park/minipy/types"
 
 	"github.com/siyul-park/minivm/instr"
@@ -231,6 +232,20 @@ func (c *lowerer) lower() (*program.Program, error) {
 
 // fail records err as the lowering failure if none has been recorded yet.
 // Only the first failure is kept.
+// unsupported reports a construct the checker admitted but the lowerer cannot
+// emit. It is a diagnostic, not an internal error: it carries the construct's
+// source position and a stable code, so a user sees a line number rather than a
+// bare Go type name. Reaching one means the checker and the lowerer disagree
+// about what is lowerable — the invariant AGENTS.md states as "unsupported
+// constructs fail before lowering".
+func (c *lowerer) unsupported(pos token.Pos, format string, args ...any) {
+	var diagnostics token.ErrorList
+	diagnostics.Add(pos, token.UnsupportedFeature, format, args...)
+	c.fail(diagnostics.Err())
+}
+
+// fail records the first operational failure, for an error whose identity comes
+// from a dependency rather than from user source.
 func (c *lowerer) fail(err error) {
 	if c.err == nil {
 		c.err = err

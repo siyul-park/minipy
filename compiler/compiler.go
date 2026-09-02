@@ -32,6 +32,10 @@ type config struct {
 	level optimize.Level
 	paths []searchEntry
 	reg   *module.Registry
+
+	// err holds the first option failure. An Option cannot return one, so it is
+	// carried here and reported by Compile, which is the first call that can.
+	err error
 }
 
 type compilation struct {
@@ -62,12 +66,19 @@ func WithModules(files fs.FS) Option {
 }
 
 // WithNativeModules adds native modules to the default registry. The builtins,
-// operator, and typing modules remain registered; duplicate module names panic
-// as an invalid startup catalogue.
+// operator, and typing modules remain registered. A catalogue this makes invalid
+// — a nil module, or a name one of the defaults already claims — is reported by
+// Compile rather than panicking, because it comes from a caller's configuration
+// and not from this package's own startup.
 func WithNativeModules(modules ...module.Module) Option {
 	return func(config *config) {
 		registered := append(config.reg.Modules(), modules...)
-		config.reg = module.NewRegistry(registered, module.WithFallback(config.reg.FallbackName()))
+		reg, err := module.NewRegistry(registered, module.WithFallback(config.reg.FallbackName()))
+		if err != nil {
+			config.err = err
+			return
+		}
+		config.reg = reg
 	}
 }
 
@@ -101,6 +112,9 @@ func New(options ...Option) *Compiler {
 // Compile compiles source in a fresh session. A failed invocation cannot affect
 // later calls on the same Compiler.
 func (c *Compiler) Compile(source io.Reader) (*program.Program, error) {
+	if c.config.err != nil {
+		return nil, c.config.err
+	}
 	if source == nil {
 		return nil, ErrNoSource
 	}

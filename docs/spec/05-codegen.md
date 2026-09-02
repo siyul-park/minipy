@@ -97,7 +97,7 @@ Compile options:
 - `WithOptimizationLevel(optimize.Level)` selects the minivm optimizer level
 - `WithModules(fs.FS)` adds a module search root
 - `WithModulePath(fs.FS, dirs...)` adds ordered search roots inside an `fs.FS`
-- `WithNativeModules(module.Module...)` adds native modules to the default registry
+- `WithNativeModules(module.Module...)` adds native modules to the default registry; an invalid catalogue is reported by `Compile`
 
 ## Modules and Imports
 

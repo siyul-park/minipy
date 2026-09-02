@@ -44,7 +44,12 @@ A native module symbol carries:
 - a bytecode emit function
 - an optional runtime value/host function
 
-Applications extend the default registry with `compiler.WithNativeModules`.
+Applications extend the default registry with `compiler.WithNativeModules`. A
+catalogue the extension makes invalid — a nil module, or a name a default module
+already claims — is reported by `Compile`, not panicked: it comes from a
+caller's configuration. `module.NewRegistry` returns that error and
+`module.MustNewRegistry` panics with it, for a catalogue fixed at startup like
+the compiler's own default.
 Module and symbol names must be unique; duplicate registration is a configuration
 error. Symbols that lower entirely to bytecode do not need a runtime value.
 

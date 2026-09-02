@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/siyul-park/minipy/module"
 	"github.com/siyul-park/minipy/parser"
 	"github.com/siyul-park/minipy/token"
 	"github.com/siyul-park/minivm/instr"
@@ -551,6 +552,28 @@ func TestTypingAnnotations(t *testing.T) {
 	t.Run("forward type alias reference resolves", func(t *testing.T) {
 		errs := checkOnly(t, "type B = int\ntype A = list[B]\nxs: A = []\n")
 		require.Empty(t, errs)
+	})
+}
+
+func TestCompilerWithNativeModules(t *testing.T) {
+	t.Run("a name a default module already claims is reported, not panicked", func(t *testing.T) {
+		duplicate := module.NewNative("builtins")
+		_, err := Compile(strings.NewReader("x: int = 1\n"),
+			WithOutput(io.Discard), WithNativeModules(duplicate))
+		require.ErrorIs(t, err, module.ErrDuplicateModule)
+	})
+
+	t.Run("a nil module is reported", func(t *testing.T) {
+		_, err := Compile(strings.NewReader("x: int = 1\n"),
+			WithOutput(io.Discard), WithNativeModules(nil))
+		require.ErrorIs(t, err, module.ErrNilModule)
+	})
+
+	t.Run("a valid module compiles", func(t *testing.T) {
+		extra := module.NewNative("extra")
+		_, err := Compile(strings.NewReader("x: int = 1\n"),
+			WithOutput(io.Discard), WithNativeModules(extra))
+		require.NoError(t, err)
 	})
 }
 

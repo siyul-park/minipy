@@ -831,7 +831,7 @@ func (c *lowerer) assignTargetFromTemp(target ast.Expr, slot int) {
 			c.emit(instr.CALL)
 			c.emit(instr.DROP)
 		default:
-			c.fail(fmt.Errorf("chained assign subscript: unsupported receiver %T", c.types[t.X]))
+			c.unsupported(t.Pos(), "chained assignment to a subscript of %s is not supported", c.types[t.X])
 		}
 	case *ast.Attribute:
 		if key := c.attrSym[t]; key != "" {
@@ -845,7 +845,7 @@ func (c *lowerer) assignTargetFromTemp(target ast.Expr, slot int) {
 		c.emit(instr.GLOBAL_GET, uint64(slot))
 		c.emit(instr.STRUCT_SET)
 	default:
-		c.fail(fmt.Errorf("chained assign target %T: unsupported", target))
+		c.unsupported(target.Pos(), "chained assignment to this target is not supported")
 	}
 }
 
@@ -876,7 +876,7 @@ func (c *lowerer) assignTarget(target ast.Expr, value ast.Expr) {
 			c.emit(instr.CALL)
 			c.emit(instr.DROP)
 		default:
-			c.fail(fmt.Errorf("lower subscript assignment for %T: unsupported receiver type %T", t, c.types[t.X]))
+			c.unsupported(t.Pos(), "subscript assignment on %s is not supported", c.types[t.X])
 		}
 	case *ast.TupleLit:
 		c.unpackAssign(t, value)
@@ -894,7 +894,7 @@ func (c *lowerer) assignTarget(target ast.Expr, value ast.Expr) {
 		c.promoteIntToFloat(c.types[value], fieldType)
 		c.emit(instr.STRUCT_SET)
 	default:
-		c.fail(fmt.Errorf("lower assignment target %T: unsupported", target))
+		c.unsupported(target.Pos(), "assignment to this target is not supported")
 	}
 }
 
@@ -947,7 +947,7 @@ func (c *lowerer) augAssignSubscript(n *ast.AugAssign, sub *ast.Subscript) {
 		c.emit(instr.SWAP)
 		c.emit(instr.MAP_SET)
 	default:
-		c.fail(fmt.Errorf("augmented subscript assignment for %T not supported", c.types[sub.X]))
+		c.unsupported(sub.Pos(), "augmented subscript assignment on %s is not supported", c.types[sub.X])
 	}
 }
 
@@ -1060,7 +1060,7 @@ func (c *lowerer) emitUnpackIndex(value ast.Expr, valueSlot int, idx int) {
 	case *types.List:
 		c.emit(instr.ARRAY_GET)
 	default:
-		c.fail(fmt.Errorf("lower unpack value %T: unsupported type %T", value, c.types[value]))
+		c.unsupported(value.Pos(), "unpacking %s is not supported", c.types[value])
 	}
 }
 
@@ -1118,7 +1118,12 @@ func (c *lowerer) get(name string) {
 			return
 		}
 	}
-	c.emit(instr.GLOBAL_GET, uint64(c.globals[c.symbol(name)].index))
+	global, ok := c.globals[c.symbol(name)]
+	if !ok {
+		c.fail(fmt.Errorf("load name %q: no binding", name))
+		return
+	}
+	c.emit(instr.GLOBAL_GET, uint64(global.index))
 }
 
 func (c *lowerer) set(name string) {
@@ -1156,7 +1161,12 @@ func (c *lowerer) set(name string) {
 			return
 		}
 	}
-	c.emit(instr.GLOBAL_SET, uint64(c.globals[c.symbol(name)].index))
+	global, ok := c.globals[c.symbol(name)]
+	if !ok {
+		c.fail(fmt.Errorf("store name %q: no binding", name))
+		return
+	}
+	c.emit(instr.GLOBAL_SET, uint64(global.index))
 }
 
 func (c *lowerer) captureIndex(index int) int {
@@ -1241,7 +1251,13 @@ func (c *lowerer) typ(name string) types.Type {
 			return cap.typ
 		}
 	}
-	return c.globals[c.symbol(name)].typ
+	if global, ok := c.globals[c.symbol(name)]; ok {
+		return global.typ
+	}
+	// A name the checker resolved always has a binding here. Returning Invalid
+	// rather than dereferencing a missing entry keeps a checker/lowerer
+	// disagreement a compile failure instead of a compiler panic.
+	return types.Invalid
 }
 
 // promoteIntToFloat emits I64_TO_F64_S if the value on the stack is int but
@@ -1435,7 +1451,7 @@ func (c *lowerer) setLoopTarget(target ast.Expr) {
 		}
 		c.emit(instr.DROP)
 	default:
-		c.fail(fmt.Errorf("lower for target %T: unsupported", target))
+		c.unsupported(target.Pos(), "this for-loop target is not supported")
 	}
 }
 

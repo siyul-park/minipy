@@ -1,6 +1,7 @@
 package module
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 
@@ -18,24 +19,47 @@ type Registry struct {
 // RegistryOption configures a Registry.
 type RegistryOption func(*Registry)
 
+// Registry catalogue failures. A caller assembling a registry from
+// configuration branches on these; MustNewRegistry panics with them.
+var (
+	ErrNilModule            = errors.New("module: nil module")
+	ErrDuplicateModule      = errors.New("module: duplicate module")
+	ErrUnregisteredFallback = errors.New("module: fallback module is not registered")
+)
+
 // WithFallback designates the module consulted for unqualified names.
 func WithFallback(name string) RegistryOption {
 	return func(r *Registry) { r.fallback = name }
 }
 
 // NewRegistry builds a Registry from the given modules and options.
-func NewRegistry(modules []Module, opts ...RegistryOption) *Registry {
+// MustNewRegistry is NewRegistry for a catalogue fixed at startup, where an
+// invalid one is a programming error rather than something a caller can handle.
+// It panics on the errors NewRegistry reports.
+func MustNewRegistry(modules []Module, opts ...RegistryOption) *Registry {
+	registry, err := NewRegistry(modules, opts...)
+	if err != nil {
+		panic(err)
+	}
+	return registry
+}
+
+// NewRegistry returns a registry over modules. It reports an invalid catalogue
+// rather than panicking, because a caller can assemble one from configuration:
+// a nil module, two modules claiming one name, or a fallback naming a module
+// that is not registered.
+func NewRegistry(modules []Module, opts ...RegistryOption) (*Registry, error) {
 	r := &Registry{
 		modules: append([]Module(nil), modules...),
 		byName:  make(map[string]Module, len(modules)),
 	}
 	for _, m := range modules {
 		if m == nil {
-			panic("module: nil module")
+			return nil, ErrNilModule
 		}
 		name := m.Name()
 		if _, exists := r.byName[name]; exists {
-			panic(fmt.Sprintf("module: duplicate module %s", name))
+			return nil, fmt.Errorf("%w: %s", ErrDuplicateModule, name)
 		}
 		r.byName[name] = m
 	}
@@ -43,9 +67,9 @@ func NewRegistry(modules []Module, opts ...RegistryOption) *Registry {
 		opt(r)
 	}
 	if r.fallback != "" && !r.Has(r.fallback) {
-		panic(fmt.Sprintf("module: fallback module %s is not registered", r.fallback))
+		return nil, fmt.Errorf("%w: %s", ErrUnregisteredFallback, r.fallback)
 	}
-	return r
+	return r, nil
 }
 
 // Modules returns the registered modules in registration order.
