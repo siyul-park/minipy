@@ -143,6 +143,20 @@ are worked around by picking a different *implementation* of that
 computation, the same way an application author hitting one of these bugs
 would have to.
 
+#### Measurement noise on a shared machine
+
+The corpus programs run for seconds, and on a shared or virtualized machine that
+is long enough for scheduling noise to dominate a single-digit difference. One
+binary measured five times on `strbuild` spread from 7058ms to 9370ms — 33% —
+which is wider than any change described in this document.
+
+Treat a corpus delta under about 15% as unresolved unless the measurement states
+its spread, not just its best time. Best-of-3 is not enough here. The lowering
+changes recorded in `docs/codegen-quality.md` are backed by short, isolated
+microbenchmarks instead, which repeat inside 5%; corpus figures quoted for those
+changes in commit messages were measured the same best-of-3 way and are below
+this document's own resolution.
+
 #### What this corpus does not measure
 
 Nine of the ten programs contain **no `for ... in range(...)` loop at all** —

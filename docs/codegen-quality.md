@@ -281,6 +281,21 @@ Constant folding lives in the optimizer, not the lowerer. `2 + 3 * 4` emits
 three constants and two adds at `-O0`; that is expected, and
 `codegen/testdata/arithmetic/constant_expression.py` exists to keep it visible.
 
+## Measured lowering changes
+
+Each was taken on this repository's own machine as best-of-5 with the spread
+checked; all four repeat inside 5%.
+
+| Change | Shape measured | Before | After |
+|---|---|---:|---:|
+| for-over-range as a counter loop | 9M-iteration `for i in range(n)` | 1302ms | 454ms |
+| bottom-tested loops | 9M-iteration `while` | 403ms | 361ms |
+| literal list index folded | 9M constant subscripts | 1058ms | 713ms |
+| modulo as two remainders | 3M `i % 7` | 513ms | 385ms |
+
+Program size, over the conformance, benchmark and codegen corpora: constant pool
+2232 entries to 1308, host-function constants 1653 to 688.
+
 ## Claiming an improvement
 
 `docs/coding-patterns.md` §11.4 requires benchmark evidence for performance
@@ -288,9 +303,14 @@ structure. In practice:
 
 - A **size** claim is settled by the golden diff: the metrics header moved, and
   the diff shows what moved it.
-- A **speed** claim is settled by `conformance/cmd/pybench` over
-  `conformance/testdata/benchmark/`, reported in `docs/benchmarks.md` with the
-  machine it was measured on. Do not infer speed from instruction count.
+- A **speed** claim is settled by measurement, reported with the machine it was
+  taken on. Do not infer speed from instruction count.
+  `conformance/cmd/pybench` over `conformance/testdata/benchmark/` is the
+  cross-implementation comparison, but its programs run for seconds and on a
+  shared machine that is long enough for scheduling noise to swamp a single-digit
+  difference — one binary spread 33% across five runs of `strbuild`. For a
+  lowering change, prefer a short microbenchmark that isolates the shape and
+  report its spread, not only its best time.
 - Note when a measurement is taken on AMD64: minivm's JIT backend is ARM64-only,
   so an AMD64 number is threaded-interpreter throughput and says nothing about
   what a traced loop would do (minivm `docs/instruction-set.md`, "JIT Status").
