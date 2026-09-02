@@ -1,4 +1,4 @@
-# instructions   91
+# instructions   78
 # functions      0
 # host functions 2
 # constants      2
@@ -70,35 +70,22 @@
 0139:	call
 0140:	ref.null
 0141:	drop
-0142:	global.get 0x0000
+0142:	global.get 0x0001
 0145:	local.set 0x03
-0147:	global.get 0x0001
-0150:	local.set 0x02
-0152:	local.get 0x03
-0154:	local.get 0x02
-0156:	i64.rem_s
-0157:	local.set 0x01
-0159:	local.get 0x01
-0161:	i64.const 0x0000000000000000
-0170:	i64.ne
-0171:	local.get 0x03
-0173:	local.get 0x02
-0175:	i64.xor
-0176:	i64.const 0x0000000000000000
-0185:	i64.lt_s
-0186:	i32.and
-0187:	i32.to_i64_s
-0188:	local.get 0x02
-0190:	i64.mul
-0191:	local.get 0x01
-0193:	i64.add
-0194:	const.get 0x0000
-0197:	call
-0198:	const.get 0x0001
-0201:	call
-0202:	ref.null
-0203:	drop
-0204:	nop
+0147:	global.get 0x0000
+0150:	local.get 0x03
+0152:	i64.rem_s
+0153:	local.get 0x03
+0155:	i64.add
+0156:	local.get 0x03
+0158:	i64.rem_s
+0159:	const.get 0x0000
+0162:	call
+0163:	const.get 0x0001
+0166:	call
+0167:	ref.null
+0168:	drop
+0169:	nop
 
 .locals
 0000:	i64

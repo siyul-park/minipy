@@ -281,6 +281,17 @@ unreachable-by-construction:
   (`identityComparable`, `operator/types.go`) — because minipy has no
   structural/field equality for them.
 
+### Integer floor division and remainder
+
+`%` on two ints lowers as `((left rem divisor) + divisor) rem divisor`, which is
+Python's divisor-signed remainder for every combination of signs: minivm's
+`I64_REM_S` truncates, differing from Python only when the operands' signs
+differ, and adding the divisor once then re-reducing lands on the same value
+there and leaves it alone otherwise. `//` keeps the explicit sign correction —
+computing the truncating quotient, then subtracting one when the remainder is
+non-zero and the signs differ — because there is no equally short identity for
+it.
+
 ### Containers, Strings, and Bytes
 
 List, dict, set, and tuple displays lower to minivm array/map/struct creation

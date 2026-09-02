@@ -191,6 +191,21 @@ The guard that keeps this honest is that folding must not change what traps: an
 index outside `i32` keeps the general path, because truncating it would turn an
 out-of-range access into an in-range one.
 
+### Prefer the identity with fewer dispatches
+
+Python's `%` is a divisor-signed remainder, which minivm's truncating `rem_s`
+only agrees with when the operands share a sign. The correction was written the
+way a native backend would write it — compute the truncating remainder, test
+`r != 0 && (l ^ d) < 0`, add `d * that` — which is about twenty instructions and
+three scratch slots. `((l rem d) + d) rem d` is exact for every combination of
+signs and is seven instructions with one slot.
+
+That trades roughly a dozen interpreter dispatches for one extra hardware
+division, and in a threaded interpreter, where every opcode is a dispatch, that
+is the right way round: a modulo loop went from 522ms to 379ms (27%). The same
+trade would be wrong in native code, where the division dominates — pick the
+identity for the machine that actually runs it.
+
 ### Let specialization do the narrowing
 
 A direct call whose arguments are concrete resolves to a monomorphic clone, and

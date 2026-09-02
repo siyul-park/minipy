@@ -1,60 +1,45 @@
-# instructions   40
+# instructions   27
 # functions      0
 # host functions 1
 # constants      3
 # types          0
 # globals        1
-# locals         3
+# locals         1
 # handlers       0
 
 .code
 0000:	i64.const 0x0000000000000004
 0009:	global.set 0x0000
-0012:	global.get 0x0000
-0015:	local.set 0x00
-0017:	i64.const 0x0000000000000002
-0026:	local.set 0x01
-0028:	local.get 0x00
-0030:	local.get 0x01
-0032:	i64.rem_s
-0033:	local.set 0x02
-0035:	local.get 0x02
-0037:	i64.const 0x0000000000000000
-0046:	i64.ne
-0047:	local.get 0x00
-0049:	local.get 0x01
-0051:	i64.xor
-0052:	i64.const 0x0000000000000000
-0061:	i64.lt_s
-0062:	i32.and
-0063:	i32.to_i64_s
-0064:	local.get 0x01
-0066:	i64.mul
-0067:	local.get 0x02
-0069:	i64.add
-0070:	i64.const 0x0000000000000000
-0079:	i64.eq
-0080:	i32.eqz
-0081:	br_if L0096
-0084:	const.get 0x0000
-0087:	const.get 0x0001
-0090:	call
-0091:	ref.null
-0092:	drop
-0093:	br L0105
-L0096:
-0096:	const.get 0x0002
-0099:	const.get 0x0001
-0102:	call
-0103:	ref.null
-0104:	drop
-L0105:
-0105:	nop
+0012:	i64.const 0x0000000000000002
+0021:	local.set 0x00
+0023:	global.get 0x0000
+0026:	local.get 0x00
+0028:	i64.rem_s
+0029:	local.get 0x00
+0031:	i64.add
+0032:	local.get 0x00
+0034:	i64.rem_s
+0035:	i64.const 0x0000000000000000
+0044:	i64.eq
+0045:	i32.eqz
+0046:	br_if L0061
+0049:	const.get 0x0000
+0052:	const.get 0x0001
+0055:	call
+0056:	ref.null
+0057:	drop
+0058:	br L0070
+L0061:
+0061:	const.get 0x0002
+0064:	const.get 0x0001
+0067:	call
+0068:	ref.null
+0069:	drop
+L0070:
+0070:	nop
 
 .locals
 0000:	i64
-0001:	i64
-0002:	i64
 
 .globals
 0000:	i64

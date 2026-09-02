@@ -514,6 +514,10 @@ func emitMixedArith(e module.Emitter, op token.Type, left, right types.Type) {
 // emitIntDivMod implements Python's floor quotient and divisor-signed remainder
 // from minivm's truncating signed remainder. Operands are evaluated once.
 func emitIntDivMod(e module.Emitter, pushLeft, pushRight func(), quotient bool) {
+	if !quotient {
+		emitIntMod(e, pushLeft, pushRight)
+		return
+	}
 	leftSlot := e.Tmp(vmtypes.TypeI64)
 	rightSlot := e.Tmp(vmtypes.TypeI64)
 	remainderSlot := e.Tmp(vmtypes.TypeI64)
@@ -561,6 +565,30 @@ func emitIntDivMod(e module.Emitter, pushLeft, pushRight func(), quotient bool) 
 	e.Emit(instr.I64_MUL)
 	e.Emit(instr.GLOBAL_GET, uint64(remainderSlot))
 	e.Emit(instr.I64_ADD)
+}
+
+// emitIntMod implements Python's divisor-signed remainder as
+// `((left rem divisor) + divisor) rem divisor`, which is exact for every
+// combination of signs: a truncating remainder differs from Python's only when
+// the operands' signs differ, and adding the divisor once then re-reducing
+// lands on the same value in that case and leaves it alone otherwise.
+//
+// The sign-correction form it replaces needed three scratch slots and about
+// twenty instructions to reach the same answer. This trades roughly a dozen
+// interpreter dispatches for one more hardware division, which is the right way
+// round for a threaded interpreter.
+func emitIntMod(e module.Emitter, pushLeft, pushRight func()) {
+	divisorSlot := e.Tmp(vmtypes.TypeI64)
+	pushRight()
+	e.Emit(instr.GLOBAL_SET, uint64(divisorSlot))
+
+	pushLeft()
+	e.Emit(instr.GLOBAL_GET, uint64(divisorSlot))
+	e.Emit(instr.I64_REM_S)
+	e.Emit(instr.GLOBAL_GET, uint64(divisorSlot))
+	e.Emit(instr.I64_ADD)
+	e.Emit(instr.GLOBAL_GET, uint64(divisorSlot))
+	e.Emit(instr.I64_REM_S)
 }
 
 func simpleBinOp(op token.Type, typ types.Type) instr.Opcode {
