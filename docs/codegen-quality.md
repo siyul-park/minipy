@@ -111,6 +111,13 @@ source (minivm `docs/fusion.md`). The patterns it covers include:
   a scalar index producer feeding `array.get`/`struct.get`;
 - structured-error creation followed by a raise.
 
+The last of these is why a loop puts its test at the bottom. A top-tested loop
+has to branch out on the *negation* of its condition, and with no branch-if-false
+opcode that means `compare; i32.eqz; br_if exit` — the `i32.eqz` sits between the
+compare and the branch and splits a four-instruction fusion into two handlers,
+on the hottest path a program has. Entering the loop with a jump to a bottom test
+lets the compare feed `br_if` directly and drops the back-edge branch as well.
+
 Parking an intermediate in a scratch slot between the producer and the consumer
 breaks the sequence and the fusion with it. Reserve a scratch slot because the
 value is needed twice or must outlive a branch — not to make an emitter read
@@ -149,6 +156,21 @@ host function per call. Across the conformance and benchmark corpora, interning
 the compiler-side factories took host-function constants from 1653 to 1402 and
 the total constant pool from 2232 to 1981; the rest waits on
 `module.Emitter` gaining a way for a native symbol to name its operation.
+
+### Recognize a builtin whose shape beats its general form
+
+`for x in range(n)` is the most common loop in Python, and lowering it through
+the general iterable path allocated a range iterator on the heap and ran the
+`CORO_DONE`/`CORO_VALUE`/`RESUME` protocol once per step. As a counter loop it is
+**2.8x faster** — 1277ms to 453ms over 9M iterations, against 425ms for the
+hand-written `while` equivalent — and interns one fewer host function.
+
+The rule that made it safe to special-case is that the fast path only applies to
+a shape whose semantics it can reproduce exactly: a direct call to the builtin
+`range` (identity against the registry's own symbol, so a shadowing definition is
+untouched) with a literal step (so the comparison's direction is known at compile
+time). Everything else keeps the iterator. A special case that has to guess is
+not worth having.
 
 ### Let specialization do the narrowing
 

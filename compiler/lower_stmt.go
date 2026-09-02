@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/siyul-park/minipy/ast"
+	"github.com/siyul-park/minipy/builtins"
 	"github.com/siyul-park/minipy/hostabi"
 	"github.com/siyul-park/minipy/operator"
 	"github.com/siyul-park/minipy/token"
@@ -1318,6 +1319,9 @@ func (c *lowerer) emitWhile(n *ast.While) {
 // values with the minivm coroutine/iterator protocol. continue → increment or
 // resume, break → past the else block.
 func (c *lowerer) emitFor(n *ast.For) {
+	if c.emitRangeFor(n) {
+		return
+	}
 	if refDynamic(c.types[n.Iter]) {
 		c.emitIteratorFor(n, func() {
 			c.expr(n.Iter)
@@ -1332,6 +1336,119 @@ func (c *lowerer) emitFor(n *ast.For) {
 		return
 	}
 	c.emitIterableFor(n)
+}
+
+// emitRangeFor lowers `for x in range(...)` as a counter loop and reports
+// whether it did. The general path would allocate a range iterator on the heap
+// and drive the coroutine protocol once per step; a counter loop is three times
+// faster on the most common loop in Python (docs/codegen-quality.md).
+//
+// It applies when the iterable is a direct call to the builtin range whose step
+// is a literal, because the step's sign is what decides the loop's comparison
+// and a runtime step would need both. Everything else — a shadowed range, a
+// computed step, a step of zero, whose ValueError the host function owns — falls
+// through to the iterator.
+func (c *lowerer) emitRangeFor(n *ast.For) bool {
+	start, stop, step, ok := c.rangeBounds(n.Iter)
+	if !ok {
+		return false
+	}
+
+	index := c.tmp(vmtypes.TypeI64)
+	limit := c.tmp(vmtypes.TypeI64)
+	c.emitRangeBound(start, 0)
+	c.emit(instr.GLOBAL_SET, uint64(index))
+	c.expr(stop)
+	c.emit(instr.GLOBAL_SET, uint64(limit))
+
+	body := c.label()
+	cont := c.label()
+	test := c.label()
+	elseL := c.label()
+	end := c.label()
+
+	// The test sits at the bottom so the comparison feeds its branch directly:
+	// minivm fuses a load, an operand, a compare and a conditional branch into
+	// one handler, which an inverting I32_EQZ between the last two would split.
+	c.br(test)
+
+	c.bind(body)
+	c.emit(instr.GLOBAL_GET, uint64(index))
+	c.setLoopTarget(n.Target)
+
+	c.loops = append(c.loops, loopLabels{cont: cont, brk: end})
+	c.block(n.Body)
+	c.loops = c.loops[:len(c.loops)-1]
+
+	c.bind(cont)
+	c.emit(instr.GLOBAL_GET, uint64(index))
+	c.emit(instr.I64_CONST, uint64(step))
+	c.emit(instr.I64_ADD)
+	c.emit(instr.GLOBAL_SET, uint64(index))
+
+	c.bind(test)
+	c.emit(instr.GLOBAL_GET, uint64(index))
+	c.emit(instr.GLOBAL_GET, uint64(limit))
+	if step > 0 {
+		c.emit(instr.I64_LT_S)
+	} else {
+		c.emit(instr.I64_GT_S)
+	}
+	c.brIf(body)
+
+	c.bind(elseL)
+	c.block(n.Orelse)
+	c.bind(end)
+	return true
+}
+
+// rangeBounds reports whether iter is a direct call to the builtin range with a
+// literal step, returning its bounds and that step. A nil start means the
+// literal 0.
+func (c *lowerer) rangeBounds(iter ast.Expr) (start, stop ast.Expr, step int64, ok bool) {
+	call, isCall := iter.(*ast.CallExpr)
+	if !isCall || len(call.StarArgs) > 0 || len(call.Keywords) > 0 || c.callRewrite[call] != nil {
+		return nil, nil, 0, false
+	}
+	name, isName := call.Fn.(*ast.Name)
+	if !isName {
+		return nil, nil, 0, false
+	}
+	// Identity against the fallback module's own symbol, resolved through the
+	// same key the general call path uses: a user-defined range, or one bound
+	// from another module, is not this one.
+	resolved, found := c.reg.SymbolByKey(c.symbol(name.Name))
+	builtin, isBuiltin := c.reg.FallbackSymbol("range")
+	if !found || !isBuiltin || resolved != builtin {
+		return nil, nil, 0, false
+	}
+
+	start, stop, stepExpr := builtins.RangeBounds(call.Args)
+	step = 1
+	if stepExpr != nil {
+		literal, isLiteral := stepExpr.(*ast.IntLit)
+		if !isLiteral {
+			return nil, nil, 0, false
+		}
+		// The checker rejects a literal zero step before lowering
+		// (builtins.checkCall). Re-checking here costs a comparison and bounds
+		// the damage of that rule changing to a loop that never ends.
+		if literal.Value == 0 {
+			return nil, nil, 0, false
+		}
+		step = literal.Value
+	}
+	return start, stop, step, true
+}
+
+// emitRangeBound pushes a range bound, or the literal default when the call
+// omitted it.
+func (c *lowerer) emitRangeBound(bound ast.Expr, def uint64) {
+	if bound == nil {
+		c.emit(instr.I64_CONST, def)
+		return
+	}
+	c.expr(bound)
 }
 
 func (c *lowerer) emitIteratorFor(n *ast.For, emitIter func()) {

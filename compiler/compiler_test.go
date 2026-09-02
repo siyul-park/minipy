@@ -2680,3 +2680,93 @@ func TestCompileDynamicBuiltins(t *testing.T) {
 		require.Equal(t, "2\n", run(t, src))
 	})
 }
+
+// TestCompileRangeFor pins the semantics of the counter loop `for x in range(...)`
+// lowers to. The general iterator path stays correct for every shape the fast
+// path declines, so each case here also states which path it exercises.
+func TestCompileRangeFor(t *testing.T) {
+	t.Run("counts up over one argument", func(t *testing.T) {
+		require.Equal(t, "0\n1\n2\n", run(t, "for i in range(3):\n    print(str(i))\n"))
+	})
+
+	t.Run("counts up over start and stop", func(t *testing.T) {
+		require.Equal(t, "2\n3\n", run(t, "for i in range(2, 4):\n    print(str(i))\n"))
+	})
+
+	t.Run("counts up by a literal step", func(t *testing.T) {
+		require.Equal(t, "0\n3\n6\n", run(t, "for i in range(0, 8, 3):\n    print(str(i))\n"))
+	})
+
+	t.Run("counts down by a negative literal step", func(t *testing.T) {
+		require.Equal(t, "3\n2\n1\n", run(t, "for i in range(3, 0, -1):\n    print(str(i))\n"))
+	})
+
+	t.Run("an empty range runs the body no times", func(t *testing.T) {
+		require.Equal(t, "done\n", run(t, "for i in range(0):\n    print(\"body\")\nprint(\"done\")\n"))
+		require.Equal(t, "done\n", run(t, "for i in range(5, 0):\n    print(\"body\")\nprint(\"done\")\n"))
+		require.Equal(t, "done\n", run(t, "for i in range(0, 5, -1):\n    print(\"body\")\nprint(\"done\")\n"))
+	})
+
+	t.Run("the target keeps its last value after the loop", func(t *testing.T) {
+		require.Equal(t, "2\n", run(t, "last: int = -1\nfor last in range(3):\n    pass\nprint(str(last))\n"))
+	})
+
+	t.Run("break leaves the loop and skips its else", func(t *testing.T) {
+		src := "for i in range(5):\n    if i == 2:\n        break\n    print(str(i))\nelse:\n    print(\"else\")\n"
+		require.Equal(t, "0\n1\n", run(t, src))
+	})
+
+	t.Run("continue advances to the next step", func(t *testing.T) {
+		src := "for i in range(4):\n    if i == 1:\n        continue\n    print(str(i))\n"
+		require.Equal(t, "0\n2\n3\n", run(t, src))
+	})
+
+	t.Run("else runs when the loop is not broken out of", func(t *testing.T) {
+		src := "for i in range(2):\n    print(str(i))\nelse:\n    print(\"else\")\n"
+		require.Equal(t, "0\n1\nelse\n", run(t, src))
+	})
+
+	t.Run("bounds are evaluated once, not per step", func(t *testing.T) {
+		src := "calls: int = 0\n" +
+			"def stop() -> int:\n" +
+			"    global calls\n" +
+			"    calls = calls + 1\n" +
+			"    return 3\n" +
+			"for i in range(stop()):\n" +
+			"    pass\n" +
+			"print(str(calls))\n"
+		require.Equal(t, "1\n", run(t, src))
+	})
+
+	t.Run("a computed step falls back to the iterator", func(t *testing.T) {
+		src := "step: int = 2\nfor i in range(0, 5, step):\n    print(str(i))\n"
+		require.Equal(t, "0\n2\n4\n", run(t, src))
+	})
+
+	t.Run("a shadowing range is called, not the builtin", func(t *testing.T) {
+		src := "def range(n: int) -> list[int]:\n" +
+			"    return [n, n]\n" +
+			"for i in range(7):\n" +
+			"    print(str(i))\n"
+		require.Equal(t, "7\n7\n", run(t, src))
+	})
+
+	t.Run("a range value bound to a name still iterates", func(t *testing.T) {
+		src := "r = range(3)\nfor i in r:\n    print(str(i))\n"
+		require.Equal(t, "0\n1\n2\n", run(t, src))
+	})
+
+	t.Run("nested range loops keep separate counters", func(t *testing.T) {
+		src := "for i in range(2):\n    for j in range(2):\n        print(str(i) + str(j))\n"
+		require.Equal(t, "00\n01\n10\n11\n", run(t, src))
+	})
+
+	t.Run("the fast path drops the range iterator host function", func(t *testing.T) {
+		prog, err := Compile(strings.NewReader("for i in range(3):\n    pass\n"), WithOutput(io.Discard))
+		require.NoError(t, err)
+		for _, host := range hostConstants(prog.Constants) {
+			require.NotEqual(t, "func(i64, i64, i64) any", host.Typ.String(),
+				"a counter loop must not intern the range iterator constructor")
+		}
+	})
+}

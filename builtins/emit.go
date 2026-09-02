@@ -170,21 +170,36 @@ func emitZip(e module.Emitter, args []ast.Expr) {
 }
 
 func emitRange(e module.Emitter, args []ast.Expr) {
+	start, stop, step := RangeBounds(args)
+	emitBound(e, start, 0)
+	e.Expr(stop)
+	emitBound(e, step, 1)
+	e.CallHost(e.Host(Name, "range"))
+}
+
+// RangeBounds splits a range call's arguments into its start, stop and step,
+// with a nil start or step standing for the default the 1- and 2-argument forms
+// omit. It is exported because a caller lowering `for x in range(...)` needs the
+// same split to emit a counter loop instead of an iterator, and the arity rule
+// belongs here rather than duplicated there.
+func RangeBounds(args []ast.Expr) (start, stop, step ast.Expr) {
 	switch len(args) {
 	case 1:
-		e.Emit(instr.I64_CONST, 0)
-		e.Expr(args[0])
-		e.Emit(instr.I64_CONST, 1)
+		return nil, args[0], nil
 	case 2:
-		e.Expr(args[0])
-		e.Expr(args[1])
-		e.Emit(instr.I64_CONST, 1)
+		return args[0], args[1], nil
 	default:
-		e.Expr(args[0])
-		e.Expr(args[1])
-		e.Expr(args[2])
+		return args[0], args[1], args[2]
 	}
-	e.CallHost(e.Host(Name, "range"))
+}
+
+// emitBound pushes a range bound, or the literal default when it was omitted.
+func emitBound(e module.Emitter, bound ast.Expr, def uint64) {
+	if bound == nil {
+		e.Emit(instr.I64_CONST, def)
+		return
+	}
+	e.Expr(bound)
 }
 
 func emitIter(e module.Emitter, args []ast.Expr) {

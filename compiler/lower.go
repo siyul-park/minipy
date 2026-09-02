@@ -18,8 +18,8 @@ import (
 )
 
 // loopLabels are the branch targets for the loop currently being lowered: cont
-// for `continue` (re-test for while, the increment step for range-for) and brk
-// for `break` (past any else block).
+// for `continue` (the re-test for while, the increment step for a counter loop)
+// and brk for `break` (past any else block).
 type loopLabels struct {
 	cont instr.Label
 	brk  instr.Label

@@ -175,6 +175,20 @@ are not emitted.
 `while` and `for` maintain loop-label stacks for `break` and `continue`. Loop
 `else` blocks are emitted only along the non-break path.
 
+`for x in range(...)` lowers to a **counter loop** rather than an iterator when
+the iterable is a direct call to the builtin `range` and its step is a literal.
+Start and stop are evaluated once into frame locals, the step is an immediate,
+and the loop tests `i < stop` (or `i > stop` for a negative step) — the step's
+sign is what decides the comparison, which is why a computed step keeps the
+iterator instead. Nothing is allocated and no coroutine resume runs per step.
+`break`, `continue`, the `else` block, and the target's value after the loop
+behave exactly as on the iterator path; `continue` lands on the increment.
+
+The test sits at the **bottom** of the loop, entered by a jump, so the
+comparison feeds its conditional branch directly. minivm fuses a load, an
+operand, a compare and a branch into one handler; a top test has to invert the
+comparison with `I32_EQZ`, which splits that into two (`docs/codegen-quality.md`).
+
 `assert` lowers to a guard that, on a false test, constructs and throws an
 `AssertionError` instance through the same `emitExceptionInstance` path
 `raise AssertionError(...)` uses (see "Exception instance construction"
