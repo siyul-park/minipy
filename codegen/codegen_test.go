@@ -36,6 +36,12 @@ var update = flag.Bool("update", false, "rewrite .masm goldens from the current 
 
 // TestCodegen pins the program minipy emits for every corpus case.
 //
+// Cases compile at O0 rather than at the default level, because these goldens
+// are about what the lowerer emits. Running them through the optimizer would mix
+// a lowering change with a minivm pass's behavior in one diff, and would move
+// every golden whenever the default level changes.
+// TestCodegenVerifiesAtEveryOptimizationLevel covers the other levels.
+//
 // A golden alone cannot tell a better program from a broken one, so each case
 // carries two more assertions that do: the compiler verifies every program it
 // returns (compiler.Compile calls program.Verify), and the case is executed
@@ -52,7 +58,8 @@ func TestCodegen(t *testing.T) {
 			require.NoError(t, err)
 
 			var stdout bytes.Buffer
-			prog, err := compiler.Compile(bytes.NewReader(source), compiler.WithOutput(&stdout))
+			prog, err := compiler.Compile(bytes.NewReader(source),
+				compiler.WithOutput(&stdout), compiler.WithOptimizationLevel(optimize.O0))
 			require.NoError(t, err)
 
 			vm := interp.New(prog)
@@ -91,15 +98,34 @@ func TestCodegenIsDeterministic(t *testing.T) {
 	}
 }
 
+// optimizerDefects are corpus cases a minivm optimizer pass turns into a program
+// the verifier rejects, with the level each starts failing at.
+//
+// They are asserted to fail rather than skipped, so the day the pass is fixed
+// upstream this test goes red and the entry is deleted along with the defect.
+// Leaving one out would let the failure return silently; skipping one would let
+// the fix pass unnoticed.
+var optimizerDefects = map[string]struct {
+	from   int
+	reason string
+}{
+	"control/iterator_next": {
+		from: 2,
+		reason: "minivm transform.NewDCEPass removes the `unreachable` that terminates the " +
+			"exhausted-iterator block, so the block falls through into the continuation with a " +
+			"shallower stack: verify: call: stack underflow",
+	},
+}
+
 // TestCodegenVerifiesAtEveryOptimizationLevel pins that the optimizer leaves a
 // program the verifier still accepts, for every corpus case at every level.
-// compiler.Compile verifies what it returns, so a level that broke a program
-// would surface as a compile error here.
+// compiler.Compile verifies what it returns, so a level that breaks a program
+// surfaces as a compile error here.
 func TestCodegenVerifiesAtEveryOptimizationLevel(t *testing.T) {
 	cases, err := Load("testdata")
 	require.NoError(t, err)
 
-	for _, level := range levels {
+	for index, level := range levels {
 		t.Run(level.name, func(t *testing.T) {
 			for _, c := range cases {
 				t.Run(c.Name, func(t *testing.T) {
@@ -108,6 +134,11 @@ func TestCodegenVerifiesAtEveryOptimizationLevel(t *testing.T) {
 
 					prog, err := compiler.Compile(bytes.NewReader(source),
 						compiler.WithOutput(&bytes.Buffer{}), compiler.WithOptimizationLevel(level.level))
+
+					if defect, known := optimizerDefects[c.Name]; known && index >= defect.from {
+						require.Errorf(t, err, "known defect no longer reproduces, delete its entry: %s", defect.reason)
+						return
+					}
 					require.NoError(t, err)
 					require.NoError(t, program.Verify(prog))
 				})
@@ -118,7 +149,8 @@ func TestCodegenVerifiesAtEveryOptimizationLevel(t *testing.T) {
 
 func compileListing(t *testing.T, source string) string {
 	t.Helper()
-	prog, err := compiler.Compile(strings.NewReader(source), compiler.WithOutput(&bytes.Buffer{}))
+	prog, err := compiler.Compile(strings.NewReader(source),
+		compiler.WithOutput(&bytes.Buffer{}), compiler.WithOptimizationLevel(optimize.O0))
 	require.NoError(t, err)
 	return Format(prog)
 }

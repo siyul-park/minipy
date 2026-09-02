@@ -179,6 +179,48 @@ doing so produced an invalid handler range on every `try` at `-O2` and above
 Every level is a behavior contract: the conformance corpus runs at all four, and
 the codegen corpus must still verify at all four.
 
+### Why the default is O0
+
+Measured over the 143 programs of the conformance and benchmark corpora
+(entry-code bytes, pool sizes, and the time to compile all of them once):
+
+| Level | code bytes | constants | types | compile |
+|---|---:|---:|---:|---:|
+| O0 | 52796 | 2000 | 161 | 74ms |
+| O1 | 52796 | 2014 | 161 | 93ms |
+| O2 | 50630 | 2014 | 161 | 100ms |
+| O3 | 50630 | 2014 | 161 | 129ms |
+
+Run time is unchanged: best-of-3 wall clock on `binarytrees` and `matmul` moves
+by 2-5% in both directions across the four levels, which is noise.
+
+So O1 is worse than O0 on every axis measured — no smaller code, a slightly
+larger constant pool from folding, and a slower compile — and O3 buys nothing
+over O2 while costing the most to compile. Only O2's 4.1% code-size reduction is
+real, and it comes from a pass with an open defect (below).
+
+### The DCE defect
+
+`transform.NewDCEPass`, which O2 adds, removes the `unreachable` that terminates
+an exhausted-iterator block. `unreachable` is a block terminator: without it the
+block falls through into the continuation with a shallower stack, and the
+program stops verifying —
+
+```
+verify: slot 0, ip 79, call: stack underflow
+```
+
+`codegen/testdata/control/iterator_next.py` is the smallest reproducer
+(`next(iter(xs))`), and running each pass alone over its `-O0` program isolates
+DCE as the only one that breaks it. `codegen/codegen_test.go` pins the failure in
+`optimizerDefects` rather than skipping it, so the upstream fix turns that test
+red and the entry goes away with the defect.
+
+Until then O2 cannot be the default, because it does not compile every valid
+program. Raise the default when DCE is fixed; the size win is real and the
+correctness net (the conformance corpus at four levels, plus the codegen
+corpus's verify pass) is already in place to check it.
+
 Constant folding lives in the optimizer, not the lowerer. `2 + 3 * 4` emits
 three constants and two adds at `-O0`; that is expected, and
 `codegen/testdata/arithmetic/constant_expression.py` exists to keep it visible.

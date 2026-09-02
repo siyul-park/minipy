@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/siyul-park/minipy/compiler"
+	"github.com/siyul-park/minivm/optimize"
 	"github.com/siyul-park/minivm/program"
 	"github.com/stretchr/testify/require"
 )
@@ -57,7 +58,8 @@ func TestMeasure(t *testing.T) {
 
 func compile(t *testing.T, source string) *program.Program {
 	t.Helper()
-	prog, err := compiler.Compile(strings.NewReader(source), compiler.WithOutput(io.Discard))
+	prog, err := compiler.Compile(strings.NewReader(source),
+		compiler.WithOutput(io.Discard), compiler.WithOptimizationLevel(optimize.O0))
 	require.NoError(t, err)
 	return prog
 }

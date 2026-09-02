@@ -1,0 +1,91 @@
+# instructions   60
+# functions      0
+# host functions 5
+# constants      5
+# types          1
+# globals        2
+# locals         1
+# handlers       0
+
+.code
+0000:	i32.const 0x00000002
+0005:	array.new_default 0x0000
+0008:	dup
+0009:	i32.const 0x00000000
+0014:	i64.const 0x0000000000000001
+0023:	array.set
+0024:	dup
+0025:	i32.const 0x00000001
+0030:	i64.const 0x0000000000000002
+0039:	array.set
+0040:	global.set 0x0000
+0043:	global.get 0x0000
+0046:	const.get 0x0000
+0049:	call
+0050:	global.set 0x0001
+0053:	global.get 0x0001
+0056:	dup
+0057:	coro.done
+0058:	br_if L0073
+0061:	dup
+0062:	coro.value
+0063:	local.set 0x00
+0065:	ref.null
+0066:	resume
+0067:	drop
+0068:	local.get 0x00
+0070:	br L0077
+L0073:
+0073:	ref.null
+0074:	resume
+0075:	drop
+0076:	unreachable
+L0077:
+0077:	const.get 0x0001
+0080:	call
+0081:	const.get 0x0002
+0084:	call
+0085:	ref.null
+0086:	drop
+0087:	global.get 0x0001
+0090:	dup
+0091:	coro.done
+0092:	br_if L0107
+0095:	dup
+0096:	coro.value
+0097:	local.set 0x00
+0099:	ref.null
+0100:	resume
+0101:	drop
+0102:	local.get 0x00
+0104:	br L0111
+L0107:
+0107:	ref.null
+0108:	resume
+0109:	drop
+0110:	unreachable
+L0111:
+0111:	const.get 0x0003
+0114:	call
+0115:	const.get 0x0004
+0118:	call
+0119:	ref.null
+0120:	drop
+0121:	nop
+
+.locals
+0000:	any
+
+.globals
+0000:	any
+0001:	any
+
+.constants
+0000:	<host> func([]i64) any
+0001:	<host> func(i64) string
+0002:	<host> func(string)
+0003:	<host> func(i64) string
+0004:	<host> func(string)
+
+.types
+0000:	[]i64

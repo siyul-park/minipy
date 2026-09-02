@@ -53,7 +53,8 @@ func WithOutput(writer io.Writer) Option {
 }
 
 // WithOptimizationLevel selects the minivm optimizer pipeline used after
-// lowering. It defaults to optimize.O0.
+// lowering. It defaults to optimize.O0; see docs/codegen-quality.md,
+// "Optimizer levels", for why the default is not higher.
 func WithOptimizationLevel(level optimize.Level) Option {
 	return func(config *config) { config.level = level }
 }

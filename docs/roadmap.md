@@ -151,6 +151,13 @@ These are implemented with deliberate limits, not undocumented bugs.
 
 ### P0 correctness/consistency
 
+- Upstream: minivm's `transform.NewDCEPass` removes the `unreachable` that
+  terminates an exhausted-iterator block, so a program using `next(iter(xs))`
+  stops verifying at `-O2` and above (`verify: call: stack underflow`). This is
+  why the default optimization level is still `O0`; see
+  `docs/codegen-quality.md`, "The DCE defect", and the pinned reproducer in
+  `codegen/testdata/control/iterator_next.py`.
+
 - Audit chained assignment behavior and either implement true multi-target
   semantics or reject it explicitly before lowering.
 - Keep docs, parser comments, and token comments aligned with the current grammar
