@@ -143,6 +143,20 @@ are worked around by picking a different *implementation* of that
 computation, the same way an application author hitting one of these bugs
 would have to.
 
+#### What this corpus does not measure
+
+Nine of the ten programs contain **no `for ... in range(...)` loop at all** —
+they drive their inner loops with `while`. That is not how idiomatic Python is
+written, and it means the corpus barely exercises the language's most common
+loop. When for-over-range was changed from an allocated iterator to a counter
+loop, a range-heavy microbenchmark went from 1277ms to 453ms (2.8x) while this
+corpus moved 0-11%, because there was almost nothing here to speed up.
+
+Read a result from this corpus as a statement about `while`-driven numeric and
+string code, not about Python programs generally. Adding range-driven cases
+would make it more representative; it would also invalidate the results table
+below, so it belongs with the next end-to-end re-measurement.
+
 #### Re-verification, and the coverage that replaced the prose
 
 Findings 1, 2, 3 and 5 were re-run against `HEAD` after the minivm bump to

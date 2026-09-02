@@ -2770,3 +2770,67 @@ func TestCompileRangeFor(t *testing.T) {
 		}
 	})
 }
+
+// TestCompileLoopRotation pins the behavior of the bottom-tested loop shape.
+// Moving a loop's test below its body changes which instruction the loop is
+// entered at and where `continue` lands, so every path through a loop is worth
+// stating: the zero-iteration case, the else block, and both jumps.
+func TestCompileLoopRotation(t *testing.T) {
+	for _, loop := range []struct {
+		kind   string
+		header string
+	}{
+		{"while", "i: int = 0\nwhile i < 4:\n"},
+		{"for over a list", "i: int = 0\nfor i in [0, 1, 2, 3]:\n"},
+	} {
+		t.Run(loop.kind, func(t *testing.T) {
+			t.Run("runs the body once per step", func(t *testing.T) {
+				src := loop.header + "    print(str(i))\n"
+				if loop.kind == "while" {
+					src = "i: int = 0\nwhile i < 4:\n    print(str(i))\n    i += 1\n"
+				}
+				require.Equal(t, "0\n1\n2\n3\n", run(t, src))
+			})
+
+			t.Run("skips the body when the test fails first", func(t *testing.T) {
+				src := "i: int = 9\nwhile i < 4:\n    print(\"body\")\nprint(\"after\")\n"
+				if loop.kind != "while" {
+					src = "xs: list[int] = []\nfor i in xs:\n    print(\"body\")\nprint(\"after\")\n"
+				}
+				require.Equal(t, "after\n", run(t, src))
+			})
+
+			t.Run("runs else only when not broken out of", func(t *testing.T) {
+				ran := "i: int = 0\nwhile i < 2:\n    i += 1\nelse:\n    print(\"else\")\n"
+				broke := "i: int = 0\nwhile i < 2:\n    break\nelse:\n    print(\"else\")\nprint(\"after\")\n"
+				if loop.kind != "while" {
+					ran = "for i in [0, 1]:\n    pass\nelse:\n    print(\"else\")\n"
+					broke = "for i in [0, 1]:\n    break\nelse:\n    print(\"else\")\nprint(\"after\")\n"
+				}
+				require.Equal(t, "else\n", run(t, ran))
+				require.Equal(t, "after\n", run(t, broke))
+			})
+
+			t.Run("continue re-tests rather than leaving the loop", func(t *testing.T) {
+				src := "i: int = 0\ntotal: int = 0\nwhile i < 4:\n    i += 1\n    if i == 2:\n        continue\n    total += i\nprint(str(total))\n"
+				if loop.kind != "while" {
+					src = "total: int = 0\nfor i in [1, 2, 3, 4]:\n    if i == 2:\n        continue\n    total += i\nprint(str(total))\n"
+				}
+				require.Equal(t, "8\n", run(t, src))
+			})
+		})
+	}
+
+	t.Run("a list grown by its own body is iterated to the new length", func(t *testing.T) {
+		// The bottom test re-reads the length every step rather than hoisting
+		// it, which is what makes this terminate at 4 elements and not 2.
+		src := "xs: list[int] = [1, 2]\n" +
+			"seen: int = 0\n" +
+			"for x in xs:\n" +
+			"    seen += 1\n" +
+			"    if seen < 3:\n" +
+			"        xs.append(x)\n" +
+			"print(str(seen) + \" \" + str(len(xs)))\n"
+		require.Equal(t, "4 4\n", run(t, src))
+	})
+}

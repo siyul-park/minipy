@@ -1295,21 +1295,30 @@ func (c *lowerer) emitIf(n *ast.If) {
 
 // emitWhile lowers `while`: re-test at the top, run the else block on natural
 // exit (not after a break). continue → top, break → past the else block.
+// emitWhile lowers a while loop with its test at the bottom, entered by a jump.
+// The test then branches back into the body on the condition itself, so a
+// comparison feeds its branch directly — minivm fuses a load, an operand, a
+// compare and a conditional branch into one handler, and there is no
+// branch-if-false opcode to invert with, so a top test would need an I32_EQZ
+// between the compare and the branch and split that fusion in two. The bottom
+// test also drops the back-edge branch the body used to end with.
 func (c *lowerer) emitWhile(n *ast.While) {
-	top := c.label()
+	body := c.label()
+	test := c.label()
 	elseL := c.label()
 	end := c.label()
 
-	c.bind(top)
-	c.expr(n.Cond)
-	c.emit(instr.I32_EQZ)
-	c.brIf(elseL)
+	c.br(test)
 
-	c.loops = append(c.loops, loopLabels{cont: top, brk: end})
+	c.bind(body)
+	c.loops = append(c.loops, loopLabels{cont: test, brk: end})
 	c.block(n.Body)
 	c.loops = c.loops[:len(c.loops)-1]
 
-	c.br(top)
+	c.bind(test)
+	c.expr(n.Cond)
+	c.brIf(body)
+
 	c.bind(elseL)
 	c.block(n.Orelse)
 	c.bind(end)
@@ -1515,20 +1524,18 @@ func (c *lowerer) emitIterableFor(n *ast.For) {
 	c.emit(instr.I64_CONST, 0)
 	c.emit(instr.GLOBAL_SET, uint64(idxSlot))
 
-	top := c.label()
+	body := c.label()
 	cont := c.label()
+	test := c.label()
 	elseL := c.label()
 	end := c.label()
 
-	c.bind(top)
-	c.emit(instr.GLOBAL_GET, uint64(idxSlot))
-	c.emit(instr.GLOBAL_GET, uint64(iterSlot))
-	c.emit(instr.ARRAY_LEN)
-	c.emit(instr.I32_TO_I64_S)
-	c.emit(instr.I64_LT_S)
-	c.emit(instr.I32_EQZ)
-	c.brIf(elseL)
+	// Bottom test, for the reason emitWhile gives. The length is re-read on
+	// every step rather than hoisted, because a body that appends to the
+	// receiver must see the longer list, as it does in CPython.
+	c.br(test)
 
+	c.bind(body)
 	c.emit(instr.GLOBAL_GET, uint64(iterSlot))
 	c.emit(instr.GLOBAL_GET, uint64(idxSlot))
 	c.emit(instr.I64_TO_I32)
@@ -1547,7 +1554,14 @@ func (c *lowerer) emitIterableFor(n *ast.For) {
 	c.emit(instr.I64_CONST, 1)
 	c.emit(instr.I64_ADD)
 	c.emit(instr.GLOBAL_SET, uint64(idxSlot))
-	c.br(top)
+
+	c.bind(test)
+	c.emit(instr.GLOBAL_GET, uint64(idxSlot))
+	c.emit(instr.GLOBAL_GET, uint64(iterSlot))
+	c.emit(instr.ARRAY_LEN)
+	c.emit(instr.I32_TO_I64_S)
+	c.emit(instr.I64_LT_S)
+	c.brIf(body)
 
 	c.bind(elseL)
 	c.block(n.Orelse)
