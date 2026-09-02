@@ -202,55 +202,82 @@ func TestMapEntries(t *testing.T) {
 	})
 }
 
-func TestMapKeyOf(t *testing.T) {
+// TestMapKeyIdentity pins how a generic map indexes its keys, through the public
+// map operations rather than the key builder behind them. The rules mirror the
+// interpreter's own, so a key published by MAP_SET and a key published by a host
+// function reach the same entry.
+func TestMapKeyIdentity(t *testing.T) {
 	vm := interp.New(program.New(nil))
 	defer vm.Close()
 
-	t.Run("indexes i1 through its i32 form", func(t *testing.T) {
-		key, err := MapKeyOf(vm, vmtypes.BoxI1(true))
+	// A key type that is a reference but not a string is what makes minivm pick
+	// the generic representation, the one that indexes by MapKey.
+	generic := func(t *testing.T) vmtypes.Value {
+		t.Helper()
+		m := newMap(vmtypes.TypeAny, vmtypes.TypeI64)
+		require.IsType(t, &vmtypes.Map{}, m, "this key type must select the generic representation")
+		return m
+	}
+
+	sameEntry := func(t *testing.T, first, second vmtypes.Boxed) {
+		t.Helper()
+		m := generic(t)
+		_, _, err := MapSet(vm, m, first, vmtypes.BoxI64(1))
 		require.NoError(t, err)
-		require.Equal(t, vmtypes.KindI32, key.Kind)
+		_, replaced, err := MapSet(vm, m, second, vmtypes.BoxI64(2))
+		require.NoError(t, err)
+		require.True(t, replaced, "the second key must reach the entry the first made")
+
+		length, err := MapLen(m)
+		require.NoError(t, err)
+		require.Equal(t, 1, length)
+	}
+
+	t.Run("i1 indexes through its i32 form", func(t *testing.T) {
+		sameEntry(t, vmtypes.BoxI1(true), vmtypes.BoxI32(1))
 	})
 
-	t.Run("folds negative zero into zero", func(t *testing.T) {
-		negative, err := MapKeyOf(vm, vmtypes.BoxF64(negZero()))
-		require.NoError(t, err)
-		positive, err := MapKeyOf(vm, vmtypes.BoxF64(0))
-		require.NoError(t, err)
-		require.Equal(t, positive, negative)
+	t.Run("negative zero indexes as zero", func(t *testing.T) {
+		sameEntry(t, vmtypes.BoxF64(negZero()), vmtypes.BoxF64(0))
 	})
 
-	t.Run("indexes a string by content", func(t *testing.T) {
+	t.Run("a string indexes by content", func(t *testing.T) {
 		first, err := AllocString(vm, "k")
 		require.NoError(t, err)
 		second, err := AllocString(vm, "k")
 		require.NoError(t, err)
+		require.NotEqual(t, first[0], second[0], "the two strings must be distinct heap values")
 
-		left, err := MapKeyOf(vm, first[0])
-		require.NoError(t, err)
-		right, err := MapKeyOf(vm, second[0])
-		require.NoError(t, err)
-		require.Equal(t, vmtypes.KindText, left.Kind)
-		require.Equal(t, left, right)
+		sameEntry(t, first[0], second[0])
 	})
 
-	t.Run("indexes a heap-spilled int by its value", func(t *testing.T) {
-		spilled, err := BoxInt(vm, 1<<60)
+	t.Run("a heap-spilled int indexes by its value", func(t *testing.T) {
+		first, err := BoxInt(vm, 1<<60)
 		require.NoError(t, err)
-		require.Equal(t, vmtypes.KindRef, spilled.Kind())
+		second, err := BoxInt(vm, 1<<60)
+		require.NoError(t, err)
+		require.Equal(t, vmtypes.KindRef, first.Kind())
+		require.NotEqual(t, first, second, "the two ints must be distinct heap values")
 
-		key, err := MapKeyOf(vm, spilled)
-		require.NoError(t, err)
-		require.Equal(t, vmtypes.MapKey{Kind: vmtypes.KindI64, Bits: 1 << 60}, key)
+		sameEntry(t, first, second)
 	})
 
-	t.Run("indexes any other reference by heap address", func(t *testing.T) {
-		addr, err := vm.Alloc(newMap(vmtypes.TypeI64, vmtypes.TypeI64))
+	t.Run("any other reference indexes by heap address", func(t *testing.T) {
+		m := generic(t)
+		first, err := vm.Alloc(newMap(vmtypes.TypeI64, vmtypes.TypeI64))
+		require.NoError(t, err)
+		second, err := vm.Alloc(newMap(vmtypes.TypeI64, vmtypes.TypeI64))
 		require.NoError(t, err)
 
-		key, err := MapKeyOf(vm, vmtypes.BoxRef(addr))
+		_, _, err = MapSet(vm, m, vmtypes.BoxRef(first), vmtypes.BoxI64(1))
 		require.NoError(t, err)
-		require.Equal(t, vmtypes.MapKey{Kind: vmtypes.KindRef, Bits: uint64(addr)}, key)
+		_, replaced, err := MapSet(vm, m, vmtypes.BoxRef(second), vmtypes.BoxI64(2))
+		require.NoError(t, err)
+		require.False(t, replaced, "two distinct references are two entries")
+
+		length, err := MapLen(m)
+		require.NoError(t, err)
+		require.Equal(t, 2, length)
 	})
 }
 

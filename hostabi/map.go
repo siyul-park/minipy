@@ -83,7 +83,7 @@ func MapGet(i *interp.Interpreter, m vmtypes.Value, key vmtypes.Boxed) (vmtypes.
 		value, ok := m.Get(text)
 		return value, ok, nil
 	case *vmtypes.Map:
-		mapKey, err := MapKeyOf(i, key)
+		mapKey, err := mapKeyOf(i, key)
 		if err != nil {
 			return 0, false, err
 		}
@@ -129,7 +129,7 @@ func MapSet(i *interp.Interpreter, m vmtypes.Value, key, value vmtypes.Boxed) (v
 		old, ok := m.Set(text, value)
 		return old, ok, nil
 	case *vmtypes.Map:
-		mapKey, err := MapKeyOf(i, key)
+		mapKey, err := mapKeyOf(i, key)
 		if err != nil {
 			return 0, false, err
 		}
@@ -174,7 +174,7 @@ func MapDelete(i *interp.Interpreter, m vmtypes.Value, key vmtypes.Boxed) (vmtyp
 		value, ok := m.Delete(text)
 		return value, ok, nil
 	case *vmtypes.Map:
-		mapKey, err := MapKeyOf(i, key)
+		mapKey, err := mapKeyOf(i, key)
 		if err != nil {
 			return 0, false, err
 		}
@@ -283,13 +283,13 @@ func MapEntries(i *interp.Interpreter, m vmtypes.Value) ([]vmtypes.Boxed, []vmty
 	return keys, values, nil
 }
 
-// MapKeyOf builds the index a generic Map stores an entry under, mirroring the
+// mapKeyOf builds the index a generic Map stores an entry under, mirroring the
 // interpreter's own rule so a key published by MAP_SET and a key published by a
 // host function reach the same entry. A scalar keys by value, i1 through its i32
 // representation and a heap-spilled int through its numeric value; a string keys
 // by content under KindText, so equal strings index one entry however each was
 // published; every other reference keys by heap address.
-func MapKeyOf(i *interp.Interpreter, key vmtypes.Boxed) (vmtypes.MapKey, error) {
+func mapKeyOf(i *interp.Interpreter, key vmtypes.Boxed) (vmtypes.MapKey, error) {
 	switch key.Kind() {
 	case vmtypes.KindI1, vmtypes.KindI8, vmtypes.KindI32:
 		return vmtypes.MapKey{Kind: vmtypes.KindI32, Bits: uint64(uint32(key.I32()))}, nil

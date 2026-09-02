@@ -415,15 +415,15 @@ text — while `dict[Any, Any]` (the dynamic namespace `compile`/`eval`/`exec`
 use) is a generic `Map`. Source-level behavior is the same either way: equal
 strings are one key.
 
-`hostabi` owns that dispatch. `MapLen`, `MapGet`, `MapSet`, `MapDelete`,
-`MapClear`, `MapEntries`, and `MapKeyOf` are the only places minipy switches on
+`hostabi` owns that dispatch. `LoadMap`, `MapLen`, `MapGet`, `MapSet`,
+`MapDelete`, `MapClear`, and `MapEntries` are the only places minipy switches on
 a map's representation; a host function in `builtins`, `operator`, or
-`compiler/runtime.go` calls them and never names a `TypedMap` arm. `MapKeyOf`
-mirrors the interpreter's own rule exactly — `i1`/`i8` index through their `i32`
-form, a heap-spilled `int` indexes by its numeric value, `-0.0` folds into
-`0.0`, a string indexes by content under `KindText`, and every other reference
-indexes by heap address — so a key published by `MAP_SET` and a key published by
-a host function reach the same entry.
+`compiler/runtime.go` calls them and never names a `TypedMap` arm. Their key
+handling mirrors the interpreter's own rule exactly — `i1`/`i8` index through
+their `i32` form, a heap-spilled `int` indexes by its numeric value, `-0.0`
+folds into `0.0`, a string indexes by content under `KindText`, and every other
+reference indexes by heap address — so a key published by `MAP_SET` and a key
+published by a host function reach the same entry.
 
 `MapEntries` is the one operation with a mixed ownership contract, because a
 content-keyed map has no boxed key to borrow: the **keys it returns are owned by
