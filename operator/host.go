@@ -274,25 +274,30 @@ func containerCompare(t types.Type) *interp.HostFunction {
 func setBinary(op token.Type, typ types.Type) *interp.HostFunction {
 	return interp.NewHostFunction(
 		&vmtypes.FunctionType{Params: []vmtypes.Type{typ.VM(), typ.VM()}, Returns: []vmtypes.Type{typ.VM()}},
-		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
-			leftVal, err := loadMap(i, params[0])
+		func(i *interp.Interpreter, params []vmtypes.Boxed) (_ []vmtypes.Boxed, err error) {
+			leftVal, err := hostabi.LoadMap(i, params[0])
 			if err != nil {
 				return nil, err
 			}
-			rightVal, err := loadMap(i, params[1])
+			rightVal, err := hostabi.LoadMap(i, params[1])
 			if err != nil {
 				return nil, err
 			}
-			left := mapKeys(leftVal)
-			var right []vmtypes.Boxed
-			if op == token.PIPE || op == token.CARET {
-				right = mapKeys(rightVal)
+			left, right, err := setOperands(i, op, leftVal, rightVal)
+			if err != nil {
+				return nil, err
 			}
+			defer func() {
+				err = errors.Join(err, hostabi.ReleaseBoxes(i, left), hostabi.ReleaseBoxes(i, right))
+			}()
+
 			keys := make([]vmtypes.Boxed, 0, len(left)+len(right))
 			for _, key := range left {
 				found := false
 				if op != token.PIPE {
-					_, found = mapGet(rightVal, key)
+					if _, found, err = hostabi.MapGet(i, rightVal, key); err != nil {
+						return nil, err
+					}
 				}
 				switch op {
 				case token.MINUS:
@@ -309,11 +314,13 @@ func setBinary(op token.Type, typ types.Type) *interp.HostFunction {
 					}
 				}
 			}
-			if op == token.PIPE || op == token.CARET {
-				for _, key := range right {
-					if _, found := mapGet(leftVal, key); !found {
-						keys = append(keys, key)
-					}
+			for _, key := range right {
+				found, fErr := hasKey(i, leftVal, key)
+				if fErr != nil {
+					return nil, fErr
+				}
+				if !found {
+					keys = append(keys, key)
 				}
 			}
 			return newSet(i, leftVal, keys)
@@ -324,45 +331,85 @@ func setBinary(op token.Type, typ types.Type) *interp.HostFunction {
 func setRelation(op token.Type, typ types.Type) *interp.HostFunction {
 	return interp.NewHostFunction(
 		&vmtypes.FunctionType{Params: []vmtypes.Type{typ.VM(), typ.VM()}, Returns: []vmtypes.Type{vmtypes.TypeI1}},
-		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
-			leftVal, err := loadMap(i, params[0])
+		func(i *interp.Interpreter, params []vmtypes.Boxed) (_ []vmtypes.Boxed, err error) {
+			leftVal, err := hostabi.LoadMap(i, params[0])
 			if err != nil {
 				return nil, err
 			}
-			rightVal, err := loadMap(i, params[1])
+			rightVal, err := hostabi.LoadMap(i, params[1])
 			if err != nil {
 				return nil, err
 			}
-			left := mapKeys(leftVal)
-			subset := func(keys []vmtypes.Boxed, set vmtypes.Value) bool {
-				for _, key := range keys {
-					if _, found := mapGet(set, key); !found {
-						return false
-					}
-				}
-				return true
+			left, _, err := hostabi.MapEntries(i, leftVal)
+			if err != nil {
+				return nil, err
 			}
+			defer func() { err = errors.Join(err, hostabi.ReleaseBoxes(i, left)) }()
+			right, _, err := hostabi.MapEntries(i, rightVal)
+			if err != nil {
+				return nil, err
+			}
+			defer func() { err = errors.Join(err, hostabi.ReleaseBoxes(i, right)) }()
+
 			var ok bool
 			switch op {
 			case token.LT:
-				ok = len(left) < mapLen(rightVal) && subset(left, rightVal)
+				ok = len(left) < len(right)
+				if ok {
+					ok, err = subset(i, left, rightVal)
+				}
 			case token.LE:
-				ok = subset(left, rightVal)
+				ok, err = subset(i, left, rightVal)
 			case token.GT:
-				ok = len(left) > mapLen(rightVal) && subset(mapKeys(rightVal), leftVal)
+				ok = len(left) > len(right)
+				if ok {
+					ok, err = subset(i, right, leftVal)
+				}
 			case token.GE:
-				ok = subset(mapKeys(rightVal), leftVal)
+				ok, err = subset(i, right, leftVal)
+			}
+			if err != nil {
+				return nil, err
 			}
 			return []vmtypes.Boxed{vmtypes.BoxI1(ok)}, nil
 		},
 	)
 }
 
-func loadMap(i *interp.Interpreter, ref vmtypes.Boxed) (vmtypes.Value, error) {
-	if ref.Kind() != vmtypes.KindRef || ref.Ref() == 0 {
-		return nil, interp.ErrTypeMismatch
+// setOperands reads the key sets a binary set operator walks. An operator that
+// only subtracts from the left side never enumerates the right one, so the
+// right result is nil there. Both results are owned by the caller.
+func setOperands(i *interp.Interpreter, op token.Type, left, right vmtypes.Value) ([]vmtypes.Boxed, []vmtypes.Boxed, error) {
+	leftKeys, _, err := hostabi.MapEntries(i, left)
+	if err != nil {
+		return nil, nil, err
 	}
-	return i.Load(ref.Ref())
+	if op != token.PIPE && op != token.CARET {
+		return leftKeys, nil, nil
+	}
+	rightKeys, _, err := hostabi.MapEntries(i, right)
+	if err != nil {
+		_ = hostabi.ReleaseBoxes(i, leftKeys)
+		return nil, nil, err
+	}
+	return leftKeys, rightKeys, nil
+}
+
+// subset reports whether every key is present in set.
+func subset(i *interp.Interpreter, keys []vmtypes.Boxed, set vmtypes.Value) (bool, error) {
+	for _, key := range keys {
+		found, err := hasKey(i, set, key)
+		if err != nil || !found {
+			return false, err
+		}
+	}
+	return true, nil
+}
+
+// hasKey reports whether set holds key.
+func hasKey(i *interp.Interpreter, set vmtypes.Value, key vmtypes.Boxed) (bool, error) {
+	_, found, err := hostabi.MapGet(i, set, key)
+	return found, err
 }
 
 func newSet(i *interp.Interpreter, left vmtypes.Value, keys []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
@@ -373,21 +420,13 @@ func newSet(i *interp.Interpreter, left vmtypes.Value, keys []vmtypes.Boxed) ([]
 	out := vmtypes.NewMapForType(mt, len(keys))
 	zero := vmtypes.Zero(mt.ElemKind)
 	for _, key := range keys {
-		switch m := out.(type) {
-		case *vmtypes.TypedMap[bool]:
-			m.Set(key.Bool(), zero)
-		case *vmtypes.TypedMap[int32]:
-			m.Set(key.I32(), zero)
-		case *vmtypes.TypedMap[int64]:
-			m.Set(key.I64(), zero)
-		case *vmtypes.TypedMap[float32]:
-			m.Set(key.F32(), zero)
-		case *vmtypes.TypedMap[float64]:
-			m.Set(key.F64(), zero)
-		case *vmtypes.Map:
-			m.Set(mapKey(key), vmtypes.MapEntry{Key: key, Value: zero})
-		default:
-			return nil, interp.ErrTypeMismatch
+		// The result map becomes a second owner of the key, so it takes its
+		// own reference; the caller still owns and releases the keys it read.
+		if err := hostabi.RetainBoxes(i, []vmtypes.Boxed{key}); err != nil {
+			return nil, err
+		}
+		if _, _, err := hostabi.MapSet(i, out, key, zero); err != nil {
+			return nil, err
 		}
 	}
 	addr, err := i.Alloc(out)
@@ -477,26 +516,37 @@ func tupleEqual(i *interp.Interpreter, t *types.Tuple, left, right vmtypes.Boxed
 // dictEqual compares two dict values: equal size, then every left key found
 // in right with structurally equal values. Dict keys are limited to
 // int/float/bool/str (docs/spec/04-static-semantics.md), so key lookup
-// through mapGet's boxed comparison is exact without recursion.
+// through the map's own indexing is exact without recursion.
 func dictEqual(i *interp.Interpreter, value types.Type, left, right vmtypes.Boxed) (bool, error) {
-	leftMap, err := loadMapValue(i, left)
+	leftMap, err := hostabi.LoadMap(i, left)
 	if err != nil {
 		return false, err
 	}
-	rightMap, err := loadMapValue(i, right)
+	rightMap, err := hostabi.LoadMap(i, right)
 	if err != nil {
 		return false, err
 	}
-	if mapLen(leftMap) != mapLen(rightMap) {
+	leftKeys, leftValues, err := hostabi.MapEntries(i, leftMap)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = hostabi.ReleaseBoxes(i, leftKeys) }()
+	rightLen, err := hostabi.MapLen(rightMap)
+	if err != nil {
+		return false, err
+	}
+	if len(leftKeys) != rightLen {
 		return false, nil
 	}
-	for _, key := range mapKeys(leftMap) {
-		leftValue, _ := mapGet(leftMap, key)
-		rightValue, found := mapGet(rightMap, key)
+	for index, key := range leftKeys {
+		rightValue, found, err := hostabi.MapGet(i, rightMap, key)
+		if err != nil {
+			return false, err
+		}
 		if !found {
 			return false, nil
 		}
-		eq, err := structuralEqual(i, value, leftValue, rightValue)
+		eq, err := structuralEqual(i, value, leftValues[index], rightValue)
 		if err != nil {
 			return false, err
 		}
@@ -509,25 +559,29 @@ func dictEqual(i *interp.Interpreter, value types.Type, left, right vmtypes.Boxe
 
 // setEqual compares two set values: equal size and every left member present
 // in right. Set elements are limited to int/float/bool/str, so membership
-// through mapGet's boxed comparison is exact.
+// through the map's own indexing is exact.
 func setEqual(i *interp.Interpreter, left, right vmtypes.Boxed) (bool, error) {
-	leftMap, err := loadMapValue(i, left)
+	leftMap, err := hostabi.LoadMap(i, left)
 	if err != nil {
 		return false, err
 	}
-	rightMap, err := loadMapValue(i, right)
+	rightMap, err := hostabi.LoadMap(i, right)
 	if err != nil {
 		return false, err
 	}
-	if mapLen(leftMap) != mapLen(rightMap) {
+	leftKeys, _, err := hostabi.MapEntries(i, leftMap)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = hostabi.ReleaseBoxes(i, leftKeys) }()
+	rightLen, err := hostabi.MapLen(rightMap)
+	if err != nil {
+		return false, err
+	}
+	if len(leftKeys) != rightLen {
 		return false, nil
 	}
-	for _, key := range mapKeys(leftMap) {
-		if _, found := mapGet(rightMap, key); !found {
-			return false, nil
-		}
-	}
-	return true, nil
+	return subset(i, leftKeys, rightMap)
 }
 
 // lexicographicCompare returns -1/0/1 comparing left and right of type t
@@ -687,9 +741,3 @@ func loadStruct(i *interp.Interpreter, v vmtypes.Boxed) (*vmtypes.Struct, error)
 
 // loadMapValue reads a heap dict/set argument (both lower to minivm maps;
 // docs/spec/05-codegen.md).
-func loadMapValue(i *interp.Interpreter, v vmtypes.Boxed) (vmtypes.Value, error) {
-	if v.Kind() != vmtypes.KindRef || v.Ref() == 0 {
-		return nil, interp.ErrTypeMismatch
-	}
-	return i.Load(v.Ref())
-}

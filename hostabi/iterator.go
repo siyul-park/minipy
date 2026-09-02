@@ -55,7 +55,7 @@ func (iterator *Iterator) Next() bool {
 }
 
 func (iterator *Iterator) Kind() vmtypes.Kind { return vmtypes.KindRef }
-func (iterator *Iterator) Type() vmtypes.Type { return vmtypes.TypeRef }
+func (iterator *Iterator) Type() vmtypes.Type { return vmtypes.TypeAny }
 func (iterator *Iterator) String() string     { return iterator.name }
 
 func (iterator *Iterator) Refs(refs []vmtypes.Ref) []vmtypes.Ref {

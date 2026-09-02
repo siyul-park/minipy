@@ -324,7 +324,7 @@ func emitChr(e module.Emitter, args []ast.Expr) {
 }
 
 func emitNext(e module.Emitter, args []ast.Expr) {
-	valSlot := e.Tmp(vmtypes.TypeRef)
+	valSlot := e.Tmp(vmtypes.TypeAny)
 	done := e.Label()
 	end := e.Label()
 	e.Expr(args[0])

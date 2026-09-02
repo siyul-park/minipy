@@ -128,6 +128,7 @@ func (f formatter) dict(value vmtypes.Boxed, typ *pytypes.Dict) (string, error) 
 	if err != nil {
 		return "", err
 	}
+	defer func() { _ = ReleaseBoxes(f.interpreter, keys) }()
 	if f.seen[ref] {
 		return "{...}", nil
 	}
@@ -155,6 +156,7 @@ func (f formatter) set(value vmtypes.Boxed, typ *pytypes.Set) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	defer func() { _ = ReleaseBoxes(f.interpreter, keys) }()
 	if len(keys) == 0 {
 		return "set()", nil
 	}
@@ -321,50 +323,17 @@ func (f formatter) array(value vmtypes.Boxed) ([]vmtypes.Boxed, vmtypes.Ref, err
 	return values, ref, nil
 }
 
+// entries reads a dict/set value's keys and values for rendering. The keys are
+// owned by this call and MUST be released with ReleaseBoxes once rendering is
+// done; see MapEntries.
 func (f formatter) entries(value vmtypes.Boxed) ([]vmtypes.Boxed, []vmtypes.Boxed, vmtypes.Ref, error) {
 	object, ref, err := f.object(value)
 	if err != nil {
 		return nil, nil, 0, err
 	}
-	var keys, values []vmtypes.Boxed
-	switch m := object.(type) {
-	case *vmtypes.TypedMap[int8]:
-		m.Range(func(key int8, value vmtypes.Boxed) {
-			keys = append(keys, vmtypes.BoxI32(int32(key)))
-			values = append(values, value)
-		})
-	case *vmtypes.TypedMap[bool]:
-		m.Range(func(key bool, value vmtypes.Boxed) {
-			keys = append(keys, vmtypes.BoxI1(key))
-			values = append(values, value)
-		})
-	case *vmtypes.TypedMap[int32]:
-		m.Range(func(key int32, value vmtypes.Boxed) {
-			keys = append(keys, vmtypes.BoxI32(key))
-			values = append(values, value)
-		})
-	case *vmtypes.TypedMap[int64]:
-		m.Range(func(key int64, value vmtypes.Boxed) {
-			keys = append(keys, vmtypes.BoxI64(key))
-			values = append(values, value)
-		})
-	case *vmtypes.TypedMap[float32]:
-		m.Range(func(key float32, value vmtypes.Boxed) {
-			keys = append(keys, vmtypes.BoxF32(key))
-			values = append(values, value)
-		})
-	case *vmtypes.TypedMap[float64]:
-		m.Range(func(key float64, value vmtypes.Boxed) {
-			keys = append(keys, vmtypes.BoxF64(key))
-			values = append(values, value)
-		})
-	case *vmtypes.Map:
-		m.Range(func(_ vmtypes.MapKey, entry vmtypes.MapEntry) {
-			keys = append(keys, entry.Key)
-			values = append(values, entry.Value)
-		})
-	default:
-		return nil, nil, 0, interp.ErrTypeMismatch
+	keys, values, err := MapEntries(f.interpreter, object)
+	if err != nil {
+		return nil, nil, 0, err
 	}
 	return keys, values, ref, nil
 }
@@ -443,7 +412,8 @@ func (f formatter) dynamicValue(v vmtypes.Boxed, nested bool) (string, error) {
 		return "[" + strings.Join(parts, ", ") + "]", nil
 	}
 	// Map (dict/set)
-	if keys, values := f.dynamicMapEntries(obj); keys != nil {
+	if keys, values, err := MapEntries(f.interpreter, obj); err == nil && keys != nil {
+		defer func() { _ = ReleaseBoxes(f.interpreter, keys) }()
 		if f.seen[ref] {
 			return "{...}", nil
 		}
@@ -511,51 +481,6 @@ func (f formatter) dynamicArrayElems(obj vmtypes.Value) []vmtypes.Boxed {
 	default:
 		return nil
 	}
-}
-
-// dynamicMapEntries extracts keys and values from any map representation.
-func (f formatter) dynamicMapEntries(obj vmtypes.Value) ([]vmtypes.Boxed, []vmtypes.Boxed) {
-	var keys, values []vmtypes.Boxed
-	switch m := obj.(type) {
-	case *vmtypes.TypedMap[bool]:
-		m.Range(func(k bool, v vmtypes.Boxed) {
-			keys = append(keys, vmtypes.BoxI1(k))
-			values = append(values, v)
-		})
-	case *vmtypes.TypedMap[int8]:
-		m.Range(func(k int8, v vmtypes.Boxed) {
-			keys = append(keys, vmtypes.BoxI32(int32(k)))
-			values = append(values, v)
-		})
-	case *vmtypes.TypedMap[int32]:
-		m.Range(func(k int32, v vmtypes.Boxed) {
-			keys = append(keys, vmtypes.BoxI32(k))
-			values = append(values, v)
-		})
-	case *vmtypes.TypedMap[int64]:
-		m.Range(func(k int64, v vmtypes.Boxed) {
-			keys = append(keys, vmtypes.BoxI64(k))
-			values = append(values, v)
-		})
-	case *vmtypes.TypedMap[float32]:
-		m.Range(func(k float32, v vmtypes.Boxed) {
-			keys = append(keys, vmtypes.BoxF32(k))
-			values = append(values, v)
-		})
-	case *vmtypes.TypedMap[float64]:
-		m.Range(func(k float64, v vmtypes.Boxed) {
-			keys = append(keys, vmtypes.BoxF64(k))
-			values = append(values, v)
-		})
-	case *vmtypes.Map:
-		m.Range(func(_ vmtypes.MapKey, entry vmtypes.MapEntry) {
-			keys = append(keys, entry.Key)
-			values = append(values, entry.Value)
-		})
-	default:
-		return nil, nil
-	}
-	return keys, values
 }
 
 // ReprString quotes and escapes a string using Python-style repr rules.

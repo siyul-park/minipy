@@ -405,7 +405,7 @@ func choiceHost(arg types.Type) *interp.HostFunction {
 	if ok {
 		retType = list.Elem.VM()
 	} else {
-		retType = vmtypes.TypeRef
+		retType = vmtypes.TypeAny
 	}
 	return interp.NewHostFunction(
 		&vmtypes.FunctionType{Params: []vmtypes.Type{arg.VM()}, Returns: []vmtypes.Type{retType}},
@@ -489,7 +489,7 @@ func seedHost() *interp.HostFunction {
 }
 
 // --- Dynamic dispatch host functions ---
-// These accept vmtypes.TypeRef parameters for dynamic-typed arguments, unbox
+// These accept vmtypes.TypeAny parameters for dynamic-typed arguments, unbox
 // the value at runtime, and perform the random operation.
 
 func dynUniformHost(t0, t1 types.Type) *interp.HostFunction {
@@ -541,7 +541,7 @@ func dynRandintHost(t0, t1 types.Type) *interp.HostFunction {
 
 func dynRandrangeOneHost() *interp.HostFunction {
 	return interp.NewHostFunction(
-		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeRef}, Returns: []vmtypes.Type{vmtypes.TypeI64}},
+		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeAny}, Returns: []vmtypes.Type{vmtypes.TypeI64}},
 		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
 			stop, err := hostabi.UnboxInt(i, params[0])
 			if err != nil {
@@ -585,7 +585,7 @@ func dynRandrangeTwoHost(t0, t1 types.Type) *interp.HostFunction {
 
 func dynSeedHost() *interp.HostFunction {
 	return interp.NewHostFunction(
-		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeRef}, Returns: []vmtypes.Type{}},
+		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeAny}, Returns: []vmtypes.Type{}},
 		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
 			n, err := hostabi.UnboxInt(i, params[0])
 			if err != nil {

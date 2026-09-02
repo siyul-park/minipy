@@ -405,6 +405,32 @@ called — its extra fields keep their zero value, a pre-existing, narrower gap
 in constructor-inheritance modeling shared with non-exception classes, not
 new to this path.
 
+### Map representation and key identity
+
+minivm picks a map's concrete representation from its declared key type: a
+`TypedMap[T]` holds unboxed scalar keys, a `TypedMap[string]` holds string keys
+**by content**, and a generic `Map` holds boxed keys indexed by a `MapKey`.
+`dict[str, V]` and `set[str]` therefore store no boxed key at all — only the
+text — while `dict[Any, Any]` (the dynamic namespace `compile`/`eval`/`exec`
+use) is a generic `Map`. Source-level behavior is the same either way: equal
+strings are one key.
+
+`hostabi` owns that dispatch. `MapLen`, `MapGet`, `MapSet`, `MapDelete`,
+`MapClear`, `MapEntries`, and `MapKeyOf` are the only places minipy switches on
+a map's representation; a host function in `builtins`, `operator`, or
+`compiler/runtime.go` calls them and never names a `TypedMap` arm. `MapKeyOf`
+mirrors the interpreter's own rule exactly — `i1`/`i8` index through their `i32`
+form, a heap-spilled `int` indexes by its numeric value, `-0.0` folds into
+`0.0`, a string indexes by content under `KindText`, and every other reference
+indexes by heap address — so a key published by `MAP_SET` and a key published by
+a host function reach the same entry.
+
+`MapEntries` is the one operation with a mixed ownership contract, because a
+content-keyed map has no boxed key to borrow: the **keys it returns are owned by
+the caller** and must be released with `hostabi.ReleaseBoxes` once the caller is
+done with them, while the **values stay borrowed** from the map. Every other
+representation retains its keys so one release rule covers them all.
+
 ### Host ABI reference ownership
 
 Host functions in `builtins`, `operator`, and `compiler/runtime.go` exchange

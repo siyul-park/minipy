@@ -128,7 +128,7 @@ func TestCompileUnions(t *testing.T) {
 
 		requireFuncParam(t, prog.Constants, vmtypes.TypeI64, false, instr.REF_TEST, instr.REF_CAST)
 		requireFuncParam(t, prog.Constants, vmtypes.TypeString, false, instr.REF_TEST, instr.REF_CAST)
-		requireFuncParam(t, prog.Constants, vmtypes.TypeRef, true, instr.REF_TEST, instr.REF_CAST)
+		requireFuncParam(t, prog.Constants, vmtypes.TypeAny, true, instr.REF_TEST, instr.REF_CAST)
 	})
 
 	t.Run("specialized forward function call runs", func(t *testing.T) {
@@ -162,7 +162,7 @@ func TestCompileInference(t *testing.T) {
 
 		requireFuncParam(t, prog.Constants, vmtypes.TypeI64, true)
 		requireFuncParam(t, prog.Constants, vmtypes.TypeString, true)
-		requireFuncParam(t, prog.Constants, vmtypes.TypeRef, true)
+		requireFuncParam(t, prog.Constants, vmtypes.TypeAny, true)
 	})
 
 	t.Run("inferred concrete return type", func(t *testing.T) {
@@ -2490,7 +2490,7 @@ func TestCompiler_lowerFailure(t *testing.T) {
 		child := c.child(target{}, &function{}, nil, nil, nil, nil)
 		child.fail(errors.New("boom"))
 		child.tmp(vmtypes.TypeI64)
-		child.tmp(vmtypes.TypeRef)
+		child.tmp(vmtypes.TypeAny)
 
 		require.False(t, c.failed())
 		c.adopt(child)

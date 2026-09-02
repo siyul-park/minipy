@@ -439,9 +439,9 @@ func emitContains(e module.Emitter, op token.Type, needle, haystack types.Type) 
 }
 
 func emitListConcat(e module.Emitter, list types.Type) {
-	rightSlot := e.Tmp(vmtypes.TypeRef)
-	leftSlot := e.Tmp(vmtypes.TypeRef)
-	resultSlot := e.Tmp(vmtypes.TypeRef)
+	rightSlot := e.Tmp(vmtypes.TypeAny)
+	leftSlot := e.Tmp(vmtypes.TypeAny)
+	resultSlot := e.Tmp(vmtypes.TypeAny)
 
 	e.Emit(instr.GLOBAL_SET, uint64(rightSlot))
 	e.Emit(instr.GLOBAL_SET, uint64(leftSlot))

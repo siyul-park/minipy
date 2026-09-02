@@ -59,12 +59,12 @@ func TestType_VM(t *testing.T) {
 	require.Equal(t, vmtypes.TypeI1, Bool.VM())
 	require.Equal(t, vmtypes.TypeString, Str.VM())
 	require.Equal(t, vmtypes.NewStructType(), Ellipsis.VM())
-	require.Equal(t, vmtypes.TypeRef, None.VM())
+	require.Equal(t, vmtypes.TypeAny, None.VM())
 	require.IsType(t, &vmtypes.ArrayType{}, NewList(Int).VM())
 	require.IsType(t, &vmtypes.MapType{}, NewDict(Str, Int).VM())
 	require.IsType(t, &vmtypes.MapType{}, NewSet(Int).VM())
 	require.IsType(t, &vmtypes.StructType{}, NewTuple(Int, Str).VM())
-	require.Equal(t, vmtypes.TypeRef, NewIterator(Int).VM())
+	require.Equal(t, vmtypes.TypeAny, NewIterator(Int).VM())
 	require.IsType(t, &vmtypes.FunctionType{}, NewCallable([]Type{Int}, Str).VM())
 	require.IsType(t, &vmtypes.StructType{}, NewClass("Point", []Field{{Name: "x", Type: Int}}).VM())
 	require.Equal(t, vmtypes.TypeI64, NewLiteral(IntLiteral(1)).VM())
@@ -89,8 +89,8 @@ func TestAssignable(t *testing.T) {
 	require.True(t, AssignableTo(NewCallable([]Type{Int}, Str), NewCallable([]Type{Int}, Str)))
 	require.True(t, AssignableTo(NewIterator(Int), NewIterator(Int)))
 	require.True(t, AssignableTo(NewClass("Point", nil), NewClass("Point", []Field{{Name: "x", Type: Int}})))
-	require.False(t, AssignableTo(Bool, Int))  // bool is not int
-	require.True(t, AssignableTo(Int, Float))  // int widens to float (Python semantics)
+	require.False(t, AssignableTo(Bool, Int)) // bool is not int
+	require.True(t, AssignableTo(Int, Float)) // int widens to float (Python semantics)
 	require.True(t, AssignableTo(Ellipsis, Ellipsis))
 	require.False(t, AssignableTo(Ellipsis, None))
 	require.False(t, AssignableTo(NewList(Int), NewList(Str)))
@@ -178,8 +178,8 @@ func TestNewUnion(t *testing.T) {
 		require.Equal(t, Invalid, NewUnion())
 	})
 	t.Run("VM is ref", func(t *testing.T) {
-		require.Equal(t, vmtypes.TypeRef, NewUnion(Int, Str).VM())
-		require.Equal(t, vmtypes.TypeRef, Any.VM())
+		require.Equal(t, vmtypes.TypeAny, NewUnion(Int, Str).VM())
+		require.Equal(t, vmtypes.TypeAny, Any.VM())
 	})
 	t.Run("detects union", func(t *testing.T) {
 		u, ok := isUnion(NewUnion(Int, Str))

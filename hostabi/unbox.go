@@ -64,10 +64,10 @@ func UnboxInt(i *interp.Interpreter, v vmtypes.Boxed) (int64, error) {
 }
 
 // VMParamType returns the VM-level type for a compile-time type, mapping
-// dynamic types to TypeRef for runtime dispatch.
+// dynamic types to TypeAny for runtime dispatch.
 func VMParamType(t types.Type) vmtypes.Type {
 	if types.IsDynamic(t) {
-		return vmtypes.TypeRef
+		return vmtypes.TypeAny
 	}
 	return t.VM()
 }

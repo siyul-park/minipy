@@ -498,7 +498,7 @@ func slotType(t vmtypes.Type) vmtypes.Type {
 	case vmtypes.KindF64:
 		return vmtypes.TypeF64
 	default:
-		return vmtypes.TypeRef
+		return vmtypes.TypeAny
 	}
 }
 
@@ -510,7 +510,7 @@ func slotType(t vmtypes.Type) vmtypes.Type {
 func (c *lowerer) globalTable() []vmtypes.Type {
 	table := make([]vmtypes.Type, len(c.names))
 	for i := range table {
-		table[i] = vmtypes.TypeRef
+		table[i] = vmtypes.TypeAny
 	}
 	for _, g := range c.globals {
 		if g.index < len(table) && g.typ != types.Invalid {
@@ -636,7 +636,7 @@ func (c *lowerer) BrIf(l instr.Label) { c.brIf(l) }
 func (c *lowerer) slotFor(e ast.Expr) int {
 	t, ok := c.types[e]
 	if !ok || t == nil {
-		return c.tmp(vmtypes.TypeRef)
+		return c.tmp(vmtypes.TypeAny)
 	}
 	return c.tmp(hostabi.VMParamType(t))
 }

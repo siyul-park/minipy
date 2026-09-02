@@ -410,15 +410,15 @@ func factorialHost() *interp.HostFunction {
 }
 
 // --- Dynamic dispatch host functions ---
-// These accept vmtypes.TypeRef parameters for dynamic-typed arguments, unbox
+// These accept vmtypes.TypeAny parameters for dynamic-typed arguments, unbox
 // the value at runtime, promote to float64 or int64 as needed, and perform
 // the math operation directly.
 
 // dynUnaryFloatHost creates a dynamic dispatch host function for unary float
-// operations. It accepts a TypeRef argument, unboxes it to float64, and applies fn.
+// operations. It accepts a TypeAny argument, unboxes it to float64, and applies fn.
 func dynUnaryFloatHost(fn func(float64) float64) *interp.HostFunction {
 	return interp.NewHostFunction(
-		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeRef}, Returns: []vmtypes.Type{vmtypes.TypeF64}},
+		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeAny}, Returns: []vmtypes.Type{vmtypes.TypeF64}},
 		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
 			f, err := hostabi.UnboxFloat(i, params[0])
 			if err != nil {
@@ -433,7 +433,7 @@ func dynUnaryFloatHost(fn func(float64) float64) *interp.HostFunction {
 // domain-restricted unary float operation. See dynUnaryFloatHost.
 func dynUnaryFloatDomainHost(fn func(float64) float64, invalid domainInvalid) *interp.HostFunction {
 	return interp.NewHostFunction(
-		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeRef}, Returns: []vmtypes.Type{vmtypes.TypeF64}},
+		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeAny}, Returns: []vmtypes.Type{vmtypes.TypeF64}},
 		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
 			f, err := hostabi.UnboxFloat(i, params[0])
 			if err != nil {
@@ -449,7 +449,7 @@ func dynUnaryFloatDomainHost(fn func(float64) float64, invalid domainInvalid) *i
 
 // dynBinaryFloatHost creates a dynamic dispatch host function for binary float
 // operations. Each argument may be either a direct numeric type (when one arg
-// is static) or a TypeRef (when dynamic). The host unboxes as needed.
+// is static) or a TypeAny (when dynamic). The host unboxes as needed.
 func dynBinaryFloatHost(fn func(float64, float64) float64, t0, t1 types.Type) *interp.HostFunction {
 	p0 := hostabi.VMParamType(t0)
 	p1 := hostabi.VMParamType(t1)
@@ -472,7 +472,7 @@ func dynBinaryFloatHost(fn func(float64, float64) float64, t0, t1 types.Type) *i
 // dynPredicateHost creates a dynamic dispatch host function for predicates.
 func dynPredicateHost(fn func(float64) bool) *interp.HostFunction {
 	return interp.NewHostFunction(
-		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeRef}, Returns: []vmtypes.Type{vmtypes.TypeI1}},
+		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeAny}, Returns: []vmtypes.Type{vmtypes.TypeI1}},
 		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
 			f, err := hostabi.UnboxFloat(i, params[0])
 			if err != nil {
@@ -519,7 +519,7 @@ func dynGCDHost(t0, t1 types.Type) *interp.HostFunction {
 // dynFactorialHost creates a dynamic dispatch host function for factorial.
 func dynFactorialHost() *interp.HostFunction {
 	return interp.NewHostFunction(
-		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeRef}, Returns: []vmtypes.Type{vmtypes.TypeI64}},
+		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeAny}, Returns: []vmtypes.Type{vmtypes.TypeI64}},
 		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
 			n, err := hostabi.UnboxInt(i, params[0])
 			if err != nil {

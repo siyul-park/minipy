@@ -191,8 +191,8 @@ func (c *lowerer) deleteStmt(n *ast.Delete) {
 			}
 			switch recv := c.types[t.X].(type) {
 			case *types.Dict:
-				dictSlot := c.tmp(vmtypes.TypeRef)
-				keySlot := c.tmp(vmtypes.TypeRef)
+				dictSlot := c.tmp(vmtypes.TypeAny)
+				keySlot := c.tmp(vmtypes.TypeAny)
 				c.expr(t.X)
 				c.emit(instr.GLOBAL_SET, uint64(dictSlot))
 				c.expr(t.Index)
@@ -296,7 +296,7 @@ func (c *lowerer) emitTry(n *ast.Try) {
 	c.br(after)
 
 	c.bind(catch)
-	errSlot := c.tmp(vmtypes.TypeRef)
+	errSlot := c.tmp(vmtypes.TypeAny)
 	c.emit(instr.GLOBAL_SET, uint64(errSlot))
 	if len(n.Handlers) == 0 {
 		if finalizer != nil {
@@ -308,7 +308,7 @@ func (c *lowerer) emitTry(n *ast.Try) {
 		c.tryRegion(start, end, catch)
 		return
 	}
-	instSlot := c.tmp(vmtypes.TypeRef)
+	instSlot := c.tmp(vmtypes.TypeAny)
 	c.emitCaughtInstance(errSlot, instSlot)
 	for _, h := range n.Handlers {
 		next := c.label()
@@ -357,7 +357,7 @@ func (c *lowerer) emitTryFinally(body func(), finalizer func()) {
 	c.br(after)
 
 	c.bind(catch)
-	errSlot := c.tmp(vmtypes.TypeRef)
+	errSlot := c.tmp(vmtypes.TypeAny)
 	c.emit(instr.GLOBAL_SET, uint64(errSlot))
 	finalizer()
 	c.emit(instr.GLOBAL_GET, uint64(errSlot))
@@ -538,7 +538,7 @@ func (c *lowerer) emitRaise(n *ast.Raise) {
 // this coercion that value would land in the str-typed message field
 // unconverted.
 func (c *lowerer) emitExceptionInstance(cls *class, args []ast.Expr) {
-	msgSlot := c.tmp(vmtypes.TypeRef)
+	msgSlot := c.tmp(vmtypes.TypeAny)
 	if len(args) > 0 {
 		c.expr(args[0])
 		if msgType := c.types[args[0]]; !types.Equal(msgType, types.Str) {
@@ -570,7 +570,7 @@ func (c *lowerer) emitWith(n *ast.With) {
 	emit = func(i int) {
 		item := n.Items[i]
 		name := c.types[item.Context].(*types.Class).Name
-		ctxSlot := c.tmp(vmtypes.TypeRef)
+		ctxSlot := c.tmp(vmtypes.TypeAny)
 		c.expr(item.Context)
 		c.emit(instr.GLOBAL_SET, uint64(ctxSlot))
 		owner, enter := c.methodOwner(name, "__enter__")
@@ -748,7 +748,7 @@ func (c *lowerer) emitSequenceTest(pat *ast.SequencePattern, slot int, typ types
 func (c *lowerer) emitMappingTest(pat *ast.MappingPattern, slot int, typ types.Type, next instr.Label) {
 	d := typ.(*types.Dict)
 	for i, keyExpr := range pat.Keys {
-		child := c.tmp(vmtypes.TypeRef)
+		child := c.tmp(vmtypes.TypeAny)
 		c.emit(instr.GLOBAL_GET, uint64(slot))
 		c.expr(keyExpr)
 		c.emit(instr.MAP_LOOKUP)
@@ -770,7 +770,7 @@ func (c *lowerer) emitMappingTest(pat *ast.MappingPattern, slot int, typ types.T
 			c.expr(keyExpr)
 			c.emit(instr.ARRAY_SET)
 		}
-		keysSlot := c.tmp(vmtypes.TypeRef)
+		keysSlot := c.tmp(vmtypes.TypeAny)
 		c.emit(instr.GLOBAL_SET, uint64(keysSlot))
 		c.emit(instr.GLOBAL_GET, uint64(slot))
 		c.emit(instr.GLOBAL_GET, uint64(keysSlot))
@@ -804,7 +804,7 @@ func (c *lowerer) chainedAssign(n *ast.Assign) {
 			c.promoteIntToFloat(c.types[n.Value], c.typ(name.Name))
 			c.set(name.Name)
 		} else {
-			slot := c.tmp(vmtypes.TypeRef)
+			slot := c.tmp(vmtypes.TypeAny)
 			c.emit(instr.GLOBAL_SET, uint64(slot))
 			c.assignTargetFromTemp(target, slot)
 		}
@@ -899,12 +899,12 @@ func (c *lowerer) assignTarget(target ast.Expr, value ast.Expr) {
 func (c *lowerer) augAssignSubscript(n *ast.AugAssign, sub *ast.Subscript) {
 	// Save receiver in a temporary slot.
 	c.expr(sub.X)
-	recvSlot := c.tmp(vmtypes.TypeRef)
+	recvSlot := c.tmp(vmtypes.TypeAny)
 	c.emit(instr.GLOBAL_SET, uint64(recvSlot))
 
 	// Save index/key in a temporary slot.
 	c.expr(sub.Index)
-	indexSlot := c.tmp(vmtypes.TypeRef)
+	indexSlot := c.tmp(vmtypes.TypeAny)
 	c.emit(instr.GLOBAL_SET, uint64(indexSlot))
 
 	// Emit binary op: load old value, compute new value.
@@ -919,7 +919,7 @@ func (c *lowerer) augAssignSubscript(n *ast.AugAssign, sub *ast.Subscript) {
 			},
 			func() { c.expr(n.Value) })
 		// Stack: [result]. Store back: need [receiver, i32_index, result].
-		resultSlot := c.tmp(vmtypes.TypeRef)
+		resultSlot := c.tmp(vmtypes.TypeAny)
 		c.emit(instr.GLOBAL_SET, uint64(resultSlot))
 		c.emit(instr.GLOBAL_GET, uint64(recvSlot))
 		c.emit(instr.GLOBAL_GET, uint64(indexSlot))
@@ -1317,7 +1317,7 @@ func (c *lowerer) emitFor(n *ast.For) {
 }
 
 func (c *lowerer) emitIteratorFor(n *ast.For, emitIter func()) {
-	iterSlot := c.tmp(vmtypes.TypeRef)
+	iterSlot := c.tmp(vmtypes.TypeAny)
 	emitIter()
 	c.emit(instr.GLOBAL_SET, uint64(iterSlot))
 	top := c.label()
@@ -1372,7 +1372,7 @@ func (c *lowerer) iterate(expr ast.Expr, typ types.Type) {
 }
 
 func (c *lowerer) emitIterableFor(n *ast.For) {
-	iterSlot := c.tmp(vmtypes.TypeRef)
+	iterSlot := c.tmp(vmtypes.TypeAny)
 	idxSlot := c.tmp(vmtypes.TypeI64)
 
 	c.expr(n.Iter)
@@ -1468,7 +1468,7 @@ func (c *lowerer) emitDecoratorValues(decorators []ast.Expr) []int {
 	}
 	slots := make([]int, len(decorators))
 	for i, dec := range decorators {
-		slots[i] = c.tmp(vmtypes.TypeRef)
+		slots[i] = c.tmp(vmtypes.TypeAny)
 		c.expr(dec)
 		c.emit(instr.GLOBAL_SET, uint64(slots[i]))
 	}
@@ -1557,7 +1557,7 @@ func (c *lowerer) funcValue(info *function, body []ast.Stmt) {
 	// Dynamic code carries its globals and locals namespaces as the first two
 	// captures, so they precede the function's own captured cells.
 	if c.dynamic {
-		fb.Captures(vmtypes.TypeRef, vmtypes.TypeRef)
+		fb.Captures(vmtypes.TypeAny, vmtypes.TypeAny)
 	}
 	fb.Captures(vmCaps(info)...)
 
@@ -1686,7 +1686,7 @@ func (c *lowerer) yieldExpr(n *ast.YieldExpr) {
 // resumed generators observe None through the result.
 func (c *lowerer) yieldCore(value ast.Expr, from bool) {
 	if from {
-		iterSlot := c.tmp(vmtypes.TypeRef)
+		iterSlot := c.tmp(vmtypes.TypeAny)
 		if lt, ok := c.types[value].(*types.List); ok {
 			c.expr(value)
 			c.callHost(c.listIter(lt))
@@ -1738,7 +1738,7 @@ func vmLocals(info *function) []vmtypes.Type {
 	for _, name := range info.order {
 		l := info.locals[name]
 		if l.boxed {
-			out = append(out, vmtypes.TypeRef)
+			out = append(out, vmtypes.TypeAny)
 		} else {
 			out = append(out, l.typ.VM())
 		}
@@ -1751,7 +1751,7 @@ func vmCaps(info *function) []vmtypes.Type {
 	for _, name := range info.capOrder {
 		cap := info.captures[name]
 		if cap.boxed || cap.src.boxed {
-			out = append(out, vmtypes.TypeRef)
+			out = append(out, vmtypes.TypeAny)
 		} else {
 			out = append(out, cap.typ.VM())
 		}
@@ -1761,7 +1761,7 @@ func vmCaps(info *function) []vmtypes.Type {
 
 func vmReturns(t types.Type) []vmtypes.Type {
 	if types.Equal(t, types.None) {
-		return []vmtypes.Type{vmtypes.TypeRef}
+		return []vmtypes.Type{vmtypes.TypeAny}
 	}
 	return []vmtypes.Type{t.VM()}
 }

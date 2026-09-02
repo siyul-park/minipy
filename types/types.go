@@ -103,12 +103,12 @@ var (
 	Str      Type = primitive{name: "str", vm: vmtypes.TypeString}
 	Bytes    Type = primitive{name: "bytes", vm: vmtypes.NewArrayType(vmtypes.TypeI8)}
 	Ellipsis Type = primitive{name: "EllipsisType", vm: vmtypes.NewStructType()}
-	None     Type = primitive{name: "None", vm: vmtypes.TypeRef}
+	None     Type = primitive{name: "None", vm: vmtypes.TypeAny}
 	// Any is the open top of the lattice (⊤) — the gradual fallback used only
 	// when no bounded union fits. It is backed by minivm's dynamic ref type.
-	Any       Type = primitive{name: "Any", vm: vmtypes.TypeRef}
+	Any       Type = primitive{name: "Any", vm: vmtypes.TypeAny}
 	TypeAlias Type = primitive{name: "typing.TypeAlias"}
-	Code      Type = primitive{name: "code", vm: vmtypes.TypeRef}
+	Code      Type = primitive{name: "code", vm: vmtypes.TypeAny}
 )
 
 // NewList returns the list type with the given element type.
@@ -688,7 +688,7 @@ func (t *Iterator) String() string {
 }
 func (*Iterator) IsNumeric() bool { return false }
 func (t *Iterator) VM() vmtypes.Type {
-	return vmtypes.TypeRef
+	return vmtypes.TypeAny
 }
 func (t *Iterator) Equal(o Type) bool {
 	other, ok := o.(*Iterator)
@@ -792,7 +792,7 @@ func (t *Module) String() string {
 }
 func (*Module) IsNumeric() bool { return false }
 func (*Module) VM() vmtypes.Type {
-	return vmtypes.TypeRef
+	return vmtypes.TypeAny
 }
 func (t *Module) Equal(o Type) bool {
 	other, ok := o.(*Module)
@@ -815,7 +815,7 @@ func (t *Union) String() string {
 }
 func (*Union) IsNumeric() bool { return false }
 func (*Union) VM() vmtypes.Type {
-	return vmtypes.TypeRef
+	return vmtypes.TypeAny
 }
 func (t *Union) Equal(o Type) bool {
 	other, ok := o.(*Union)
