@@ -148,14 +148,20 @@ and receiver type** for the whole compilation. A factory called per call site
 produces a fresh closure each time, and the constant pool interns by pointer
 identity, so it grows linearly with call sites for no behavioral difference.
 
-`compiler/runtime.go` does this through `(*lowerer).host`, keyed by the
-operation name and the types that shape it. Native module emitters
-(`builtins/`, `operator/`, `math/`, `random/`) do **not** yet: they call their
-producer per emission, so a module with several `str(n)` calls still interns one
-host function per call. Across the conformance and benchmark corpora, interning
-the compiler-side factories took host-function constants from 1653 to 1402 and
-the total constant pool from 2232 to 1981; the rest waits on
-`module.Emitter` gaining a way for a native symbol to name its operation.
+`compiler/runtime.go` does this through `(*lowerer).host`. A native module
+emitter does it through `module.Emitter.Once`, which is the same memo reached
+through the contract: pass a key built with `module.HostKey(Name, operation,
+...)` and a builder, and every emission of that operation in the compilation
+gets one constant.
+
+Across the conformance, benchmark and codegen corpora this took the constant
+pool from **2232 entries to 1308 (-41%)** and host-function constants from
+**1653 to 688 (-58%)**. `print(str(x))` was the worst case: five of them interned
+ten identical host functions where two suffice.
+
+The key has to name every argument the factory reads. `str(int)` and
+`str(float)` are different functions and must stay different constants; a key
+that named only the operation would merge them into a miscompile.
 
 ### Recognize a builtin whose shape beats its general form
 

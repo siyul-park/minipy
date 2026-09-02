@@ -7,6 +7,7 @@ import (
 	"github.com/siyul-park/minipy/module"
 	"github.com/siyul-park/minipy/token"
 	"github.com/siyul-park/minipy/types"
+	"github.com/siyul-park/minivm/interp"
 
 	"github.com/siyul-park/minivm/instr"
 	vmtypes "github.com/siyul-park/minivm/types"
@@ -29,7 +30,7 @@ func emitPowFloatTail(e module.Emitter, left, right types.Type, pushRight func()
 	if types.Equal(types.Erase(right), types.Int) {
 		e.Emit(instr.I64_TO_F64_S)
 	}
-	e.CallHost(powFloat())
+	e.CallHost(e.Once(module.HostKey(Name, "pow", "float"), powFloat))
 }
 
 // EmitBinary lowers a checked binary operation. pushLeft and pushRight evaluate
@@ -39,7 +40,7 @@ func EmitBinary(e module.Emitter, op token.Type, left, right types.Type, pushLef
 	if isDynamicEmit(left) || isDynamicEmit(right) {
 		pushLeft()
 		pushRight()
-		e.CallHost(dynBinaryOp(op))
+		e.CallHost(e.Once(module.HostKey(Name, "binary", "dynamic", op), func() *interp.HostFunction { return dynBinaryOp(op) }))
 		return
 	}
 	switch op {
@@ -88,7 +89,7 @@ func EmitBinary(e module.Emitter, op token.Type, left, right types.Type, pushLef
 		pushLeft()
 		if types.Equal(types.Erase(left), types.Int) && types.Equal(types.Erase(right), types.Int) {
 			pushRight()
-			e.CallHost(powInt())
+			e.CallHost(e.Once(module.HostKey(Name, "pow", "int"), powInt))
 		} else {
 			emitPowFloatTail(e, left, right, pushRight)
 		}
@@ -104,7 +105,7 @@ func EmitBinary(e module.Emitter, op token.Type, left, right types.Type, pushLef
 			case types.Equal(el, types.Str):
 				e.Emit(instr.STRING_CONCAT)
 			case types.Equal(el, types.Bytes):
-				e.CallHost(bytesConcat())
+				e.CallHost(e.Once(module.HostKey(Name, "concat", "bytes"), bytesConcat))
 			default:
 				// For mixed int/float, promote the int operand.
 				if isMixedNumeric(left, right) {
@@ -119,15 +120,15 @@ func EmitBinary(e module.Emitter, op token.Type, left, right types.Type, pushLef
 		pushRight()
 		el, er := types.Erase(left), types.Erase(right)
 		if _, ok := el.(*types.List); ok {
-			e.CallHost(listRepeat(el))
+			e.CallHost(e.Once(module.HostKey(Name, "repeat", el), func() *interp.HostFunction { return listRepeat(el) }))
 		} else if _, ok := er.(*types.List); ok {
 			e.Emit(instr.SWAP)
-			e.CallHost(listRepeat(er))
+			e.CallHost(e.Once(module.HostKey(Name, "repeat", er), func() *interp.HostFunction { return listRepeat(er) }))
 		} else if types.Equal(el, types.Str) {
 			e.Emit(instr.SWAP)
-			e.CallHost(stringRepeat())
+			e.CallHost(e.Once(module.HostKey(Name, "repeat", "str"), stringRepeat))
 		} else if types.Equal(er, types.Str) {
-			e.CallHost(stringRepeat())
+			e.CallHost(e.Once(module.HostKey(Name, "repeat", "str"), stringRepeat))
 		} else if isMixedNumeric(left, right) {
 			emitMixedArith(e, op, left, right)
 		} else {
@@ -137,7 +138,7 @@ func EmitBinary(e module.Emitter, op token.Type, left, right types.Type, pushLef
 		pushLeft()
 		pushRight()
 		if _, ok := types.Erase(left).(*types.Set); ok {
-			e.CallHost(setBinary(token.MINUS, left))
+			e.CallHost(e.Once(module.HostKey(Name, "set", token.MINUS, left), func() *interp.HostFunction { return setBinary(token.MINUS, left) }))
 		} else if isMixedNumeric(left, right) {
 			emitMixedArith(e, op, left, right)
 		} else {
@@ -147,7 +148,7 @@ func EmitBinary(e module.Emitter, op token.Type, left, right types.Type, pushLef
 		pushLeft()
 		pushRight()
 		if _, ok := types.Erase(left).(*types.Set); ok {
-			e.CallHost(setBinary(op, left))
+			e.CallHost(e.Once(module.HostKey(Name, "set", op, left), func() *interp.HostFunction { return setBinary(op, left) }))
 		} else {
 			e.Emit(simpleBinOp(op, types.Erase(left)))
 		}
@@ -163,7 +164,7 @@ func EmitBinary(e module.Emitter, op token.Type, left, right types.Type, pushLef
 func EmitCompareStack(e module.Emitter, op token.Type, left, right types.Type) {
 	if op == token.IN || op == token.NOTIN {
 		if isDynamicEmit(right) {
-			e.CallHost(dynContains(op))
+			e.CallHost(e.Once(module.HostKey(Name, "contains", "dynamic", op), func() *interp.HostFunction { return dynContains(op) }))
 			return
 		}
 		e.Emit(instr.SWAP)
@@ -178,7 +179,7 @@ func EmitCompareStack(e module.Emitter, op token.Type, left, right types.Type) {
 		return
 	}
 	if isDynamicEmit(left) || isDynamicEmit(right) {
-		e.CallHost(dynCompare(op))
+		e.CallHost(e.Once(module.HostKey(Name, "compare", "dynamic", op), func() *interp.HostFunction { return dynCompare(op) }))
 		return
 	}
 	if types.Equal(left, types.Ellipsis) && types.Equal(right, types.Ellipsis) {
@@ -192,7 +193,7 @@ func EmitCompareStack(e module.Emitter, op token.Type, left, right types.Type) {
 		// The checker admits only bytes equality here. Keep != as an inversion
 		// because minivm currently interns host functions by signature rather
 		// than semantic identity.
-		e.CallHost(bytesEqual())
+		e.CallHost(e.Once(module.HostKey(Name, "equal", "bytes"), bytesEqual))
 		if op == token.NE {
 			e.Emit(instr.I32_EQZ)
 		}
@@ -200,7 +201,7 @@ func EmitCompareStack(e module.Emitter, op token.Type, left, right types.Type) {
 	}
 	el := types.Erase(left)
 	if _, ok := el.(*types.Set); ok && isOrderingOp(op) {
-		e.CallHost(setRelation(op, left))
+		e.CallHost(e.Once(module.HostKey(Name, "relation", op, left), func() *interp.HostFunction { return setRelation(op, left) }))
 		return
 	}
 	if isContainerType(el) {
@@ -247,13 +248,13 @@ func EmitCompareStack(e module.Emitter, op token.Type, left, right types.Type) {
 // set, or a container whose elements CmpOpcode cannot compare.
 func emitContainerCompare(e module.Emitter, op token.Type, t types.Type) {
 	if op == token.EQ || op == token.NE {
-		e.CallHost(containerEqual(t))
+		e.CallHost(e.Once(module.HostKey(Name, "equal", t), func() *interp.HostFunction { return containerEqual(t) }))
 		if op == token.NE {
 			e.Emit(instr.I32_EQZ)
 		}
 		return
 	}
-	e.CallHost(containerCompare(t))
+	e.CallHost(e.Once(module.HostKey(Name, "compare", t), func() *interp.HostFunction { return containerCompare(t) }))
 	e.Emit(instr.I64_CONST, 0)
 	e.Emit(orderOpcode(op))
 }
@@ -305,17 +306,17 @@ func EmitUnary(e module.Emitter, op token.Type, arg ast.Expr) {
 		switch op {
 		case token.NOT:
 			e.Expr(arg)
-			e.CallHost(DynBool())
+			e.CallHost(e.Once(module.HostKey(Name, "bool", "dynamic"), DynBool))
 			e.Emit(instr.I32_EQZ)
 		case token.MINUS:
 			e.Expr(arg)
-			e.CallHost(dynUnaryNeg())
+			e.CallHost(e.Once(module.HostKey(Name, "neg", "dynamic"), dynUnaryNeg))
 		case token.PLUS:
 			e.Expr(arg)
-			e.CallHost(dynUnaryPos())
+			e.CallHost(e.Once(module.HostKey(Name, "pos", "dynamic"), dynUnaryPos))
 		case token.TILDE:
 			e.Expr(arg)
-			e.CallHost(dynUnaryInvert())
+			e.CallHost(e.Once(module.HostKey(Name, "invert", "dynamic"), dynUnaryInvert))
 		}
 		return
 	}
@@ -425,12 +426,12 @@ func emitContains(e module.Emitter, op token.Type, needle, haystack types.Type) 
 		e.Emit(instr.I32_CONST, 0)
 		e.Emit(instr.I32_NE)
 	case *types.List:
-		e.CallHost(listContains(needle, haystack))
+		e.CallHost(e.Once(module.HostKey(Name, "contains", needle, haystack), func() *interp.HostFunction { return listContains(needle, haystack) }))
 	default:
 		if types.Equal(haystack, types.Str) {
-			e.CallHost(strContains())
+			e.CallHost(e.Once(module.HostKey(Name, "contains", "str"), strContains))
 		} else if types.Equal(haystack, types.Bytes) {
-			e.CallHost(bytesContains())
+			e.CallHost(e.Once(module.HostKey(Name, "contains", "bytes"), bytesContains))
 		}
 	}
 	if op == token.NOTIN {

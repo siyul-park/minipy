@@ -1,7 +1,7 @@
 # instructions   39
 # functions      0
-# host functions 4
-# constants      4
+# host functions 3
+# constants      3
 # types          1
 # globals        1
 # locals         0
@@ -42,7 +42,7 @@
 0109:	i32.to_i64_s
 0110:	const.get 0x0002
 0113:	call
-0114:	const.get 0x0003
+0114:	const.get 0x0001
 0117:	call
 0118:	ref.null
 0119:	drop
@@ -55,7 +55,6 @@
 0000:	<host> func(i1) string
 0001:	<host> func(string)
 0002:	<host> func(i64) string
-0003:	<host> func(string)
 
 .types
 0000:	map[i64]i1

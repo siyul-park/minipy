@@ -158,3 +158,18 @@ func (c *NativeConstant) Emit(e Emitter, args []ast.Expr) { c.emit(e, args) }
 
 // ConstantType returns the static type of the constant.
 func (c *NativeConstant) ConstantType() types.Type { return c.typ }
+
+// HostKey names one host function for Emitter.Once, joining the parts that
+// decide its behavior. Include the module name so two modules' operations
+// cannot collide, and every argument the factory reads, so two shapes of one
+// operation stay distinct.
+func HostKey(parts ...any) string {
+	key := ""
+	for index, part := range parts {
+		if index > 0 {
+			key += "/"
+		}
+		key += fmt.Sprint(part)
+	}
+	return key
+}

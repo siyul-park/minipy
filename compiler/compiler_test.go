@@ -186,6 +186,34 @@ func TestCompileSharesHostFunctions(t *testing.T) {
 		require.Equal(t, 1, sorts, "both list.sort call sites must share one host constant")
 	})
 
+	t.Run("a native symbol emitted repeatedly shares one host constant", func(t *testing.T) {
+		// str() and print() are emitted by builtins, not by the compiler's own
+		// factories, so they share only if module.Emitter.Once reaches them.
+		src := "a: int = 1\nb: int = 2\nprint(str(a))\nprint(str(b))\nprint(str(a + b))\n"
+		prog, err := Compile(strings.NewReader(src), WithOutput(io.Discard))
+		require.NoError(t, err)
+
+		signatures := map[string]int{}
+		for _, host := range hostConstants(prog.Constants) {
+			signatures[host.Typ.String()]++
+		}
+		require.Equal(t, 1, signatures["func(i64) string"], "three str(int) call sites share one host constant")
+		require.Equal(t, 1, signatures["func(string)"], "three print(str) call sites share one host constant")
+	})
+
+	t.Run("distinct argument types keep distinct host constants", func(t *testing.T) {
+		src := "a: int = 1\nb: float = 2.0\nprint(str(a))\nprint(str(b))\n"
+		prog, err := Compile(strings.NewReader(src), WithOutput(io.Discard))
+		require.NoError(t, err)
+
+		signatures := map[string]bool{}
+		for _, host := range hostConstants(prog.Constants) {
+			signatures[host.Typ.String()] = true
+		}
+		require.True(t, signatures["func(i64) string"], "str(int) keeps its own host function")
+		require.True(t, signatures["func(f64) string"], "str(float) keeps its own host function")
+	})
+
 	t.Run("distinct receiver types keep distinct host constants", func(t *testing.T) {
 		src := "xs: list[int] = [3, 1, 2]\n" +
 			"ss: list[str] = [\"b\", \"a\"]\n" +

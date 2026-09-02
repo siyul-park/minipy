@@ -1,7 +1,7 @@
 # instructions   70
 # functions      1
-# host functions 3
-# constants      7
+# host functions 1
+# constants      5
 # types          1
 # globals        1
 # locals         0
@@ -26,7 +26,7 @@
 0047:	array.set
 0048:	global.get 0x0000
 0051:	call
-0052:	const.get 0x0005
+0052:	const.get 0x0004
 0055:	call
 0056:	ref.null
 0057:	drop
@@ -42,7 +42,7 @@
 0097:	array.set
 0098:	global.get 0x0000
 0101:	call
-0102:	const.get 0x0006
+0102:	const.get 0x0004
 0105:	call
 0106:	ref.null
 0107:	drop
@@ -91,8 +91,6 @@
 	0065:	ref.null
 	0066:	return
 0004:	<host> func(string)
-0005:	<host> func(string)
-0006:	<host> func(string)
 
 .types
 0000:	[]i64

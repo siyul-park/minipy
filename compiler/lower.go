@@ -623,6 +623,12 @@ func (c *lowerer) TypeIndex(t types.Type) uint64 { return c.typeIndex(t) }
 // ConstGet emits a CONST_GET instruction for a constant pool value.
 func (c *lowerer) ConstGet(v vmtypes.Value) { c.constGet(v) }
 
+// Once returns the host function this compilation uses for one native
+// operation, building it at most once.
+func (c *lowerer) Once(key string, build func() *interp.HostFunction) *interp.HostFunction {
+	return c.host(key, build)
+}
+
 // CallHost emits a call to a value-returning host function.
 func (c *lowerer) CallHost(fn *interp.HostFunction) { c.callHost(fn) }
 

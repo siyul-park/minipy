@@ -1,7 +1,7 @@
 # instructions   40
 # functions      0
-# host functions 2
-# constants      4
+# host functions 1
+# constants      3
 # types          0
 # globals        1
 # locals         3
@@ -44,7 +44,7 @@
 0093:	br L0105
 L0096:
 0096:	const.get 0x0002
-0099:	const.get 0x0003
+0099:	const.get 0x0001
 0102:	call
 0103:	ref.null
 0104:	drop
@@ -63,4 +63,3 @@ L0105:
 0000:	string "even"
 0001:	<host> func(string)
 0002:	string "odd"
-0003:	<host> func(string)

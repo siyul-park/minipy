@@ -229,7 +229,7 @@ func emitRandintFn(host *interp.HostFunction) module.EmitFunc {
 		if types.IsDynamic(t0) || types.IsDynamic(t1) {
 			e.Expr(args[0])
 			e.Expr(args[1])
-			e.CallHost(dynRandintHost(t0, t1))
+			e.CallHost(e.Once(module.HostKey(Name, "randint", "dynamic", t0, t1), func() *interp.HostFunction { return dynRandintHost(t0, t1) }))
 			return
 		}
 		e.Expr(args[0])
@@ -246,7 +246,7 @@ func emitRandrangeFn(oneHost, twoHost *interp.HostFunction) module.EmitFunc {
 			t0 := e.Type(args[0])
 			if types.IsDynamic(t0) {
 				e.Expr(args[0])
-				e.CallHost(dynRandrangeOneHost())
+				e.CallHost(e.Once(module.HostKey(Name, "randrange", "dynamic", 1), dynRandrangeOneHost))
 				return
 			}
 			e.Expr(args[0])
@@ -257,7 +257,7 @@ func emitRandrangeFn(oneHost, twoHost *interp.HostFunction) module.EmitFunc {
 			if types.IsDynamic(t0) || types.IsDynamic(t1) {
 				e.Expr(args[0])
 				e.Expr(args[1])
-				e.CallHost(dynRandrangeTwoHost(t0, t1))
+				e.CallHost(e.Once(module.HostKey(Name, "randrange", "dynamic", t0, t1), func() *interp.HostFunction { return dynRandrangeTwoHost(t0, t1) }))
 				return
 			}
 			e.Expr(args[0])
@@ -276,7 +276,7 @@ func emitUniformFn(host *interp.HostFunction) module.EmitFunc {
 		if types.IsDynamic(t0) || types.IsDynamic(t1) {
 			e.Expr(args[0])
 			e.Expr(args[1])
-			e.CallHost(dynUniformHost(t0, t1))
+			e.CallHost(e.Once(module.HostKey(Name, "uniform", "dynamic", t0, t1), func() *interp.HostFunction { return dynUniformHost(t0, t1) }))
 			return
 		}
 		e.Expr(args[0])
@@ -295,14 +295,14 @@ func emitUniformFn(host *interp.HostFunction) module.EmitFunc {
 func emitChoice(e module.Emitter, args []ast.Expr) {
 	e.Expr(args[0])
 	t := e.Type(args[0])
-	e.CallHost(choiceHost(t))
+	e.CallHost(e.Once(module.HostKey(Name, "choice", t), func() *interp.HostFunction { return choiceHost(t) }))
 }
 
 // emitShuffle emits shuffle(xs) call (void: returns None).
 func emitShuffle(e module.Emitter, args []ast.Expr) {
 	e.Expr(args[0])
 	t := e.Type(args[0])
-	e.CallHostVoid(shuffleHost(t))
+	e.CallHostVoid(e.Once(module.HostKey(Name, "shuffle", t), func() *interp.HostFunction { return shuffleHost(t) }))
 }
 
 // emitSeedFn emits seed(n) call (void: returns None) using a pre-allocated

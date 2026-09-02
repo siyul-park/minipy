@@ -1,7 +1,7 @@
 # instructions   129
 # functions      1
-# host functions 5
-# constants      9
+# host functions 3
+# constants      7
 # types          1
 # globals        1
 # locals         0
@@ -24,9 +24,9 @@
 0047:	i64.const 0x0000000000000000
 0056:	global.get 0x0000
 0059:	call
-0060:	const.get 0x0007
+0060:	const.get 0x0005
 0063:	call
-0064:	const.get 0x0008
+0064:	const.get 0x0006
 0067:	call
 0068:	ref.null
 0069:	drop
@@ -157,8 +157,6 @@
 	0277:	return
 0005:	<host> func(i64) string
 0006:	<host> func(string)
-0007:	<host> func(i64) string
-0008:	<host> func(string)
 
 .types
 0000:	struct {i64; string}

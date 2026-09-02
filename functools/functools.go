@@ -166,7 +166,7 @@ func emitReduce(e module.Emitter, args []ast.Expr) {
 		e.BrIf(ok)
 
 		// Empty list: call host function that raises an error.
-		e.CallHost(reduceEmptyHost())
+		e.CallHost(e.Once(module.HostKey(Name, "reduce", "empty"), reduceEmptyHost))
 
 		// The host errors unconditionally, so the DROP/assignment below is
 		// unreachable but needed for stack balance at compile time.

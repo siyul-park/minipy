@@ -1,7 +1,7 @@
 # instructions   60
 # functions      0
-# host functions 5
-# constants      5
+# host functions 3
+# constants      3
 # types          1
 # globals        2
 # locals         1
@@ -65,9 +65,9 @@ L0107:
 0109:	drop
 0110:	unreachable
 L0111:
-0111:	const.get 0x0003
+0111:	const.get 0x0001
 0114:	call
-0115:	const.get 0x0004
+0115:	const.get 0x0002
 0118:	call
 0119:	ref.null
 0120:	drop
@@ -84,8 +84,6 @@ L0111:
 0000:	<host> func([]i64) any
 0001:	<host> func(i64) string
 0002:	<host> func(string)
-0003:	<host> func(i64) string
-0004:	<host> func(string)
 
 .types
 0000:	[]i64
