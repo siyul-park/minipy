@@ -6,7 +6,6 @@ import (
 	"strings"
 
 	"github.com/siyul-park/minipy/ast"
-	"github.com/siyul-park/minipy/hostabi"
 	"github.com/siyul-park/minipy/module"
 	"github.com/siyul-park/minipy/operator"
 	"github.com/siyul-park/minipy/token"
@@ -97,7 +96,7 @@ func (c *lowerer) expr(n ast.Expr) {
 func (c *lowerer) listLit(x *ast.ListLit) {
 	t := c.types[x].(*types.List)
 	if hasStarredExpr(x.Elems) {
-		slot := c.tmp(vmtypes.TypeRef)
+		slot := c.tmp(vmtypes.TypeAny)
 		c.emit(instr.I32_CONST, 0)
 		c.emit(instr.ARRAY_NEW_DEFAULT, c.typeIndex(t))
 		c.emit(instr.GLOBAL_SET, uint64(slot))
@@ -146,7 +145,7 @@ func (c *lowerer) bytesLit(x *ast.BytesLit) {
 func (c *lowerer) dictLit(x *ast.DictLit) {
 	t := c.types[x].(*types.Dict)
 	if hasDictUnpack(x) {
-		slot := c.tmp(vmtypes.TypeRef)
+		slot := c.tmp(vmtypes.TypeAny)
 		c.emit(instr.I32_CONST, 0)
 		c.emit(instr.MAP_NEW, c.typeIndex(t))
 		c.emit(instr.GLOBAL_SET, uint64(slot))
@@ -201,7 +200,7 @@ func (c *lowerer) appendListSlot(slot int, emitElem func()) {
 }
 
 func (c *lowerer) appendTupleToListSlot(slot int, tupleExpr ast.Expr, tuple *types.Tuple) {
-	tupleSlot := c.tmp(vmtypes.TypeRef)
+	tupleSlot := c.tmp(vmtypes.TypeAny)
 	c.expr(tupleExpr)
 	c.emit(instr.GLOBAL_SET, uint64(tupleSlot))
 	for i := range tuple.Elems {
@@ -217,7 +216,7 @@ func (c *lowerer) appendTupleToListSlot(slot int, tupleExpr ast.Expr, tuple *typ
 func (c *lowerer) setLit(x *ast.SetLit) {
 	t := c.types[x].(*types.Set)
 	if hasStarredExpr(x.Elems) {
-		slot := c.tmp(vmtypes.TypeRef)
+		slot := c.tmp(vmtypes.TypeAny)
 		c.emit(instr.I32_CONST, 0)
 		c.emit(instr.MAP_NEW, c.typeIndex(t))
 		c.emit(instr.GLOBAL_SET, uint64(slot))
@@ -255,7 +254,7 @@ func (c *lowerer) lambda(x *ast.LambdaExpr) {
 
 func (c *lowerer) listComp(x *ast.ListComp) {
 	t := c.types[x].(*types.List)
-	slot := c.tmp(vmtypes.TypeRef)
+	slot := c.tmp(vmtypes.TypeAny)
 	c.emit(instr.I32_CONST, 0)
 	c.emit(instr.ARRAY_NEW_DEFAULT, c.typeIndex(t))
 	c.emit(instr.GLOBAL_SET, uint64(slot))
@@ -267,7 +266,7 @@ func (c *lowerer) listComp(x *ast.ListComp) {
 
 func (c *lowerer) dictComp(x *ast.DictComp) {
 	t := c.types[x].(*types.Dict)
-	slot := c.tmp(vmtypes.TypeRef)
+	slot := c.tmp(vmtypes.TypeAny)
 	c.emit(instr.I32_CONST, 0)
 	c.emit(instr.MAP_NEW, c.typeIndex(t))
 	c.emit(instr.GLOBAL_SET, uint64(slot))
@@ -282,7 +281,7 @@ func (c *lowerer) dictComp(x *ast.DictComp) {
 
 func (c *lowerer) setComp(x *ast.SetComp) {
 	t := c.types[x].(*types.Set)
-	slot := c.tmp(vmtypes.TypeRef)
+	slot := c.tmp(vmtypes.TypeAny)
 	c.emit(instr.I32_CONST, 0)
 	c.emit(instr.MAP_NEW, c.typeIndex(t))
 	c.emit(instr.GLOBAL_SET, uint64(slot))
@@ -333,7 +332,7 @@ func (c *lowerer) comp(clauses []*ast.Comprehension, body func()) {
 	emit(0)
 }
 func (c *lowerer) iterComp(clause *ast.Comprehension, targetSlot int, body func()) {
-	iterSlot := c.tmp(vmtypes.TypeRef)
+	iterSlot := c.tmp(vmtypes.TypeAny)
 	idxSlot := c.tmp(vmtypes.TypeI64)
 	c.expr(clause.Iter)
 	c.emit(instr.GLOBAL_SET, uint64(iterSlot))
@@ -370,7 +369,7 @@ func (c *lowerer) iterComp(clause *ast.Comprehension, targetSlot int, body func(
 }
 
 func (c *lowerer) iteratorComp(clause *ast.Comprehension, targetSlot int, emitIter func(), body func()) {
-	iterSlot := c.tmp(vmtypes.TypeRef)
+	iterSlot := c.tmp(vmtypes.TypeAny)
 	emitIter()
 	c.emit(instr.GLOBAL_SET, uint64(iterSlot))
 	top := c.label()
@@ -419,14 +418,14 @@ func (c *lowerer) subscript(x *ast.Subscript) {
 	if refDynamic(c.types[x.X]) {
 		c.expr(x.X)
 		c.expr(x.Index)
-		c.callHost(operator.DynGetItem())
+		c.callHost(c.host(hostKey("operator.getitem"), operator.DynGetItem))
 		return
 	}
 	c.expr(x.X)
 	c.expr(x.Index)
 	switch recv := c.types[x.X].(type) {
 	case *types.List:
-		c.emitListIndexNormalize()
+		c.emitListIndexNormalize(constIndex(x.Index))
 		c.emit(instr.ARRAY_GET)
 	case *types.Dict:
 		// Unlike MAP_GET's silent zero-value fallback for a missing key,
@@ -570,7 +569,7 @@ func (c *lowerer) fstringValue(p *ast.FStringExpr) {
 		valType = types.Str
 	case 's':
 		if !types.Equal(valType, types.Str) {
-			c.callHost(hostabi.StringFunction(valType))
+			c.callHost(c.stringHost(valType))
 		}
 		valType = types.Str
 	}
@@ -586,7 +585,7 @@ func (c *lowerer) fstringValue(p *ast.FStringExpr) {
 	}
 
 	if conv == 0 && !types.Equal(valType, types.Str) {
-		c.callHost(hostabi.StringFunction(valType))
+		c.callHost(c.stringHost(valType))
 	}
 }
 
@@ -923,186 +922,11 @@ func (c *lowerer) methodCall(x *ast.CallExpr, attr *ast.Attribute) {
 	for _, arg := range x.Args {
 		c.expr(arg)
 	}
-	switch attr.Name {
-	case "get":
-		if len(x.Args) == 1 {
-			c.emitZeroValue(c.types[x])
-		}
-		c.callHost(c.dictGet(recvType, c.types[x]))
-	case "keys":
-		c.emit(instr.MAP_KEYS)
-	case "values":
-		c.callHost(c.dictValues(recvType, c.types[x]))
-	case "items":
-		c.callHost(c.dictItems(recvType, c.types[x]))
-	case "update":
-		c.callHost(c.dictUpdate(recvType))
-		c.emit(instr.REF_NULL)
-	case "setdefault":
-		c.callHost(c.dictSetDefault(recvType, c.types[x]))
-	case "append":
-		c.emit(instr.I32_CONST, 1)
-		c.emit(instr.ARRAY_APPEND)
-		c.emit(instr.DROP)
-		c.emit(instr.REF_NULL)
-	case "pop":
-		if _, ok := recvType.(*types.Dict); ok {
-			if len(x.Args) == 2 {
-				c.callHost(c.dictPopDefault(recvType, c.types[x]))
-			} else {
-				c.callHost(c.dictPop(recvType, c.types[x]))
-			}
-		} else if _, ok := recvType.(*types.Set); ok {
-			c.callHost(c.setPop(recvType, c.types[x]))
-		} else {
-			if len(x.Args) == 0 {
-				c.emit(instr.I64_CONST, ^uint64(0))
-			}
-			c.emitArrayDelete()
-		}
-	case "index":
-		c.callHost(c.listIndex(recvType))
-	case "insert":
-		c.emitListInsert()
-		c.emit(instr.REF_NULL)
-	case "extend":
-		c.emitListExtend()
-		c.emit(instr.REF_NULL)
-	case "reverse":
-		c.emitListReverse()
-		c.emit(instr.REF_NULL)
-	case "sort":
-		c.callHost(c.listSort(recvType))
-		c.emit(instr.REF_NULL)
-	case "copy":
-		if _, ok := recvType.(*types.Dict); ok {
-			c.callHost(c.dictCopy(recvType))
-		} else if _, ok := recvType.(*types.Set); ok {
-			c.callHost(c.setCopy(recvType))
-		} else {
-			c.callHost(c.listCopy(recvType))
-		}
-	case "count":
-		if _, ok := recvType.(*types.List); ok {
-			c.callHost(c.listCount(recvType))
-		} else {
-			c.callHost(c.strCount())
-		}
-	case "clear":
-		if _, ok := recvType.(*types.Dict); ok {
-			c.callHost(c.dictClear(recvType))
-			c.emit(instr.REF_NULL)
-		} else if _, ok := recvType.(*types.Set); ok {
-			c.callHost(c.dictClear(recvType))
-			c.emit(instr.REF_NULL)
-		} else {
-			c.callHost(c.listClear(recvType))
-			c.emit(instr.REF_NULL)
-		}
-	case "remove":
-		if _, ok := recvType.(*types.Set); ok {
-			c.callHost(c.setRemove(recvType))
-			c.emit(instr.REF_NULL)
-		} else {
-			c.callHost(c.listRemove(recvType))
-			c.emit(instr.REF_NULL)
-		}
-	case "upper":
-		c.callHost(c.strUpper())
-	case "lower":
-		c.callHost(c.strLower())
-	case "split":
-		if len(x.Args) == 0 {
-			c.callHost(c.strSplitWhitespace())
-			return
-		}
-		c.callHost(c.strSplit())
-	case "join":
-		c.callHost(c.strJoin())
-	case "find":
-		c.callHost(c.strFind())
-	case "strip":
-		if len(x.Args) == 0 {
-			c.callHost(c.strStripNoArg())
-		} else {
-			c.callHost(c.strStripChars())
-		}
-	case "lstrip":
-		if len(x.Args) == 0 {
-			c.callHost(c.strLStripNoArg())
-		} else {
-			c.callHost(c.strLStripChars())
-		}
-	case "rstrip":
-		if len(x.Args) == 0 {
-			c.callHost(c.strRStripNoArg())
-		} else {
-			c.callHost(c.strRStripChars())
-		}
-	case "startswith":
-		c.callHost(c.strStartsWith())
-	case "endswith":
-		c.callHost(c.strEndsWith())
-	case "replace":
-		if len(x.Args) == 2 {
-			c.emit(instr.I64_CONST, ^uint64(0))
-		}
-		c.callHost(c.strReplace())
-	case "isdigit":
-		c.callHost(c.strIsDigit())
-	case "isalpha":
-		c.callHost(c.strIsAlpha())
-	case "isalnum":
-		c.callHost(c.strIsAlnum())
-	case "isspace":
-		c.callHost(c.strIsSpace())
-	case "capitalize":
-		c.callHost(c.strCapitalize())
-	case "title":
-		c.callHost(c.strTitle())
-	case "swapcase":
-		c.callHost(c.strSwapCase())
-	case "center":
-		if len(x.Args) == 1 {
-			c.constGet(vmtypes.String(" "))
-		}
-		c.callHost(c.strCenter())
-	case "ljust":
-		if len(x.Args) == 1 {
-			c.constGet(vmtypes.String(" "))
-		}
-		c.callHost(c.strLJust())
-	case "rjust":
-		if len(x.Args) == 1 {
-			c.constGet(vmtypes.String(" "))
-		}
-		c.callHost(c.strRJust())
-	case "zfill":
-		c.callHost(c.strZFill())
-	case "encode":
-		c.callHost(c.strEncode())
-	case "format":
-		c.emitStrFormat(x)
-	case "add":
-		c.emit(instr.I32_CONST, 1)
-		c.emit(instr.MAP_SET)
-		c.emit(instr.REF_NULL)
-	case "discard":
-		c.callHost(c.setDiscard(recvType))
-		c.emit(instr.REF_NULL)
-	case "union":
-		c.callHost(c.setUnion(recvType))
-	case "intersection":
-		c.callHost(c.setIntersection(recvType))
-	case "difference":
-		c.callHost(c.setDifference(recvType))
-	case "issubset":
-		c.callHost(c.setIsSubset(recvType))
-	case "issuperset":
-		c.callHost(c.setIsSuperset(recvType))
-	default:
-		c.fail(fmt.Errorf("lower method %s on %T: unsupported", attr.Name, recvType))
+	if method, ok := lookupBuiltinMethod(recvType, attr.Name); ok {
+		method.emit(c, recvType, x)
+		return
 	}
+	c.unsupported(attr.Pos(), "method %s on %s is not supported", attr.Name, recvType)
 }
 
 // emitStrFormat lowers str.format(args...). At this point the stack holds
@@ -1122,7 +946,7 @@ func (c *lowerer) emitStrFormat(x *ast.CallExpr) {
 		c.emit(instr.GLOBAL_SET, uint64(slot))
 	}
 	// Receiver (format string) is now on top - already a string.
-	recvSlot := c.tmp(vmtypes.TypeRef)
+	recvSlot := c.tmp(vmtypes.TypeAny)
 	c.emit(instr.GLOBAL_SET, uint64(recvSlot))
 
 	// Push in order: format_string, arg0_str, arg1_str, ...
@@ -1169,9 +993,13 @@ func (c *lowerer) emitZeroValue(t types.Type) {
 // [list, i64 index]. Stack out: [list, i32 index]. An index still negative,
 // or still out of range, is left for the following ARRAY_GET/ARRAY_SET/
 // ARRAY_DELETE bounds check to trap.
-func (c *lowerer) emitListIndexNormalize() {
+func (c *lowerer) emitListIndexNormalize(index int64, known bool) {
+	if known {
+		c.emitConstListIndexNormalize(index)
+		return
+	}
 	idxSlot := c.tmp(vmtypes.TypeI64)
-	listSlot := c.tmp(vmtypes.TypeRef)
+	listSlot := c.tmp(vmtypes.TypeAny)
 	c.emit(instr.GLOBAL_SET, uint64(idxSlot))
 	c.emit(instr.GLOBAL_SET, uint64(listSlot))
 
@@ -1196,26 +1024,69 @@ func (c *lowerer) emitListIndexNormalize() {
 	c.emit(instr.I64_TO_I32)
 }
 
+// emitConstListIndexNormalize normalizes an index whose value is known while
+// lowering. The sign decides the whole normalization, so neither the runtime
+// test nor the two scratch slots it needs are emitted: a non-negative index is
+// pushed as the i32 the opcode wants, and a negative one folds into
+// `len + index` straight-line. Whether the result is in range stays the VM's to
+// trap on, exactly as it is for a computed index.
+//
+// The index already on the stack is dropped rather than converted, because its
+// static type varies by call site — an augmented assignment reads it back from
+// a reference-typed slot, where an I64_TO_I32 would not verify.
+func (c *lowerer) emitConstListIndexNormalize(index int64) {
+	c.emit(instr.DROP)
+	if index >= 0 {
+		c.emit(instr.I32_CONST, uint64(uint32(index)))
+		return
+	}
+	c.emit(instr.DUP)
+	c.emit(instr.ARRAY_LEN)
+	c.emit(instr.I32_TO_I64_S)
+	c.emit(instr.I64_CONST, uint64(index))
+	c.emit(instr.I64_ADD)
+	c.emit(instr.I64_TO_I32)
+}
+
+// constIndex reports a subscript index whose value is known while lowering.
+// A value outside int32 is not reported: an array index is an i32, and folding
+// one that does not fit would turn an out-of-range index into an in-range one.
+func constIndex(index ast.Expr) (int64, bool) {
+	value, ok := int64(0), false
+	switch index := index.(type) {
+	case *ast.IntLit:
+		value, ok = index.Value, true
+	case *ast.UnaryExpr:
+		literal, isLiteral := index.X.(*ast.IntLit)
+		if isLiteral && index.Op == token.MINUS {
+			value, ok = -literal.Value, true
+		}
+	}
+	if !ok || value < math.MinInt32 || value > math.MaxInt32 {
+		return 0, false
+	}
+	return value, true
+}
+
 // emitListIndexNormalizeUnderValue normalizes a possibly negative i64 list
-// index that sits beneath a value already pushed on the stack: [list, i64
-// index, value] -> [list, i32 index, value]. Subscript-assignment writes push
-// the stored value after the index, so the index to normalize is not on top.
-func (c *lowerer) emitListIndexNormalizeUnderValue() {
-	valueSlot := c.tmp(vmtypes.TypeRef)
+// index that sits beneath an already-pushed value, which is the shape a
+// subscript assignment leaves on the stack.
+func (c *lowerer) emitListIndexNormalizeUnderValue(index int64, known bool) {
+	valueSlot := c.tmp(vmtypes.TypeAny)
 	c.emit(instr.GLOBAL_SET, uint64(valueSlot))
-	c.emitListIndexNormalize()
+	c.emitListIndexNormalize(index, known)
 	c.emit(instr.GLOBAL_GET, uint64(valueSlot))
 }
 
-func (c *lowerer) emitArrayDelete() {
-	c.emitListIndexNormalize()
+func (c *lowerer) emitArrayDelete(index int64, known bool) {
+	c.emitListIndexNormalize(index, known)
 	c.emit(instr.ARRAY_DELETE)
 }
 
 func (c *lowerer) emitListInsert() {
-	valueSlot := c.tmp(vmtypes.TypeRef)
+	valueSlot := c.tmp(vmtypes.TypeAny)
 	idxSlot := c.tmp(vmtypes.TypeI64)
-	listSlot := c.tmp(vmtypes.TypeRef)
+	listSlot := c.tmp(vmtypes.TypeAny)
 	lenSlot := c.tmp(vmtypes.TypeI64)
 	iSlot := c.tmp(vmtypes.TypeI64)
 
@@ -1305,8 +1176,8 @@ func (c *lowerer) emitListInsert() {
 }
 
 func (c *lowerer) emitListExtend() {
-	srcSlot := c.tmp(vmtypes.TypeRef)
-	listSlot := c.tmp(vmtypes.TypeRef)
+	srcSlot := c.tmp(vmtypes.TypeAny)
+	listSlot := c.tmp(vmtypes.TypeAny)
 	lenSlot := c.tmp(vmtypes.TypeI64)
 	iSlot := c.tmp(vmtypes.TypeI64)
 
@@ -1344,10 +1215,10 @@ func (c *lowerer) emitListExtend() {
 }
 
 func (c *lowerer) emitListReverse() {
-	listSlot := c.tmp(vmtypes.TypeRef)
+	listSlot := c.tmp(vmtypes.TypeAny)
 	iSlot := c.tmp(vmtypes.TypeI64)
 	jSlot := c.tmp(vmtypes.TypeI64)
-	tmpSlot := c.tmp(vmtypes.TypeRef)
+	tmpSlot := c.tmp(vmtypes.TypeAny)
 
 	c.emit(instr.GLOBAL_SET, uint64(listSlot))
 	c.emit(instr.I64_CONST, 0)

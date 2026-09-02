@@ -98,7 +98,7 @@ func constant(name string, value float64) *module.NativeConstant {
 // promotion.
 func unaryFloat(name string, fn func(float64) float64) *module.NativeSymbol {
 	host := unaryFloatHost(fn)
-	return module.NewSymbol(name, checkUnaryFloat(name), emitUnaryFloat(host, fn), nil)
+	return module.NewSymbol(name, checkUnaryFloat(name), emitUnaryFloat(name, host, fn), nil)
 }
 
 // domainInvalid reports whether x lies outside a function's real-valued
@@ -111,21 +111,21 @@ type domainInvalid func(x float64) bool
 // ErrDomain instead of computing a result when the argument fails invalid.
 func unaryFloatDomain(name string, fn func(float64) float64, invalid domainInvalid) *module.NativeSymbol {
 	host := unaryFloatDomainHost(fn, invalid)
-	return module.NewSymbol(name, checkUnaryFloat(name), emitUnaryFloatDomain(host, fn, invalid), nil)
+	return module.NewSymbol(name, checkUnaryFloat(name), emitUnaryFloatDomain(name, host, fn, invalid), nil)
 }
 
 // binaryFloat builds a callable symbol: (float, float) -> float, accepting int
 // with promotion.
 func binaryFloat(name string, fn func(float64, float64) float64) *module.NativeSymbol {
 	host := binaryFloatHost(fn)
-	return module.NewSymbol(name, checkBinaryFloat(name), emitBinaryFloat(host, fn), nil)
+	return module.NewSymbol(name, checkBinaryFloat(name), emitBinaryFloat(name, host, fn), nil)
 }
 
 // predicate builds a callable symbol: (float) -> bool, accepting int with
 // promotion.
 func predicate(name string, fn func(float64) bool) *module.NativeSymbol {
 	host := predicateHost(fn)
-	return module.NewSymbol(name, checkPredicate(name), emitPredicate(host, fn), nil)
+	return module.NewSymbol(name, checkPredicate(name), emitPredicate(name, host, fn), nil)
 }
 
 // --- Check functions ---
@@ -220,12 +220,12 @@ var checkFactorial module.CheckFunc = func(c module.Checker, args []ast.Expr, po
 
 // --- Emit functions ---
 
-func emitUnaryFloat(host *interp.HostFunction, fn func(float64) float64) module.EmitFunc {
+func emitUnaryFloat(name string, host *interp.HostFunction, fn func(float64) float64) module.EmitFunc {
 	return func(e module.Emitter, args []ast.Expr) {
 		e.Expr(args[0])
 		argType := e.Type(args[0])
 		if types.IsDynamic(argType) {
-			e.CallHost(dynUnaryFloatHost(fn))
+			e.CallHost(e.Once(module.HostKey(Name, "unary", "dynamic", name), func() *interp.HostFunction { return dynUnaryFloatHost(fn) }))
 			return
 		}
 		if types.Equal(argType, types.Int) {
@@ -235,12 +235,12 @@ func emitUnaryFloat(host *interp.HostFunction, fn func(float64) float64) module.
 	}
 }
 
-func emitUnaryFloatDomain(host *interp.HostFunction, fn func(float64) float64, invalid domainInvalid) module.EmitFunc {
+func emitUnaryFloatDomain(name string, host *interp.HostFunction, fn func(float64) float64, invalid domainInvalid) module.EmitFunc {
 	return func(e module.Emitter, args []ast.Expr) {
 		e.Expr(args[0])
 		argType := e.Type(args[0])
 		if types.IsDynamic(argType) {
-			e.CallHost(dynUnaryFloatDomainHost(fn, invalid))
+			e.CallHost(e.Once(module.HostKey(Name, "unaryDomain", "dynamic", name), func() *interp.HostFunction { return dynUnaryFloatDomainHost(fn, invalid) }))
 			return
 		}
 		if types.Equal(argType, types.Int) {
@@ -250,14 +250,14 @@ func emitUnaryFloatDomain(host *interp.HostFunction, fn func(float64) float64, i
 	}
 }
 
-func emitBinaryFloat(host *interp.HostFunction, fn func(float64, float64) float64) module.EmitFunc {
+func emitBinaryFloat(name string, host *interp.HostFunction, fn func(float64, float64) float64) module.EmitFunc {
 	return func(e module.Emitter, args []ast.Expr) {
 		t0 := e.Type(args[0])
 		t1 := e.Type(args[1])
 		if types.IsDynamic(t0) || types.IsDynamic(t1) {
 			e.Expr(args[0])
 			e.Expr(args[1])
-			e.CallHost(dynBinaryFloatHost(fn, t0, t1))
+			e.CallHost(e.Once(module.HostKey(Name, "binary", "dynamic", name, t0, t1), func() *interp.HostFunction { return dynBinaryFloatHost(fn, t0, t1) }))
 			return
 		}
 		e.Expr(args[0])
@@ -272,12 +272,12 @@ func emitBinaryFloat(host *interp.HostFunction, fn func(float64, float64) float6
 	}
 }
 
-func emitPredicate(host *interp.HostFunction, fn func(float64) bool) module.EmitFunc {
+func emitPredicate(name string, host *interp.HostFunction, fn func(float64) bool) module.EmitFunc {
 	return func(e module.Emitter, args []ast.Expr) {
 		e.Expr(args[0])
 		argType := e.Type(args[0])
 		if types.IsDynamic(argType) {
-			e.CallHost(dynPredicateHost(fn))
+			e.CallHost(e.Once(module.HostKey(Name, "predicate", "dynamic", name), func() *interp.HostFunction { return dynPredicateHost(fn) }))
 			return
 		}
 		if types.Equal(argType, types.Int) {
@@ -294,7 +294,7 @@ func emitGCD(hostFn func() *interp.HostFunction) module.EmitFunc {
 		if types.IsDynamic(t0) || types.IsDynamic(t1) {
 			e.Expr(args[0])
 			e.Expr(args[1])
-			e.CallHost(dynGCDHost(t0, t1))
+			e.CallHost(e.Once(module.HostKey(Name, "gcd", "dynamic", t0, t1), func() *interp.HostFunction { return dynGCDHost(t0, t1) }))
 			return
 		}
 		e.Expr(args[0])
@@ -308,7 +308,7 @@ func emitFactorial(hostFn func() *interp.HostFunction) module.EmitFunc {
 		t0 := e.Type(args[0])
 		if types.IsDynamic(t0) {
 			e.Expr(args[0])
-			e.CallHost(dynFactorialHost())
+			e.CallHost(e.Once(module.HostKey(Name, "factorial", "dynamic"), dynFactorialHost))
 			return
 		}
 		e.Expr(args[0])
@@ -410,15 +410,15 @@ func factorialHost() *interp.HostFunction {
 }
 
 // --- Dynamic dispatch host functions ---
-// These accept vmtypes.TypeRef parameters for dynamic-typed arguments, unbox
+// These accept vmtypes.TypeAny parameters for dynamic-typed arguments, unbox
 // the value at runtime, promote to float64 or int64 as needed, and perform
 // the math operation directly.
 
 // dynUnaryFloatHost creates a dynamic dispatch host function for unary float
-// operations. It accepts a TypeRef argument, unboxes it to float64, and applies fn.
+// operations. It accepts a TypeAny argument, unboxes it to float64, and applies fn.
 func dynUnaryFloatHost(fn func(float64) float64) *interp.HostFunction {
 	return interp.NewHostFunction(
-		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeRef}, Returns: []vmtypes.Type{vmtypes.TypeF64}},
+		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeAny}, Returns: []vmtypes.Type{vmtypes.TypeF64}},
 		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
 			f, err := hostabi.UnboxFloat(i, params[0])
 			if err != nil {
@@ -433,7 +433,7 @@ func dynUnaryFloatHost(fn func(float64) float64) *interp.HostFunction {
 // domain-restricted unary float operation. See dynUnaryFloatHost.
 func dynUnaryFloatDomainHost(fn func(float64) float64, invalid domainInvalid) *interp.HostFunction {
 	return interp.NewHostFunction(
-		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeRef}, Returns: []vmtypes.Type{vmtypes.TypeF64}},
+		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeAny}, Returns: []vmtypes.Type{vmtypes.TypeF64}},
 		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
 			f, err := hostabi.UnboxFloat(i, params[0])
 			if err != nil {
@@ -449,7 +449,7 @@ func dynUnaryFloatDomainHost(fn func(float64) float64, invalid domainInvalid) *i
 
 // dynBinaryFloatHost creates a dynamic dispatch host function for binary float
 // operations. Each argument may be either a direct numeric type (when one arg
-// is static) or a TypeRef (when dynamic). The host unboxes as needed.
+// is static) or a TypeAny (when dynamic). The host unboxes as needed.
 func dynBinaryFloatHost(fn func(float64, float64) float64, t0, t1 types.Type) *interp.HostFunction {
 	p0 := hostabi.VMParamType(t0)
 	p1 := hostabi.VMParamType(t1)
@@ -472,7 +472,7 @@ func dynBinaryFloatHost(fn func(float64, float64) float64, t0, t1 types.Type) *i
 // dynPredicateHost creates a dynamic dispatch host function for predicates.
 func dynPredicateHost(fn func(float64) bool) *interp.HostFunction {
 	return interp.NewHostFunction(
-		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeRef}, Returns: []vmtypes.Type{vmtypes.TypeI1}},
+		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeAny}, Returns: []vmtypes.Type{vmtypes.TypeI1}},
 		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
 			f, err := hostabi.UnboxFloat(i, params[0])
 			if err != nil {
@@ -519,7 +519,7 @@ func dynGCDHost(t0, t1 types.Type) *interp.HostFunction {
 // dynFactorialHost creates a dynamic dispatch host function for factorial.
 func dynFactorialHost() *interp.HostFunction {
 	return interp.NewHostFunction(
-		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeRef}, Returns: []vmtypes.Type{vmtypes.TypeI64}},
+		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeAny}, Returns: []vmtypes.Type{vmtypes.TypeI64}},
 		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
 			n, err := hostabi.UnboxInt(i, params[0])
 			if err != nil {

@@ -44,8 +44,7 @@ level and then verified with `program.Verify`.
    (`Builder.Locals`, `Builder.Globals`)
 7. build a minivm program
 8. optimize with `optimize.New(level)`
-9. restore type, handler, and global tables preserved across optimization
-10. verify the final program
+9. verify the final program
 
 The interpreter sizes its global table from `Program.Globals`, and `GLOBAL_*`
 past the declared count traps and fails verification, so every global slot the
@@ -98,7 +97,7 @@ Compile options:
 - `WithOptimizationLevel(optimize.Level)` selects the minivm optimizer level
 - `WithModules(fs.FS)` adds a module search root
 - `WithModulePath(fs.FS, dirs...)` adds ordered search roots inside an `fs.FS`
-- `WithNativeModules(module.Module...)` adds native modules to the default registry
+- `WithNativeModules(module.Module...)` adds native modules to the default registry; an invalid catalogue is reported by `Compile`
 
 ## Modules and Imports
 
@@ -175,6 +174,20 @@ are not emitted.
 
 `while` and `for` maintain loop-label stacks for `break` and `continue`. Loop
 `else` blocks are emitted only along the non-break path.
+
+`for x in range(...)` lowers to a **counter loop** rather than an iterator when
+the iterable is a direct call to the builtin `range` and its step is a literal.
+Start and stop are evaluated once into frame locals, the step is an immediate,
+and the loop tests `i < stop` (or `i > stop` for a negative step) — the step's
+sign is what decides the comparison, which is why a computed step keeps the
+iterator instead. Nothing is allocated and no coroutine resume runs per step.
+`break`, `continue`, the `else` block, and the target's value after the loop
+behave exactly as on the iterator path; `continue` lands on the increment.
+
+The test sits at the **bottom** of the loop, entered by a jump, so the
+comparison feeds its conditional branch directly. minivm fuses a load, an
+operand, a compare and a branch into one handler; a top test has to invert the
+comparison with `I32_EQZ`, which splits that into two (`docs/codegen-quality.md`).
 
 `assert` lowers to a guard that, on a false test, constructs and throws an
 `AssertionError` instance through the same `emitExceptionInstance` path
@@ -268,6 +281,17 @@ unreachable-by-construction:
   (`identityComparable`, `operator/types.go`) — because minipy has no
   structural/field equality for them.
 
+### Integer floor division and remainder
+
+`%` on two ints lowers as `((left rem divisor) + divisor) rem divisor`, which is
+Python's divisor-signed remainder for every combination of signs: minivm's
+`I64_REM_S` truncates, differing from Python only when the operands' signs
+differ, and adding the divisor once then re-reducing lands on the same value
+there and leaves it alone otherwise. `//` keeps the explicit sign correction —
+computing the truncating quotient, then subtracting one when the remainder is
+non-zero and the signs differ — because there is no equally short identity for
+it.
+
 ### Containers, Strings, and Bytes
 
 List, dict, set, and tuple displays lower to minivm array/map/struct creation
@@ -321,6 +345,14 @@ subscript-assignment writes) before the `ARRAY_GET`/`ARRAY_SET`/`ARRAY_DELETE`
 opcode. Negative slicing, `.insert(-1, ...)`, and negative string indexing
 already normalized this way; this closes the same rule for plain list
 subscripting.
+
+A **literal** index normalizes while lowering instead. Its sign settles the whole
+question, so neither the runtime test nor the two scratch slots it needs are
+emitted: a non-negative index becomes the `i32` the opcode wants, and a negative
+one folds into `len + index` straight-line. Whether the index is in range stays
+the VM's to trap on, exactly as for a computed one, and an index outside `i32`
+keeps the general path rather than truncating an out-of-range index into an
+in-range one. `xs[0]`, `xs[-1]`, `xs.pop()`, and `del xs[-1]` all take it.
 
 Contiguous list slice assignment and deletion lower through narrow host helpers.
 The helpers normalize omitted and negative bounds like Python for step `1`,
@@ -405,6 +437,32 @@ that inherits an ancestor's `__init__` without declaring one directly) is not
 called — its extra fields keep their zero value, a pre-existing, narrower gap
 in constructor-inheritance modeling shared with non-exception classes, not
 new to this path.
+
+### Map representation and key identity
+
+minivm picks a map's concrete representation from its declared key type: a
+`TypedMap[T]` holds unboxed scalar keys, a `TypedMap[string]` holds string keys
+**by content**, and a generic `Map` holds boxed keys indexed by a `MapKey`.
+`dict[str, V]` and `set[str]` therefore store no boxed key at all — only the
+text — while `dict[Any, Any]` (the dynamic namespace `compile`/`eval`/`exec`
+use) is a generic `Map`. Source-level behavior is the same either way: equal
+strings are one key.
+
+`hostabi` owns that dispatch. `LoadMap`, `MapLen`, `MapGet`, `MapSet`,
+`MapDelete`, `MapClear`, and `MapEntries` are the only places minipy switches on
+a map's representation; a host function in `builtins`, `operator`, or
+`compiler/runtime.go` calls them and never names a `TypedMap` arm. Their key
+handling mirrors the interpreter's own rule exactly — `i1`/`i8` index through
+their `i32` form, a heap-spilled `int` indexes by its numeric value, `-0.0`
+folds into `0.0`, a string indexes by content under `KindText`, and every other
+reference indexes by heap address — so a key published by `MAP_SET` and a key
+published by a host function reach the same entry.
+
+`MapEntries` is the one operation with a mixed ownership contract, because a
+content-keyed map has no boxed key to borrow: the **keys it returns are owned by
+the caller** and must be released with `hostabi.ReleaseBoxes` once the caller is
+done with them, while the **values stay borrowed** from the map. Every other
+representation retains its keys so one release rule covers them all.
 
 ### Host ABI reference ownership
 
@@ -505,14 +563,27 @@ metadata is rejected at `compile` time rather than lowered.
 
 ## Verification and Optimizer Notes
 
-The compiler preserves the program type pool and exception handler table around
-optimization, because the optimizer works on bytecode shape while those tables are
-part of the verified program contract. Verification failures are wrapped as
-`verify program: ...` errors.
+The optimized program the minivm pipeline returns is its whole product. The
+passes rewrite more than bytecode shape: `DedupPass` compacts the constant and
+type pools and renumbers the operands that address them, and the length-changing
+passes (`DCEPass`, `GVNPass`) repair the exception handler table against the code
+they relocate. The compiler therefore takes that program as it is. Writing a
+pre-optimization type or handler table back over it reinstates tables that no
+longer describe the emitted code — the failure mode it produced was
+`verify: slot 0, ip 0, throw: invalid exception handler range` on every
+`try` at `-O2` and above.
+
+`Program.Globals` is the one table no pass touches, because the global table is
+declared by the compiler and not addressed by any transform.
+
+Every level is a behavior contract, not only the default: the conformance corpus
+runs at `O0`, `O1`, `O2` and `O3` and must produce identical output at each.
+Verification failures are wrapped as `verify program: ...` errors.
 
 ## Related Docs
 
 - `docs/README.md` — documentation map and ownership guide.
+- `docs/codegen-quality.md` — what better emitted code means and how it is measured.
 - `docs/spec/02-types.md` — source types and runtime mapping.
 - `docs/spec/04-static-semantics.md` — checker guarantees consumed by lowering.
 - `docs/spec/06-builtins.md` — native symbol checker and emitter behavior.

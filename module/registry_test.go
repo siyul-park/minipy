@@ -32,7 +32,7 @@ func newTestModule(name string, symbols ...string) module.Module {
 func TestRegistry(t *testing.T) {
 	a := newTestModule("a", "x", "y")
 	b := newTestModule("b", "z")
-	reg := module.NewRegistry([]module.Module{a, b}, module.WithFallback("a"))
+	reg := module.MustNewRegistry([]module.Module{a, b}, module.WithFallback("a"))
 
 	t.Run("Module and Has", func(t *testing.T) {
 		_, ok := reg.Module("a")
@@ -76,15 +76,23 @@ func TestRegistry(t *testing.T) {
 			func(module.Emitter, []ast.Expr) {},
 			func(module.Runtime) vmtypes.Value { return vmtypes.String("ok") },
 		))
-		values := module.NewRegistry([]module.Module{runtime}).Values(fakeRuntime{})
+		values := module.MustNewRegistry([]module.Module{runtime}).Values(fakeRuntime{})
 		require.Equal(t, vmtypes.String("ok"), values["runtime"]["value"])
 	})
 
-	t.Run("invalid registry panics", func(t *testing.T) {
-		require.Panics(t, func() { module.NewRegistry([]module.Module{a, a}) })
-		require.Panics(t, func() {
-			module.NewRegistry([]module.Module{a}, module.WithFallback("missing"))
-		})
+	t.Run("an invalid catalogue is reported", func(t *testing.T) {
+		_, err := module.NewRegistry([]module.Module{a, a})
+		require.ErrorIs(t, err, module.ErrDuplicateModule)
+
+		_, err = module.NewRegistry([]module.Module{a}, module.WithFallback("missing"))
+		require.ErrorIs(t, err, module.ErrUnregisteredFallback)
+
+		_, err = module.NewRegistry([]module.Module{nil})
+		require.ErrorIs(t, err, module.ErrNilModule)
+	})
+
+	t.Run("MustNewRegistry panics on an invalid catalogue", func(t *testing.T) {
+		require.Panics(t, func() { module.MustNewRegistry([]module.Module{a, a}) })
 	})
 }
 

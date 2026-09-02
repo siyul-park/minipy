@@ -168,7 +168,7 @@ func TestHostValues(t *testing.T) {
 		vmtypes.TypedArray[int64]{3},
 		vmtypes.TypedArray[float32]{4},
 		vmtypes.TypedArray[float64]{5},
-		vmtypes.NewArray(vmtypes.NewArrayType(vmtypes.TypeRef), stringA),
+		vmtypes.NewArray(vmtypes.NewArrayType(vmtypes.TypeAny), stringA),
 	}
 	for _, array := range arrays {
 		typ, elems, err := ArrayElems(vm, alloc(array))
@@ -183,7 +183,7 @@ func TestHostValues(t *testing.T) {
 
 	it := NewIterator("items", []vmtypes.Boxed{stringA})
 	require.Equal(t, vmtypes.KindRef, it.Kind())
-	require.True(t, it.Type().Equals(vmtypes.TypeRef))
+	require.True(t, it.Type().Equals(vmtypes.TypeAny))
 	require.Equal(t, "items", it.String())
 }
 
@@ -202,7 +202,7 @@ func TestAllocArrayRetainsElements(t *testing.T) {
 	require.NoError(t, err)
 	elem := vmtypes.BoxRef(strAddr)
 
-	srcType := vmtypes.NewArrayType(vmtypes.TypeRef)
+	srcType := vmtypes.NewArrayType(vmtypes.TypeAny)
 	srcAddr, err := vm.Alloc(vmtypes.NewArray(srcType, elem))
 	require.NoError(t, err)
 

@@ -1,0 +1,102 @@
+# instructions   78
+# functions      0
+# host functions 2
+# constants      2
+# types          0
+# globals        2
+# locals         4
+# handlers       0
+
+.code
+0000:	i64.const 0x0000000000000007
+0009:	global.set 0x0000
+0012:	i64.const 0x0000000000000003
+0021:	global.set 0x0001
+0024:	global.get 0x0000
+0027:	global.get 0x0001
+0030:	i64.add
+0031:	const.get 0x0000
+0034:	call
+0035:	const.get 0x0001
+0038:	call
+0039:	ref.null
+0040:	drop
+0041:	global.get 0x0000
+0044:	global.get 0x0001
+0047:	i64.sub
+0048:	const.get 0x0000
+0051:	call
+0052:	const.get 0x0001
+0055:	call
+0056:	ref.null
+0057:	drop
+0058:	global.get 0x0000
+0061:	global.get 0x0001
+0064:	i64.mul
+0065:	const.get 0x0000
+0068:	call
+0069:	const.get 0x0001
+0072:	call
+0073:	ref.null
+0074:	drop
+0075:	global.get 0x0000
+0078:	local.set 0x00
+0080:	global.get 0x0001
+0083:	local.set 0x01
+0085:	local.get 0x00
+0087:	local.get 0x01
+0089:	i64.div_s
+0090:	local.set 0x03
+0092:	local.get 0x00
+0094:	local.get 0x01
+0096:	i64.rem_s
+0097:	local.set 0x02
+0099:	local.get 0x02
+0101:	i64.const 0x0000000000000000
+0110:	i64.ne
+0111:	local.get 0x00
+0113:	local.get 0x01
+0115:	i64.xor
+0116:	i64.const 0x0000000000000000
+0125:	i64.lt_s
+0126:	i32.and
+0127:	i32.to_i64_s
+0128:	local.get 0x03
+0130:	swap
+0131:	i64.sub
+0132:	const.get 0x0000
+0135:	call
+0136:	const.get 0x0001
+0139:	call
+0140:	ref.null
+0141:	drop
+0142:	global.get 0x0001
+0145:	local.set 0x03
+0147:	global.get 0x0000
+0150:	local.get 0x03
+0152:	i64.rem_s
+0153:	local.get 0x03
+0155:	i64.add
+0156:	local.get 0x03
+0158:	i64.rem_s
+0159:	const.get 0x0000
+0162:	call
+0163:	const.get 0x0001
+0166:	call
+0167:	ref.null
+0168:	drop
+0169:	nop
+
+.locals
+0000:	i64
+0001:	i64
+0002:	i64
+0003:	i64
+
+.globals
+0000:	i64
+0001:	i64
+
+.constants
+0000:	<host> func(i64) string
+0001:	<host> func(string)

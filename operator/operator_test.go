@@ -33,6 +33,7 @@ func (c *stubChecker) Error(token.Pos, token.Code, string, ...any) {
 type stubEmitter struct {
 	ops       []instr.Opcode
 	hostCalls []*interp.HostFunction
+	hosts     map[string]*interp.HostFunction
 }
 
 type stubRuntime struct{}
@@ -49,12 +50,27 @@ func (e *stubEmitter) CallHost(fn *interp.HostFunction) {
 }
 func (*stubEmitter) CallHostVoid(*interp.HostFunction)        {}
 func (*stubEmitter) Host(string, string) *interp.HostFunction { return nil }
-func (*stubEmitter) Runtime() module.Runtime                  { return stubRuntime{} }
-func (*stubEmitter) Label() instr.Label                       { return 0 }
-func (*stubEmitter) Bind(instr.Label)                         {}
-func (*stubEmitter) Br(instr.Label)                           {}
-func (*stubEmitter) BrIf(instr.Label)                         {}
-func (*stubEmitter) Tmp(vmtypes.Type) int                     { return 0 }
+
+// Once memoizes like the real emitter, so a test observing hostCalls sees the
+// same sharing a compilation would.
+func (e *stubEmitter) Once(key string, build func() *interp.HostFunction) *interp.HostFunction {
+	if fn, ok := e.hosts[key]; ok {
+		return fn
+	}
+	if e.hosts == nil {
+		e.hosts = map[string]*interp.HostFunction{}
+	}
+	fn := build()
+	e.hosts[key] = fn
+	return fn
+}
+
+func (*stubEmitter) Runtime() module.Runtime { return stubRuntime{} }
+func (*stubEmitter) Label() instr.Label      { return 0 }
+func (*stubEmitter) Bind(instr.Label)        {}
+func (*stubEmitter) Br(instr.Label)          {}
+func (*stubEmitter) BrIf(instr.Label)        {}
+func (*stubEmitter) Tmp(vmtypes.Type) int    { return 0 }
 
 func TestBinaryType(t *testing.T) {
 	tests := []struct {

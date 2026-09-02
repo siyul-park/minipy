@@ -143,6 +143,69 @@ are worked around by picking a different *implementation* of that
 computation, the same way an application author hitting one of these bugs
 would have to.
 
+#### Measurement noise on a shared machine
+
+The corpus programs run for seconds, and on a shared or virtualized machine that
+is long enough for scheduling noise to dominate a single-digit difference. One
+binary measured five times on `strbuild` spread from 7058ms to 9370ms — 33% —
+which is wider than any change described in this document.
+
+Treat a corpus delta under about 15% as unresolved unless the measurement states
+its spread, not just its best time. Best-of-3 is not enough here. The lowering
+changes recorded in `docs/codegen-quality.md` are backed by short, isolated
+microbenchmarks instead, which repeat inside 5%; corpus figures quoted for those
+changes in commit messages were measured the same best-of-3 way and are below
+this document's own resolution.
+
+#### What this corpus does not measure
+
+Nine of the ten programs contain **no `for ... in range(...)` loop at all** —
+they drive their inner loops with `while`. That is not how idiomatic Python is
+written, and it means the corpus barely exercises the language's most common
+loop. When for-over-range was changed from an allocated iterator to a counter
+loop, a range-heavy microbenchmark went from 1277ms to 453ms (2.8x) while this
+corpus moved 0-11%, because there was almost nothing here to speed up.
+
+Read a result from this corpus as a statement about `while`-driven numeric and
+string code, not about Python programs generally. Adding range-driven cases
+would make it more representative; it would also invalidate the results table
+below, so it belongs with the next end-to-end re-measurement.
+
+#### Re-verification, and the coverage that replaced the prose
+
+Findings 1, 2, 3 and 5 were re-run against `HEAD` after the minivm bump to
+`v0.0.0-20260902004850` and the optimizer-metadata fix
+(`docs/spec/05-codegen.md`, "Verification and Optimizer Notes"). **None of them
+reproduced.**
+
+- Finding 1: the in-place `while` loop was rebuilt as fannkuch-redux at `n = 7`
+  and `n = 9`, and matched CPython 3.13 at `-O0`, `-O1`, `-O2` and `-O3`.
+- Finding 2: `fannkuch(n)` with `n` reaching the call through a local variable
+  compiled and ran at `-O3` in about the same time as `-O0` (5.2s vs 5.0s
+  end-to-end at `n = 9`) — no compile-time blowup.
+- Finding 3: the `i, k, j` accumulation order matched CPython at `n` = 6, 10, 20
+  and 40, at both `-O0` and `-O3`.
+- Finding 5: `split(" ")` over 800 variable-length tokens matched CPython and
+  did not crash.
+
+This is a negative result on reconstructions of the original shapes, not a proof
+that the underlying defects are fixed — the exact programs that first failed are
+not preserved here, and finding 4 was already recorded as unreproduced. What it
+does establish is that the shapes are no longer failing *and are no longer
+untested*: findings 1, 3 and 5 are now
+`conformance/testdata/conformance/regression/list_rewrite_loop.py`,
+`list_slot_accumulate.py`, and `str_split_many_tokens.py`, which run against
+real CPython output at all four optimization levels on every `go test ./...`.
+A return of any of them is now a failing test rather than a paragraph.
+
+Finding 2 has no such case: a compile-time blowup is a performance
+characteristic, and this document's own rule is that a performance claim is
+settled by measurement, not by a pass/fail test.
+
+The benchmark corpus itself still uses the rewritten algorithms. Restoring the
+natural formulations would invalidate the results table below, so it is left for
+whoever next re-measures the corpus end to end.
+
 ### A sixth defect, now fixed: `nbody`
 
 Unlike the five above, `nbody` was **not** rewritten to route around its

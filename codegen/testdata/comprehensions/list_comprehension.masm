@@ -1,0 +1,69 @@
+# instructions   41
+# functions      0
+# host functions 3
+# constants      3
+# types          1
+# globals        1
+# locals         3
+# handlers       0
+
+.code
+0000:	i32.const 0x00000000
+0005:	array.new_default 0x0000
+0008:	local.set 0x00
+0010:	i64.const 0x0000000000000000
+0019:	i64.const 0x0000000000000005
+0028:	i64.const 0x0000000000000001
+0037:	const.get 0x0000
+0040:	call
+0041:	local.set 0x02
+L0043:
+0043:	local.get 0x02
+0045:	coro.done
+0046:	br_if L0076
+0049:	local.get 0x02
+0051:	coro.value
+0052:	local.set 0x01
+0054:	local.get 0x00
+0056:	local.get 0x01
+0058:	local.get 0x01
+0060:	i64.mul
+0061:	i32.const 0x00000001
+0066:	array.append
+0067:	drop
+0068:	local.get 0x02
+0070:	ref.null
+0071:	resume
+0072:	drop
+0073:	br L0043
+L0076:
+0076:	local.get 0x00
+0078:	global.set 0x0000
+0081:	global.get 0x0000
+0084:	i64.const 0x0000000000000004
+0093:	drop
+0094:	i32.const 0x00000004
+0099:	array.get
+0100:	const.get 0x0001
+0103:	call
+0104:	const.get 0x0002
+0107:	call
+0108:	ref.null
+0109:	drop
+0110:	nop
+
+.locals
+0000:	any
+0001:	i64
+0002:	any
+
+.globals
+0000:	any
+
+.constants
+0000:	<host> func(i64, i64, i64) any
+0001:	<host> func(i64) string
+0002:	<host> func(string)
+
+.types
+0000:	[]i64

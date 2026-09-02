@@ -80,13 +80,13 @@ func TestFormatValue(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "{1.5: 2}", got)
 
+	// A str-keyed map is a content-keyed representation, not a boxed-key one,
+	// so it is populated through the public map contract rather than by
+	// hand-building an entry.
 	stringDictType := pytypes.NewDict(pytypes.Str, pytypes.Int)
-	stringDict := vmtypes.NewMapForType(stringDictType.VM().(*vmtypes.MapType), 1).(*vmtypes.Map)
-	stringKey := alloc(vmtypes.String("k"))
-	stringDict.Set(
-		vmtypes.MapKey{Kind: vmtypes.KindRef, Bits: uint64(stringKey.Ref())},
-		vmtypes.MapEntry{Key: stringKey, Value: vmtypes.BoxI64(3)},
-	)
+	stringDict := vmtypes.NewMapForType(stringDictType.VM().(*vmtypes.MapType), 1)
+	_, _, err = MapSet(vm, stringDict, alloc(vmtypes.String("k")), vmtypes.BoxI64(3))
+	require.NoError(t, err)
 	got, err = FormatValue(vm, alloc(stringDict), stringDictType)
 	require.NoError(t, err)
 	require.Equal(t, "{'k': 3}", got)

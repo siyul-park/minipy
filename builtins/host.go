@@ -50,7 +50,7 @@ func newRangeIterator(start, stop, step int64) *rangeIterator {
 }
 
 func (it *rangeIterator) Kind() vmtypes.Kind { return vmtypes.KindRef }
-func (it *rangeIterator) Type() vmtypes.Type { return vmtypes.TypeRef }
+func (it *rangeIterator) Type() vmtypes.Type { return vmtypes.TypeAny }
 func (it *rangeIterator) String() string     { return "range.iterator" }
 
 func (it *rangeIterator) Current() vmtypes.Value {
@@ -116,7 +116,7 @@ func floatParseHost() *interp.HostFunction {
 
 func rangeIterHost() *interp.HostFunction {
 	return interp.NewHostFunction(
-		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeI64, vmtypes.TypeI64, vmtypes.TypeI64}, Returns: []vmtypes.Type{vmtypes.TypeRef}},
+		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeI64, vmtypes.TypeI64, vmtypes.TypeI64}, Returns: []vmtypes.Type{vmtypes.TypeAny}},
 		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
 			start, err := hostabi.LoadI64(i, params[0])
 			if err != nil {
@@ -235,7 +235,7 @@ func zipHost(result types.Type) *interp.HostFunction {
 
 func listIter(arg types.Type) *interp.HostFunction {
 	return interp.NewHostFunction(
-		&vmtypes.FunctionType{Params: []vmtypes.Type{arg.VM()}, Returns: []vmtypes.Type{vmtypes.TypeRef}},
+		&vmtypes.FunctionType{Params: []vmtypes.Type{arg.VM()}, Returns: []vmtypes.Type{vmtypes.TypeAny}},
 		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
 			_, elems, err := hostabi.ArrayElems(i, params[0])
 			if err != nil {
@@ -303,7 +303,7 @@ func chrHost() *interp.HostFunction {
 
 func strIter() *interp.HostFunction {
 	return interp.NewHostFunction(
-		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeString}, Returns: []vmtypes.Type{vmtypes.TypeRef}},
+		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeString}, Returns: []vmtypes.Type{vmtypes.TypeAny}},
 		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
 			s, err := hostabi.LoadStr(i, params[0])
 			if err != nil {
@@ -331,7 +331,7 @@ func strIter() *interp.HostFunction {
 // not negative values).
 func bytesIter() *interp.HostFunction {
 	return interp.NewHostFunction(
-		&vmtypes.FunctionType{Params: []vmtypes.Type{types.Bytes.VM()}, Returns: []vmtypes.Type{vmtypes.TypeRef}},
+		&vmtypes.FunctionType{Params: []vmtypes.Type{types.Bytes.VM()}, Returns: []vmtypes.Type{vmtypes.TypeAny}},
 		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
 			_, elems, err := hostabi.ArrayElems(i, params[0])
 			if err != nil {
@@ -673,7 +673,7 @@ func divmodHost(elem types.Type) *interp.HostFunction {
 	if types.Equal(elem, types.Int) {
 		tupleType := types.NewTuple(types.Int, types.Int).VM().(*vmtypes.StructType)
 		return interp.NewHostFunction(
-			&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeI64, vmtypes.TypeI64}, Returns: []vmtypes.Type{vmtypes.TypeRef}},
+			&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeI64, vmtypes.TypeI64}, Returns: []vmtypes.Type{vmtypes.TypeAny}},
 			func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
 				a := params[0].I64()
 				b := params[1].I64()
@@ -696,7 +696,7 @@ func divmodHost(elem types.Type) *interp.HostFunction {
 	}
 	tupleType := types.NewTuple(types.Float, types.Float).VM().(*vmtypes.StructType)
 	return interp.NewHostFunction(
-		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeF64, vmtypes.TypeF64}, Returns: []vmtypes.Type{vmtypes.TypeRef}},
+		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeF64, vmtypes.TypeF64}, Returns: []vmtypes.Type{vmtypes.TypeAny}},
 		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
 			a := params[0].F64()
 			b := params[1].F64()

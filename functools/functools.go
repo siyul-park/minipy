@@ -138,8 +138,8 @@ func emitReduce(e module.Emitter, args []ast.Expr) {
 	// reduce()'s result type, so it must be declared with that kind rather than
 	// as a reference: the caller may store the result straight into a typed slot.
 	elem := types.IterableElem(types.Erase(e.Type(args[1])))
-	fnSlot := e.Tmp(vmtypes.TypeRef)
-	listSlot := e.Tmp(vmtypes.TypeRef)
+	fnSlot := e.Tmp(vmtypes.TypeAny)
+	listSlot := e.Tmp(vmtypes.TypeAny)
 	accSlot := e.Tmp(hostabi.VMParamType(elem))
 	idxSlot := e.Tmp(vmtypes.TypeI64)
 
@@ -166,7 +166,7 @@ func emitReduce(e module.Emitter, args []ast.Expr) {
 		e.BrIf(ok)
 
 		// Empty list: call host function that raises an error.
-		e.CallHost(reduceEmptyHost())
+		e.CallHost(e.Once(module.HostKey(Name, "reduce", "empty"), reduceEmptyHost))
 
 		// The host errors unconditionally, so the DROP/assignment below is
 		// unreachable but needed for stack balance at compile time.
@@ -227,7 +227,7 @@ func emitReduce(e module.Emitter, args []ast.Expr) {
 // iterable with no initial value.
 func reduceEmptyHost() *interp.HostFunction {
 	return interp.NewHostFunction(
-		&vmtypes.FunctionType{Params: []vmtypes.Type{}, Returns: []vmtypes.Type{vmtypes.TypeRef}},
+		&vmtypes.FunctionType{Params: []vmtypes.Type{}, Returns: []vmtypes.Type{vmtypes.TypeAny}},
 		func(_ *interp.Interpreter, _ []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
 			return nil, ErrReduceEmpty
 		},

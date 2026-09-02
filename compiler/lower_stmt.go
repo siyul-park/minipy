@@ -1,10 +1,13 @@
 package compiler
 
 import (
+	"cmp"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/siyul-park/minipy/ast"
+	"github.com/siyul-park/minipy/builtins"
 	"github.com/siyul-park/minipy/hostabi"
 	"github.com/siyul-park/minipy/operator"
 	"github.com/siyul-park/minipy/token"
@@ -191,8 +194,8 @@ func (c *lowerer) deleteStmt(n *ast.Delete) {
 			}
 			switch recv := c.types[t.X].(type) {
 			case *types.Dict:
-				dictSlot := c.tmp(vmtypes.TypeRef)
-				keySlot := c.tmp(vmtypes.TypeRef)
+				dictSlot := c.tmp(vmtypes.TypeAny)
+				keySlot := c.tmp(vmtypes.TypeAny)
 				c.expr(t.X)
 				c.emit(instr.GLOBAL_SET, uint64(dictSlot))
 				c.expr(t.Index)
@@ -210,7 +213,7 @@ func (c *lowerer) deleteStmt(n *ast.Delete) {
 			case *types.List:
 				c.expr(t.X)
 				c.expr(t.Index)
-				c.emitArrayDelete()
+				c.emitArrayDelete(constIndex(t.Index))
 				c.emit(instr.DROP)
 			}
 		case *ast.Attribute:
@@ -296,7 +299,7 @@ func (c *lowerer) emitTry(n *ast.Try) {
 	c.br(after)
 
 	c.bind(catch)
-	errSlot := c.tmp(vmtypes.TypeRef)
+	errSlot := c.tmp(vmtypes.TypeAny)
 	c.emit(instr.GLOBAL_SET, uint64(errSlot))
 	if len(n.Handlers) == 0 {
 		if finalizer != nil {
@@ -308,7 +311,7 @@ func (c *lowerer) emitTry(n *ast.Try) {
 		c.tryRegion(start, end, catch)
 		return
 	}
-	instSlot := c.tmp(vmtypes.TypeRef)
+	instSlot := c.tmp(vmtypes.TypeAny)
 	c.emitCaughtInstance(errSlot, instSlot)
 	for _, h := range n.Handlers {
 		next := c.label()
@@ -357,7 +360,7 @@ func (c *lowerer) emitTryFinally(body func(), finalizer func()) {
 	c.br(after)
 
 	c.bind(catch)
-	errSlot := c.tmp(vmtypes.TypeRef)
+	errSlot := c.tmp(vmtypes.TypeAny)
 	c.emit(instr.GLOBAL_SET, uint64(errSlot))
 	finalizer()
 	c.emit(instr.GLOBAL_GET, uint64(errSlot))
@@ -538,14 +541,14 @@ func (c *lowerer) emitRaise(n *ast.Raise) {
 // this coercion that value would land in the str-typed message field
 // unconverted.
 func (c *lowerer) emitExceptionInstance(cls *class, args []ast.Expr) {
-	msgSlot := c.tmp(vmtypes.TypeRef)
+	msgSlot := c.tmp(vmtypes.TypeAny)
 	if len(args) > 0 {
 		c.expr(args[0])
 		if msgType := c.types[args[0]]; !types.Equal(msgType, types.Str) {
 			if refDynamic(msgType) {
-				c.callHost(operator.DynStr())
+				c.callHost(c.host(hostKey("operator.str"), operator.DynStr))
 			} else {
-				c.callHost(hostabi.StringFunction(msgType))
+				c.callHost(c.stringHost(msgType))
 			}
 		}
 	} else {
@@ -570,7 +573,7 @@ func (c *lowerer) emitWith(n *ast.With) {
 	emit = func(i int) {
 		item := n.Items[i]
 		name := c.types[item.Context].(*types.Class).Name
-		ctxSlot := c.tmp(vmtypes.TypeRef)
+		ctxSlot := c.tmp(vmtypes.TypeAny)
 		c.expr(item.Context)
 		c.emit(instr.GLOBAL_SET, uint64(ctxSlot))
 		owner, enter := c.methodOwner(name, "__enter__")
@@ -748,7 +751,7 @@ func (c *lowerer) emitSequenceTest(pat *ast.SequencePattern, slot int, typ types
 func (c *lowerer) emitMappingTest(pat *ast.MappingPattern, slot int, typ types.Type, next instr.Label) {
 	d := typ.(*types.Dict)
 	for i, keyExpr := range pat.Keys {
-		child := c.tmp(vmtypes.TypeRef)
+		child := c.tmp(vmtypes.TypeAny)
 		c.emit(instr.GLOBAL_GET, uint64(slot))
 		c.expr(keyExpr)
 		c.emit(instr.MAP_LOOKUP)
@@ -770,7 +773,7 @@ func (c *lowerer) emitMappingTest(pat *ast.MappingPattern, slot int, typ types.T
 			c.expr(keyExpr)
 			c.emit(instr.ARRAY_SET)
 		}
-		keysSlot := c.tmp(vmtypes.TypeRef)
+		keysSlot := c.tmp(vmtypes.TypeAny)
 		c.emit(instr.GLOBAL_SET, uint64(keysSlot))
 		c.emit(instr.GLOBAL_GET, uint64(slot))
 		c.emit(instr.GLOBAL_GET, uint64(keysSlot))
@@ -804,7 +807,7 @@ func (c *lowerer) chainedAssign(n *ast.Assign) {
 			c.promoteIntToFloat(c.types[n.Value], c.typ(name.Name))
 			c.set(name.Name)
 		} else {
-			slot := c.tmp(vmtypes.TypeRef)
+			slot := c.tmp(vmtypes.TypeAny)
 			c.emit(instr.GLOBAL_SET, uint64(slot))
 			c.assignTargetFromTemp(target, slot)
 		}
@@ -819,7 +822,7 @@ func (c *lowerer) assignTargetFromTemp(target ast.Expr, slot int) {
 		c.emit(instr.GLOBAL_GET, uint64(slot))
 		switch recv := c.types[t.X].(type) {
 		case *types.List:
-			c.emitListIndexNormalizeUnderValue()
+			c.emitListIndexNormalizeUnderValue(constIndex(t.Index))
 			c.emit(instr.ARRAY_SET)
 		case *types.Dict:
 			c.emit(instr.MAP_SET)
@@ -829,7 +832,7 @@ func (c *lowerer) assignTargetFromTemp(target ast.Expr, slot int) {
 			c.emit(instr.CALL)
 			c.emit(instr.DROP)
 		default:
-			c.fail(fmt.Errorf("chained assign subscript: unsupported receiver %T", c.types[t.X]))
+			c.unsupported(t.Pos(), "chained assignment to a subscript of %s is not supported", c.types[t.X])
 		}
 	case *ast.Attribute:
 		if key := c.attrSym[t]; key != "" {
@@ -843,7 +846,7 @@ func (c *lowerer) assignTargetFromTemp(target ast.Expr, slot int) {
 		c.emit(instr.GLOBAL_GET, uint64(slot))
 		c.emit(instr.STRUCT_SET)
 	default:
-		c.fail(fmt.Errorf("chained assign target %T: unsupported", target))
+		c.unsupported(target.Pos(), "chained assignment to this target is not supported")
 	}
 }
 
@@ -864,7 +867,7 @@ func (c *lowerer) assignTarget(target ast.Expr, value ast.Expr) {
 		c.expr(value)
 		switch recv := c.types[t.X].(type) {
 		case *types.List:
-			c.emitListIndexNormalizeUnderValue()
+			c.emitListIndexNormalizeUnderValue(constIndex(t.Index))
 			c.emit(instr.ARRAY_SET)
 		case *types.Dict:
 			c.emit(instr.MAP_SET)
@@ -874,7 +877,7 @@ func (c *lowerer) assignTarget(target ast.Expr, value ast.Expr) {
 			c.emit(instr.CALL)
 			c.emit(instr.DROP)
 		default:
-			c.fail(fmt.Errorf("lower subscript assignment for %T: unsupported receiver type %T", t, c.types[t.X]))
+			c.unsupported(t.Pos(), "subscript assignment on %s is not supported", c.types[t.X])
 		}
 	case *ast.TupleLit:
 		c.unpackAssign(t, value)
@@ -892,19 +895,19 @@ func (c *lowerer) assignTarget(target ast.Expr, value ast.Expr) {
 		c.promoteIntToFloat(c.types[value], fieldType)
 		c.emit(instr.STRUCT_SET)
 	default:
-		c.fail(fmt.Errorf("lower assignment target %T: unsupported", target))
+		c.unsupported(target.Pos(), "assignment to this target is not supported")
 	}
 }
 
 func (c *lowerer) augAssignSubscript(n *ast.AugAssign, sub *ast.Subscript) {
 	// Save receiver in a temporary slot.
 	c.expr(sub.X)
-	recvSlot := c.tmp(vmtypes.TypeRef)
+	recvSlot := c.tmp(vmtypes.TypeAny)
 	c.emit(instr.GLOBAL_SET, uint64(recvSlot))
 
 	// Save index/key in a temporary slot.
 	c.expr(sub.Index)
-	indexSlot := c.tmp(vmtypes.TypeRef)
+	indexSlot := c.tmp(vmtypes.TypeAny)
 	c.emit(instr.GLOBAL_SET, uint64(indexSlot))
 
 	// Emit binary op: load old value, compute new value.
@@ -914,16 +917,16 @@ func (c *lowerer) augAssignSubscript(n *ast.AugAssign, sub *ast.Subscript) {
 			func() {
 				c.emit(instr.GLOBAL_GET, uint64(recvSlot))
 				c.emit(instr.GLOBAL_GET, uint64(indexSlot))
-				c.emitListIndexNormalize()
+				c.emitListIndexNormalize(constIndex(sub.Index))
 				c.emit(instr.ARRAY_GET)
 			},
 			func() { c.expr(n.Value) })
 		// Stack: [result]. Store back: need [receiver, i32_index, result].
-		resultSlot := c.tmp(vmtypes.TypeRef)
+		resultSlot := c.tmp(vmtypes.TypeAny)
 		c.emit(instr.GLOBAL_SET, uint64(resultSlot))
 		c.emit(instr.GLOBAL_GET, uint64(recvSlot))
 		c.emit(instr.GLOBAL_GET, uint64(indexSlot))
-		c.emitListIndexNormalize()
+		c.emitListIndexNormalize(constIndex(sub.Index))
 		c.emit(instr.GLOBAL_GET, uint64(resultSlot))
 		c.emit(instr.ARRAY_SET)
 	case *types.Dict:
@@ -945,7 +948,7 @@ func (c *lowerer) augAssignSubscript(n *ast.AugAssign, sub *ast.Subscript) {
 		c.emit(instr.SWAP)
 		c.emit(instr.MAP_SET)
 	default:
-		c.fail(fmt.Errorf("augmented subscript assignment for %T not supported", c.types[sub.X]))
+		c.unsupported(sub.Pos(), "augmented subscript assignment on %s is not supported", c.types[sub.X])
 	}
 }
 
@@ -1058,7 +1061,7 @@ func (c *lowerer) emitUnpackIndex(value ast.Expr, valueSlot int, idx int) {
 	case *types.List:
 		c.emit(instr.ARRAY_GET)
 	default:
-		c.fail(fmt.Errorf("lower unpack value %T: unsupported type %T", value, c.types[value]))
+		c.unsupported(value.Pos(), "unpacking %s is not supported", c.types[value])
 	}
 }
 
@@ -1116,7 +1119,12 @@ func (c *lowerer) get(name string) {
 			return
 		}
 	}
-	c.emit(instr.GLOBAL_GET, uint64(c.globals[c.symbol(name)].index))
+	global, ok := c.globals[c.symbol(name)]
+	if !ok {
+		c.fail(fmt.Errorf("load name %q: no binding", name))
+		return
+	}
+	c.emit(instr.GLOBAL_GET, uint64(global.index))
 }
 
 func (c *lowerer) set(name string) {
@@ -1154,7 +1162,12 @@ func (c *lowerer) set(name string) {
 			return
 		}
 	}
-	c.emit(instr.GLOBAL_SET, uint64(c.globals[c.symbol(name)].index))
+	global, ok := c.globals[c.symbol(name)]
+	if !ok {
+		c.fail(fmt.Errorf("store name %q: no binding", name))
+		return
+	}
+	c.emit(instr.GLOBAL_SET, uint64(global.index))
 }
 
 func (c *lowerer) captureIndex(index int) int {
@@ -1239,7 +1252,13 @@ func (c *lowerer) typ(name string) types.Type {
 			return cap.typ
 		}
 	}
-	return c.globals[c.symbol(name)].typ
+	if global, ok := c.globals[c.symbol(name)]; ok {
+		return global.typ
+	}
+	// A name the checker resolved always has a binding here. Returning Invalid
+	// rather than dereferencing a missing entry keeps a checker/lowerer
+	// disagreement a compile failure instead of a compiler panic.
+	return types.Invalid
 }
 
 // promoteIntToFloat emits I64_TO_F64_S if the value on the stack is int but
@@ -1276,21 +1295,30 @@ func (c *lowerer) emitIf(n *ast.If) {
 
 // emitWhile lowers `while`: re-test at the top, run the else block on natural
 // exit (not after a break). continue → top, break → past the else block.
+// emitWhile lowers a while loop with its test at the bottom, entered by a jump.
+// The test then branches back into the body on the condition itself, so a
+// comparison feeds its branch directly — minivm fuses a load, an operand, a
+// compare and a conditional branch into one handler, and there is no
+// branch-if-false opcode to invert with, so a top test would need an I32_EQZ
+// between the compare and the branch and split that fusion in two. The bottom
+// test also drops the back-edge branch the body used to end with.
 func (c *lowerer) emitWhile(n *ast.While) {
-	top := c.label()
+	body := c.label()
+	test := c.label()
 	elseL := c.label()
 	end := c.label()
 
-	c.bind(top)
-	c.expr(n.Cond)
-	c.emit(instr.I32_EQZ)
-	c.brIf(elseL)
+	c.br(test)
 
-	c.loops = append(c.loops, loopLabels{cont: top, brk: end})
+	c.bind(body)
+	c.loops = append(c.loops, loopLabels{cont: test, brk: end})
 	c.block(n.Body)
 	c.loops = c.loops[:len(c.loops)-1]
 
-	c.br(top)
+	c.bind(test)
+	c.expr(n.Cond)
+	c.brIf(body)
+
 	c.bind(elseL)
 	c.block(n.Orelse)
 	c.bind(end)
@@ -1300,10 +1328,13 @@ func (c *lowerer) emitWhile(n *ast.While) {
 // values with the minivm coroutine/iterator protocol. continue → increment or
 // resume, break → past the else block.
 func (c *lowerer) emitFor(n *ast.For) {
+	if c.emitRangeFor(n) {
+		return
+	}
 	if refDynamic(c.types[n.Iter]) {
 		c.emitIteratorFor(n, func() {
 			c.expr(n.Iter)
-			c.callHost(operator.DynIter())
+			c.callHost(c.host(hostKey("operator.iter"), operator.DynIter))
 		})
 		return
 	}
@@ -1316,8 +1347,121 @@ func (c *lowerer) emitFor(n *ast.For) {
 	c.emitIterableFor(n)
 }
 
+// emitRangeFor lowers `for x in range(...)` as a counter loop and reports
+// whether it did. The general path would allocate a range iterator on the heap
+// and drive the coroutine protocol once per step; a counter loop is three times
+// faster on the most common loop in Python (docs/codegen-quality.md).
+//
+// It applies when the iterable is a direct call to the builtin range whose step
+// is a literal, because the step's sign is what decides the loop's comparison
+// and a runtime step would need both. Everything else — a shadowed range, a
+// computed step, a step of zero, whose ValueError the host function owns — falls
+// through to the iterator.
+func (c *lowerer) emitRangeFor(n *ast.For) bool {
+	start, stop, step, ok := c.rangeBounds(n.Iter)
+	if !ok {
+		return false
+	}
+
+	index := c.tmp(vmtypes.TypeI64)
+	limit := c.tmp(vmtypes.TypeI64)
+	c.emitRangeBound(start, 0)
+	c.emit(instr.GLOBAL_SET, uint64(index))
+	c.expr(stop)
+	c.emit(instr.GLOBAL_SET, uint64(limit))
+
+	body := c.label()
+	cont := c.label()
+	test := c.label()
+	elseL := c.label()
+	end := c.label()
+
+	// The test sits at the bottom so the comparison feeds its branch directly:
+	// minivm fuses a load, an operand, a compare and a conditional branch into
+	// one handler, which an inverting I32_EQZ between the last two would split.
+	c.br(test)
+
+	c.bind(body)
+	c.emit(instr.GLOBAL_GET, uint64(index))
+	c.setLoopTarget(n.Target)
+
+	c.loops = append(c.loops, loopLabels{cont: cont, brk: end})
+	c.block(n.Body)
+	c.loops = c.loops[:len(c.loops)-1]
+
+	c.bind(cont)
+	c.emit(instr.GLOBAL_GET, uint64(index))
+	c.emit(instr.I64_CONST, uint64(step))
+	c.emit(instr.I64_ADD)
+	c.emit(instr.GLOBAL_SET, uint64(index))
+
+	c.bind(test)
+	c.emit(instr.GLOBAL_GET, uint64(index))
+	c.emit(instr.GLOBAL_GET, uint64(limit))
+	if step > 0 {
+		c.emit(instr.I64_LT_S)
+	} else {
+		c.emit(instr.I64_GT_S)
+	}
+	c.brIf(body)
+
+	c.bind(elseL)
+	c.block(n.Orelse)
+	c.bind(end)
+	return true
+}
+
+// rangeBounds reports whether iter is a direct call to the builtin range with a
+// literal step, returning its bounds and that step. A nil start means the
+// literal 0.
+func (c *lowerer) rangeBounds(iter ast.Expr) (start, stop ast.Expr, step int64, ok bool) {
+	call, isCall := iter.(*ast.CallExpr)
+	if !isCall || len(call.StarArgs) > 0 || len(call.Keywords) > 0 || c.callRewrite[call] != nil {
+		return nil, nil, 0, false
+	}
+	name, isName := call.Fn.(*ast.Name)
+	if !isName {
+		return nil, nil, 0, false
+	}
+	// Identity against the fallback module's own symbol, resolved through the
+	// same key the general call path uses: a user-defined range, or one bound
+	// from another module, is not this one.
+	resolved, found := c.reg.SymbolByKey(c.symbol(name.Name))
+	builtin, isBuiltin := c.reg.FallbackSymbol("range")
+	if !found || !isBuiltin || resolved != builtin {
+		return nil, nil, 0, false
+	}
+
+	start, stop, stepExpr := builtins.RangeBounds(call.Args)
+	step = 1
+	if stepExpr != nil {
+		literal, isLiteral := stepExpr.(*ast.IntLit)
+		if !isLiteral {
+			return nil, nil, 0, false
+		}
+		// The checker rejects a literal zero step before lowering
+		// (builtins.checkCall). Re-checking here costs a comparison and bounds
+		// the damage of that rule changing to a loop that never ends.
+		if literal.Value == 0 {
+			return nil, nil, 0, false
+		}
+		step = literal.Value
+	}
+	return start, stop, step, true
+}
+
+// emitRangeBound pushes a range bound, or the literal default when the call
+// omitted it.
+func (c *lowerer) emitRangeBound(bound ast.Expr, def uint64) {
+	if bound == nil {
+		c.emit(instr.I64_CONST, def)
+		return
+	}
+	c.expr(bound)
+}
+
 func (c *lowerer) emitIteratorFor(n *ast.For, emitIter func()) {
-	iterSlot := c.tmp(vmtypes.TypeRef)
+	iterSlot := c.tmp(vmtypes.TypeAny)
 	emitIter()
 	c.emit(instr.GLOBAL_SET, uint64(iterSlot))
 	top := c.label()
@@ -1372,7 +1516,7 @@ func (c *lowerer) iterate(expr ast.Expr, typ types.Type) {
 }
 
 func (c *lowerer) emitIterableFor(n *ast.For) {
-	iterSlot := c.tmp(vmtypes.TypeRef)
+	iterSlot := c.tmp(vmtypes.TypeAny)
 	idxSlot := c.tmp(vmtypes.TypeI64)
 
 	c.expr(n.Iter)
@@ -1380,20 +1524,18 @@ func (c *lowerer) emitIterableFor(n *ast.For) {
 	c.emit(instr.I64_CONST, 0)
 	c.emit(instr.GLOBAL_SET, uint64(idxSlot))
 
-	top := c.label()
+	body := c.label()
 	cont := c.label()
+	test := c.label()
 	elseL := c.label()
 	end := c.label()
 
-	c.bind(top)
-	c.emit(instr.GLOBAL_GET, uint64(idxSlot))
-	c.emit(instr.GLOBAL_GET, uint64(iterSlot))
-	c.emit(instr.ARRAY_LEN)
-	c.emit(instr.I32_TO_I64_S)
-	c.emit(instr.I64_LT_S)
-	c.emit(instr.I32_EQZ)
-	c.brIf(elseL)
+	// Bottom test, for the reason emitWhile gives. The length is re-read on
+	// every step rather than hoisted, because a body that appends to the
+	// receiver must see the longer list, as it does in CPython.
+	c.br(test)
 
+	c.bind(body)
 	c.emit(instr.GLOBAL_GET, uint64(iterSlot))
 	c.emit(instr.GLOBAL_GET, uint64(idxSlot))
 	c.emit(instr.I64_TO_I32)
@@ -1412,7 +1554,14 @@ func (c *lowerer) emitIterableFor(n *ast.For) {
 	c.emit(instr.I64_CONST, 1)
 	c.emit(instr.I64_ADD)
 	c.emit(instr.GLOBAL_SET, uint64(idxSlot))
-	c.br(top)
+
+	c.bind(test)
+	c.emit(instr.GLOBAL_GET, uint64(idxSlot))
+	c.emit(instr.GLOBAL_GET, uint64(iterSlot))
+	c.emit(instr.ARRAY_LEN)
+	c.emit(instr.I32_TO_I64_S)
+	c.emit(instr.I64_LT_S)
+	c.brIf(body)
 
 	c.bind(elseL)
 	c.block(n.Orelse)
@@ -1433,7 +1582,7 @@ func (c *lowerer) setLoopTarget(target ast.Expr) {
 		}
 		c.emit(instr.DROP)
 	default:
-		c.fail(fmt.Errorf("lower for target %T: unsupported", target))
+		c.unsupported(target.Pos(), "this for-loop target is not supported")
 	}
 }
 
@@ -1468,7 +1617,7 @@ func (c *lowerer) emitDecoratorValues(decorators []ast.Expr) []int {
 	}
 	slots := make([]int, len(decorators))
 	for i, dec := range decorators {
-		slots[i] = c.tmp(vmtypes.TypeRef)
+		slots[i] = c.tmp(vmtypes.TypeAny)
 		c.expr(dec)
 		c.emit(instr.GLOBAL_SET, uint64(slots[i]))
 	}
@@ -1533,9 +1682,26 @@ func (c *lowerer) buildSpec(spec *specialization) {
 	c.specs[spec] = c.prog.Const(f)
 }
 
+// buildCallSpecs compiles every specialization the given call sites resolved
+// to, in the source order of those sites. The order decides constant-pool
+// indices, so iterating the call map directly would emit a differently
+// numbered — though equivalent — program on every compilation. A synthesized
+// call carries no position, so the specialization key breaks the remaining
+// ties.
 func (c *lowerer) buildCallSpecs(calls map[*ast.CallExpr]*specialization) {
-	for _, spec := range calls {
-		c.buildSpec(spec)
+	ordered := make([]*ast.CallExpr, 0, len(calls))
+	for call := range calls {
+		ordered = append(ordered, call)
+	}
+	slices.SortFunc(ordered, func(left, right *ast.CallExpr) int {
+		return cmp.Or(
+			cmp.Compare(left.Pos().Line, right.Pos().Line),
+			cmp.Compare(left.Pos().Column, right.Pos().Column),
+			cmp.Compare(calls[left].key, calls[right].key),
+		)
+	})
+	for _, call := range ordered {
+		c.buildSpec(calls[call])
 	}
 }
 
@@ -1557,7 +1723,7 @@ func (c *lowerer) funcValue(info *function, body []ast.Stmt) {
 	// Dynamic code carries its globals and locals namespaces as the first two
 	// captures, so they precede the function's own captured cells.
 	if c.dynamic {
-		fb.Captures(vmtypes.TypeRef, vmtypes.TypeRef)
+		fb.Captures(vmtypes.TypeAny, vmtypes.TypeAny)
 	}
 	fb.Captures(vmCaps(info)...)
 
@@ -1604,6 +1770,10 @@ func (c *lowerer) funcValue(info *function, body []ast.Stmt) {
 // narrow them, plain nested functions inherit the parent's); loops, finally,
 // excepts, tries, temps, scratch, boxed, and err reset to fresh zero values. The caller must
 // call adopt(child) once the child finishes lowering its body.
+//
+// Everything else is shared with the parent by design: emitted, specs,
+// building, and hosts all describe the one program being built, not the frame
+// being lowered into it.
 func (c *lowerer) child(code target, info *function, types map[ast.Expr]types.Type, callSpec map[*ast.CallExpr]*specialization, callArgs map[*ast.CallExpr][]ast.Expr, callRewrite map[*ast.CallExpr]ast.Expr) *lowerer {
 	child := *c
 	child.code = code
@@ -1686,7 +1856,7 @@ func (c *lowerer) yieldExpr(n *ast.YieldExpr) {
 // resumed generators observe None through the result.
 func (c *lowerer) yieldCore(value ast.Expr, from bool) {
 	if from {
-		iterSlot := c.tmp(vmtypes.TypeRef)
+		iterSlot := c.tmp(vmtypes.TypeAny)
 		if lt, ok := c.types[value].(*types.List); ok {
 			c.expr(value)
 			c.callHost(c.listIter(lt))
@@ -1738,7 +1908,7 @@ func vmLocals(info *function) []vmtypes.Type {
 	for _, name := range info.order {
 		l := info.locals[name]
 		if l.boxed {
-			out = append(out, vmtypes.TypeRef)
+			out = append(out, vmtypes.TypeAny)
 		} else {
 			out = append(out, l.typ.VM())
 		}
@@ -1751,7 +1921,7 @@ func vmCaps(info *function) []vmtypes.Type {
 	for _, name := range info.capOrder {
 		cap := info.captures[name]
 		if cap.boxed || cap.src.boxed {
-			out = append(out, vmtypes.TypeRef)
+			out = append(out, vmtypes.TypeAny)
 		} else {
 			out = append(out, cap.typ.VM())
 		}
@@ -1761,7 +1931,7 @@ func vmCaps(info *function) []vmtypes.Type {
 
 func vmReturns(t types.Type) []vmtypes.Type {
 	if types.Equal(t, types.None) {
-		return []vmtypes.Type{vmtypes.TypeRef}
+		return []vmtypes.Type{vmtypes.TypeAny}
 	}
 	return []vmtypes.Type{t.VM()}
 }

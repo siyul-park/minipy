@@ -1,0 +1,47 @@
+# instructions   28
+# functions      2
+# host functions 2
+# constants      4
+# types          0
+# globals        1
+# locals         0
+# handlers       0
+
+.code
+0000:	const.get 0x0001
+0003:	global.set 0x0000
+0006:	i64.const 0x000000000000000A
+0015:	global.get 0x0000
+0018:	call
+0019:	const.get 0x0002
+0022:	call
+0023:	const.get 0x0003
+0026:	call
+0027:	ref.null
+0028:	drop
+0029:	nop
+
+.globals
+0000:	any
+
+.constants
+0000:	func(i64) i64
+	0000:	upval.get 0x00
+	0002:	local.get 0x00
+	0004:	i64.add
+	0005:	return
+	0006:	ref.null
+	0007:	return
+0001:	func(i64) i64
+	0000:	local.get 0x00
+	0002:	const.get 0x0000
+	0005:	closure.new
+	0006:	local.set 0x01
+	0008:	i64.const 0x0000000000000005
+	0017:	local.get 0x01
+	0019:	call
+	0020:	return
+	0021:	ref.null
+	0022:	return
+0002:	<host> func(i64) string
+0003:	<host> func(string)

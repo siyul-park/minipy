@@ -85,6 +85,14 @@ type Emitter interface {
 	CallHostVoid(fn *interp.HostFunction)
 	// Host returns the runtime-bound host function for a native symbol.
 	Host(module, symbol string) *interp.HostFunction
+	// Once returns the host function this compilation uses for one native
+	// operation, building it at most once. Two emissions passing the same key
+	// share a single constant-pool entry; a factory called per emission interns
+	// an identical closure at every call site instead, because the pool interns
+	// by pointer identity and two closures are never the same pointer. The key
+	// must identify the module, the operation, and every argument that shapes
+	// the function — HostKey builds one.
+	Once(key string, build func() *interp.HostFunction) *interp.HostFunction
 	// Runtime returns the runtime resources bound to this compilation.
 	Runtime() Runtime
 	// Label allocates a fresh branch target.

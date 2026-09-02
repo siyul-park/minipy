@@ -26,7 +26,7 @@ type compiledCode struct {
 var _ module.Code = (*compiledCode)(nil)
 
 func (c *compiledCode) Kind() vmtypes.Kind          { return vmtypes.KindRef }
-func (c *compiledCode) Type() vmtypes.Type          { return vmtypes.TypeRef }
+func (c *compiledCode) Type() vmtypes.Type          { return vmtypes.TypeAny }
 func (c *compiledCode) Mode() string                { return c.mode }
 func (c *compiledCode) Function() *vmtypes.Function { return c.fn }
 func (c *compiledCode) Constants() []vmtypes.Value  { return c.consts }
@@ -52,7 +52,7 @@ func (c config) compileCode(source, filename, mode string) (module.Code, error) 
 		return nil, err
 	}
 
-	fb := vmtypes.NewFunctionBuilder(&vmtypes.FunctionType{Returns: []vmtypes.Type{vmtypes.TypeRef}})
+	fb := vmtypes.NewFunctionBuilder(&vmtypes.FunctionType{Returns: []vmtypes.Type{vmtypes.TypeAny}})
 	low := newLowerer(program.NewBuilder(), checked, newNativeRuntime(c))
 	low.dynamic = true
 	low.code = fnTarget(fb)
@@ -125,7 +125,7 @@ func (c *lowerer) lowerCode(mode string) error {
 
 func codeCaptureTypes(constants []vmtypes.Value) []vmtypes.Type {
 	captures := make([]vmtypes.Type, 0, 2+len(constants))
-	captures = append(captures, vmtypes.TypeRef, vmtypes.TypeRef)
+	captures = append(captures, vmtypes.TypeAny, vmtypes.TypeAny)
 	for _, constant := range constants {
 		captures = append(captures, constant.Type())
 	}
@@ -167,7 +167,7 @@ func (c *lowerer) storeName(name string) {
 
 func dynamicNameHost() *interp.HostFunction {
 	return interp.NewHostFunction(
-		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeString}, Returns: []vmtypes.Type{vmtypes.TypeRef}},
+		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeString}, Returns: []vmtypes.Type{vmtypes.TypeAny}},
 		func(i *interp.Interpreter, p []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
 			name, err := hostabi.LoadStr(i, p[0])
 			if err != nil {

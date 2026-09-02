@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/siyul-park/minipy/module"
 	"github.com/siyul-park/minipy/parser"
 	"github.com/siyul-park/minipy/token"
 	"github.com/siyul-park/minivm/instr"
@@ -128,7 +129,7 @@ func TestCompileUnions(t *testing.T) {
 
 		requireFuncParam(t, prog.Constants, vmtypes.TypeI64, false, instr.REF_TEST, instr.REF_CAST)
 		requireFuncParam(t, prog.Constants, vmtypes.TypeString, false, instr.REF_TEST, instr.REF_CAST)
-		requireFuncParam(t, prog.Constants, vmtypes.TypeRef, true, instr.REF_TEST, instr.REF_CAST)
+		requireFuncParam(t, prog.Constants, vmtypes.TypeAny, true, instr.REF_TEST, instr.REF_CAST)
 	})
 
 	t.Run("specialized forward function call runs", func(t *testing.T) {
@@ -140,6 +141,94 @@ func TestCompileUnions(t *testing.T) {
 			"    return \"str:\" + x\n" +
 			"print(g())\n"
 		require.Equal(t, "int:3\n", run(t, src))
+	})
+
+	t.Run("specializations are emitted in call-site order", func(t *testing.T) {
+		// Constant-pool indices follow specialization emission order, so
+		// building them by iterating the call map made one source compile to
+		// two differently numbered programs at random.
+		src := "def describe(x: int | str) -> str:\n" +
+			"    if isinstance(x, int):\n" +
+			"        return \"int:\" + str(x)\n" +
+			"    return \"str:\" + x\n" +
+			"print(describe(3))\n" +
+			"print(describe(\"hi\"))\n"
+
+		first, err := Compile(strings.NewReader(src), WithOutput(io.Discard))
+		require.NoError(t, err)
+		for range 8 {
+			again, err := Compile(strings.NewReader(src), WithOutput(io.Discard))
+			require.NoError(t, err)
+			require.Equal(t, first.String(), again.String(), "compiling one source twice must emit one program")
+		}
+	})
+}
+
+func TestCompileSharesHostFunctions(t *testing.T) {
+	t.Run("repeated calls to one operation share a host constant", func(t *testing.T) {
+		// A host-function factory allocates a fresh closure per call and the
+		// constant pool interns by pointer identity, so an uninterned factory
+		// grows the pool by one identical entry per call site.
+		src := "xs: list[int] = [3, 1, 2]\n" +
+			"ys: list[int] = [6, 5, 4]\n" +
+			"xs.sort()\n" +
+			"ys.sort()\n" +
+			"print(str(xs[0]) + str(ys[0]))\n"
+		prog, err := Compile(strings.NewReader(src), WithOutput(io.Discard))
+		require.NoError(t, err)
+
+		sorts := 0
+		for _, host := range hostConstants(prog.Constants) {
+			if host.Typ.String() == "func([]i64)" {
+				sorts++
+			}
+		}
+		require.Equal(t, 1, sorts, "both list.sort call sites must share one host constant")
+	})
+
+	t.Run("a native symbol emitted repeatedly shares one host constant", func(t *testing.T) {
+		// str() and print() are emitted by builtins, not by the compiler's own
+		// factories, so they share only if module.Emitter.Once reaches them.
+		src := "a: int = 1\nb: int = 2\nprint(str(a))\nprint(str(b))\nprint(str(a + b))\n"
+		prog, err := Compile(strings.NewReader(src), WithOutput(io.Discard))
+		require.NoError(t, err)
+
+		signatures := map[string]int{}
+		for _, host := range hostConstants(prog.Constants) {
+			signatures[host.Typ.String()]++
+		}
+		require.Equal(t, 1, signatures["func(i64) string"], "three str(int) call sites share one host constant")
+		require.Equal(t, 1, signatures["func(string)"], "three print(str) call sites share one host constant")
+	})
+
+	t.Run("distinct argument types keep distinct host constants", func(t *testing.T) {
+		src := "a: int = 1\nb: float = 2.0\nprint(str(a))\nprint(str(b))\n"
+		prog, err := Compile(strings.NewReader(src), WithOutput(io.Discard))
+		require.NoError(t, err)
+
+		signatures := map[string]bool{}
+		for _, host := range hostConstants(prog.Constants) {
+			signatures[host.Typ.String()] = true
+		}
+		require.True(t, signatures["func(i64) string"], "str(int) keeps its own host function")
+		require.True(t, signatures["func(f64) string"], "str(float) keeps its own host function")
+	})
+
+	t.Run("distinct receiver types keep distinct host constants", func(t *testing.T) {
+		src := "xs: list[int] = [3, 1, 2]\n" +
+			"ss: list[str] = [\"b\", \"a\"]\n" +
+			"xs.sort()\n" +
+			"ss.sort()\n" +
+			"print(str(xs[0]) + ss[0])\n"
+		prog, err := Compile(strings.NewReader(src), WithOutput(io.Discard))
+		require.NoError(t, err)
+
+		signatures := map[string]bool{}
+		for _, host := range hostConstants(prog.Constants) {
+			signatures[host.Typ.String()] = true
+		}
+		require.True(t, signatures["func([]i64)"], "list[int].sort keeps its own host function")
+		require.True(t, signatures["func([]string)"], "list[str].sort keeps its own host function")
 	})
 }
 
@@ -162,7 +251,7 @@ func TestCompileInference(t *testing.T) {
 
 		requireFuncParam(t, prog.Constants, vmtypes.TypeI64, true)
 		requireFuncParam(t, prog.Constants, vmtypes.TypeString, true)
-		requireFuncParam(t, prog.Constants, vmtypes.TypeRef, true)
+		requireFuncParam(t, prog.Constants, vmtypes.TypeAny, true)
 	})
 
 	t.Run("inferred concrete return type", func(t *testing.T) {
@@ -491,6 +580,28 @@ func TestTypingAnnotations(t *testing.T) {
 	t.Run("forward type alias reference resolves", func(t *testing.T) {
 		errs := checkOnly(t, "type B = int\ntype A = list[B]\nxs: A = []\n")
 		require.Empty(t, errs)
+	})
+}
+
+func TestCompilerWithNativeModules(t *testing.T) {
+	t.Run("a name a default module already claims is reported, not panicked", func(t *testing.T) {
+		duplicate := module.NewNative("builtins")
+		_, err := Compile(strings.NewReader("x: int = 1\n"),
+			WithOutput(io.Discard), WithNativeModules(duplicate))
+		require.ErrorIs(t, err, module.ErrDuplicateModule)
+	})
+
+	t.Run("a nil module is reported", func(t *testing.T) {
+		_, err := Compile(strings.NewReader("x: int = 1\n"),
+			WithOutput(io.Discard), WithNativeModules(nil))
+		require.ErrorIs(t, err, module.ErrNilModule)
+	})
+
+	t.Run("a valid module compiles", func(t *testing.T) {
+		extra := module.NewNative("extra")
+		_, err := Compile(strings.NewReader("x: int = 1\n"),
+			WithOutput(io.Discard), WithNativeModules(extra))
+		require.NoError(t, err)
 	})
 }
 
@@ -2061,7 +2172,7 @@ func ops(t *testing.T, constants []vmtypes.Value, ops ...instr.Opcode) {
 		}
 	}
 	for _, op := range ops {
-		require.Truef(t, seen[op], "expected function constant to contain %s", op)
+		require.Truef(t, seen[op], "expected function constant to contain %s", mnemonic(op))
 	}
 }
 
@@ -2072,7 +2183,7 @@ func programOps(t *testing.T, prog *program.Program, ops ...instr.Opcode) {
 		seen[ins.Opcode()] = true
 	}
 	for _, op := range ops {
-		require.Truef(t, seen[op], "expected program code to contain %s", op)
+		require.Truef(t, seen[op], "expected program code to contain %s", mnemonic(op))
 	}
 }
 
@@ -2101,12 +2212,16 @@ func requireFuncParam(t *testing.T, constants []vmtypes.Value, parameter vmtypes
 			seen[ins.Opcode()] = true
 		}
 		for _, op := range ops {
-			require.Equalf(t, wantOps, seen[op], "function with parameter %s opcode %s", parameter, op)
+			require.Equalf(t, wantOps, seen[op], "function with parameter %s opcode %s", parameter, mnemonic(op))
 		}
 		return
 	}
 	require.Failf(t, "missing function constant", "expected function constant with parameter %s", parameter)
 }
+
+// mnemonic names an opcode for a failure message. instr.Opcode is a byte with
+// no String method, so formatting one directly renders its numeric value.
+func mnemonic(op instr.Opcode) string { return instr.TypeOf(op).Mnemonic }
 
 // TestCompileForTupleNotIterable is a regression test for a bug introduced
 // alongside bare (unparenthesized) tuple expression-list support: iterating a
@@ -2490,7 +2605,7 @@ func TestCompiler_lowerFailure(t *testing.T) {
 		child := c.child(target{}, &function{}, nil, nil, nil, nil)
 		child.fail(errors.New("boom"))
 		child.tmp(vmtypes.TypeI64)
-		child.tmp(vmtypes.TypeRef)
+		child.tmp(vmtypes.TypeAny)
 
 		require.False(t, c.failed())
 		c.adopt(child)
@@ -2591,5 +2706,209 @@ func TestCompileDynamicBuiltins(t *testing.T) {
 			"ys.append(2)\n" +
 			"print(str(len(xs)))\n"
 		require.Equal(t, "2\n", run(t, src))
+	})
+}
+
+// TestCompileRangeFor pins the semantics of the counter loop `for x in range(...)`
+// lowers to. The general iterator path stays correct for every shape the fast
+// path declines, so each case here also states which path it exercises.
+func TestCompileRangeFor(t *testing.T) {
+	t.Run("counts up over one argument", func(t *testing.T) {
+		require.Equal(t, "0\n1\n2\n", run(t, "for i in range(3):\n    print(str(i))\n"))
+	})
+
+	t.Run("counts up over start and stop", func(t *testing.T) {
+		require.Equal(t, "2\n3\n", run(t, "for i in range(2, 4):\n    print(str(i))\n"))
+	})
+
+	t.Run("counts up by a literal step", func(t *testing.T) {
+		require.Equal(t, "0\n3\n6\n", run(t, "for i in range(0, 8, 3):\n    print(str(i))\n"))
+	})
+
+	t.Run("counts down by a negative literal step", func(t *testing.T) {
+		require.Equal(t, "3\n2\n1\n", run(t, "for i in range(3, 0, -1):\n    print(str(i))\n"))
+	})
+
+	t.Run("an empty range runs the body no times", func(t *testing.T) {
+		require.Equal(t, "done\n", run(t, "for i in range(0):\n    print(\"body\")\nprint(\"done\")\n"))
+		require.Equal(t, "done\n", run(t, "for i in range(5, 0):\n    print(\"body\")\nprint(\"done\")\n"))
+		require.Equal(t, "done\n", run(t, "for i in range(0, 5, -1):\n    print(\"body\")\nprint(\"done\")\n"))
+	})
+
+	t.Run("the target keeps its last value after the loop", func(t *testing.T) {
+		require.Equal(t, "2\n", run(t, "last: int = -1\nfor last in range(3):\n    pass\nprint(str(last))\n"))
+	})
+
+	t.Run("break leaves the loop and skips its else", func(t *testing.T) {
+		src := "for i in range(5):\n    if i == 2:\n        break\n    print(str(i))\nelse:\n    print(\"else\")\n"
+		require.Equal(t, "0\n1\n", run(t, src))
+	})
+
+	t.Run("continue advances to the next step", func(t *testing.T) {
+		src := "for i in range(4):\n    if i == 1:\n        continue\n    print(str(i))\n"
+		require.Equal(t, "0\n2\n3\n", run(t, src))
+	})
+
+	t.Run("else runs when the loop is not broken out of", func(t *testing.T) {
+		src := "for i in range(2):\n    print(str(i))\nelse:\n    print(\"else\")\n"
+		require.Equal(t, "0\n1\nelse\n", run(t, src))
+	})
+
+	t.Run("bounds are evaluated once, not per step", func(t *testing.T) {
+		src := "calls: int = 0\n" +
+			"def stop() -> int:\n" +
+			"    global calls\n" +
+			"    calls = calls + 1\n" +
+			"    return 3\n" +
+			"for i in range(stop()):\n" +
+			"    pass\n" +
+			"print(str(calls))\n"
+		require.Equal(t, "1\n", run(t, src))
+	})
+
+	t.Run("a computed step falls back to the iterator", func(t *testing.T) {
+		src := "step: int = 2\nfor i in range(0, 5, step):\n    print(str(i))\n"
+		require.Equal(t, "0\n2\n4\n", run(t, src))
+	})
+
+	t.Run("a shadowing range is called, not the builtin", func(t *testing.T) {
+		src := "def range(n: int) -> list[int]:\n" +
+			"    return [n, n]\n" +
+			"for i in range(7):\n" +
+			"    print(str(i))\n"
+		require.Equal(t, "7\n7\n", run(t, src))
+	})
+
+	t.Run("a range value bound to a name still iterates", func(t *testing.T) {
+		src := "r = range(3)\nfor i in r:\n    print(str(i))\n"
+		require.Equal(t, "0\n1\n2\n", run(t, src))
+	})
+
+	t.Run("nested range loops keep separate counters", func(t *testing.T) {
+		src := "for i in range(2):\n    for j in range(2):\n        print(str(i) + str(j))\n"
+		require.Equal(t, "00\n01\n10\n11\n", run(t, src))
+	})
+
+	t.Run("the fast path drops the range iterator host function", func(t *testing.T) {
+		prog, err := Compile(strings.NewReader("for i in range(3):\n    pass\n"), WithOutput(io.Discard))
+		require.NoError(t, err)
+		for _, host := range hostConstants(prog.Constants) {
+			require.NotEqual(t, "func(i64, i64, i64) any", host.Typ.String(),
+				"a counter loop must not intern the range iterator constructor")
+		}
+	})
+}
+
+// TestCompileLoopRotation pins the behavior of the bottom-tested loop shape.
+// Moving a loop's test below its body changes which instruction the loop is
+// entered at and where `continue` lands, so every path through a loop is worth
+// stating: the zero-iteration case, the else block, and both jumps.
+func TestCompileLoopRotation(t *testing.T) {
+	for _, loop := range []struct {
+		kind   string
+		header string
+	}{
+		{"while", "i: int = 0\nwhile i < 4:\n"},
+		{"for over a list", "i: int = 0\nfor i in [0, 1, 2, 3]:\n"},
+	} {
+		t.Run(loop.kind, func(t *testing.T) {
+			t.Run("runs the body once per step", func(t *testing.T) {
+				src := loop.header + "    print(str(i))\n"
+				if loop.kind == "while" {
+					src = "i: int = 0\nwhile i < 4:\n    print(str(i))\n    i += 1\n"
+				}
+				require.Equal(t, "0\n1\n2\n3\n", run(t, src))
+			})
+
+			t.Run("skips the body when the test fails first", func(t *testing.T) {
+				src := "i: int = 9\nwhile i < 4:\n    print(\"body\")\nprint(\"after\")\n"
+				if loop.kind != "while" {
+					src = "xs: list[int] = []\nfor i in xs:\n    print(\"body\")\nprint(\"after\")\n"
+				}
+				require.Equal(t, "after\n", run(t, src))
+			})
+
+			t.Run("runs else only when not broken out of", func(t *testing.T) {
+				ran := "i: int = 0\nwhile i < 2:\n    i += 1\nelse:\n    print(\"else\")\n"
+				broke := "i: int = 0\nwhile i < 2:\n    break\nelse:\n    print(\"else\")\nprint(\"after\")\n"
+				if loop.kind != "while" {
+					ran = "for i in [0, 1]:\n    pass\nelse:\n    print(\"else\")\n"
+					broke = "for i in [0, 1]:\n    break\nelse:\n    print(\"else\")\nprint(\"after\")\n"
+				}
+				require.Equal(t, "else\n", run(t, ran))
+				require.Equal(t, "after\n", run(t, broke))
+			})
+
+			t.Run("continue re-tests rather than leaving the loop", func(t *testing.T) {
+				src := "i: int = 0\ntotal: int = 0\nwhile i < 4:\n    i += 1\n    if i == 2:\n        continue\n    total += i\nprint(str(total))\n"
+				if loop.kind != "while" {
+					src = "total: int = 0\nfor i in [1, 2, 3, 4]:\n    if i == 2:\n        continue\n    total += i\nprint(str(total))\n"
+				}
+				require.Equal(t, "8\n", run(t, src))
+			})
+		})
+	}
+
+	t.Run("a list grown by its own body is iterated to the new length", func(t *testing.T) {
+		// The bottom test re-reads the length every step rather than hoisting
+		// it, which is what makes this terminate at 4 elements and not 2.
+		src := "xs: list[int] = [1, 2]\n" +
+			"seen: int = 0\n" +
+			"for x in xs:\n" +
+			"    seen += 1\n" +
+			"    if seen < 3:\n" +
+			"        xs.append(x)\n" +
+			"print(str(seen) + \" \" + str(len(xs)))\n"
+		require.Equal(t, "4 4\n", run(t, src))
+	})
+}
+
+// TestCompileConstantListIndex pins that a literal subscript index normalizes
+// while lowering rather than at run time, and that it still traps out of range
+// exactly as a computed index does.
+func TestCompileConstantListIndex(t *testing.T) {
+	t.Run("a non-negative literal reads the same element as a variable", func(t *testing.T) {
+		src := "xs: list[int] = [10, 20, 30]\ni: int = 1\nprint(str(xs[1]) + \" \" + str(xs[i]))\n"
+		require.Equal(t, "20 20\n", run(t, src))
+	})
+
+	t.Run("a negative literal counts from the end", func(t *testing.T) {
+		src := "xs: list[int] = [10, 20, 30]\nprint(str(xs[-1]) + \" \" + str(xs[-3]))\n"
+		require.Equal(t, "30 10\n", run(t, src))
+	})
+
+	t.Run("a literal index writes the element a variable index reads", func(t *testing.T) {
+		src := "xs: list[int] = [1, 2, 3]\nxs[0] = 9\nxs[-1] += 5\nprint(str(xs[0]) + \" \" + str(xs[2]))\n"
+		require.Equal(t, "9 8\n", run(t, src))
+	})
+
+	t.Run("pop and del take a literal index", func(t *testing.T) {
+		src := "xs: list[int] = [1, 2, 3, 4]\n" +
+			"print(str(xs.pop()))\n" +
+			"print(str(xs.pop(0)))\n" +
+			"del xs[-1]\n" +
+			"print(str(len(xs)) + \" \" + str(xs[0]))\n"
+		require.Equal(t, "4\n1\n1 2\n", run(t, src))
+	})
+
+	t.Run("an out-of-range literal still traps", func(t *testing.T) {
+		for _, src := range []string{
+			"xs: list[int] = [1]\nprint(str(xs[5]))\n",
+			"xs: list[int] = [1]\nprint(str(xs[-5]))\n",
+		} {
+			prog, err := Compile(strings.NewReader(src), WithOutput(io.Discard))
+			require.NoError(t, err)
+			vm := interp.New(prog)
+			require.Error(t, vm.Run(context.Background()))
+			vm.Close()
+		}
+	})
+
+	t.Run("a literal index needs no scratch slot", func(t *testing.T) {
+		// The runtime normalization reserves one slot for the index and one for
+		// the receiver; folding it leaves the frame with neither.
+		prog, err := Compile(strings.NewReader("xs: list[int] = [1, 2]\nprint(str(xs[0]))\n"), WithOutput(io.Discard))
+		require.NoError(t, err)
+		require.Empty(t, prog.Locals, "a constant index normalizes without scratch slots")
 	})
 }

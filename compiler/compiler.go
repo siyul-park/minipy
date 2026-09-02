@@ -13,10 +13,8 @@ import (
 	"github.com/siyul-park/minipy/parser"
 	"github.com/siyul-park/minipy/token"
 
-	"github.com/siyul-park/minivm/instr"
 	"github.com/siyul-park/minivm/optimize"
 	"github.com/siyul-park/minivm/program"
-	vmtypes "github.com/siyul-park/minivm/types"
 )
 
 // Option configures a Compiler.
@@ -34,6 +32,10 @@ type config struct {
 	level optimize.Level
 	paths []searchEntry
 	reg   *module.Registry
+
+	// err holds the first option failure. An Option cannot return one, so it is
+	// carried here and reported by Compile, which is the first call that can.
+	err error
 }
 
 type compilation struct {
@@ -51,7 +53,8 @@ func WithOutput(writer io.Writer) Option {
 }
 
 // WithOptimizationLevel selects the minivm optimizer pipeline used after
-// lowering. It defaults to optimize.O0.
+// lowering. It defaults to optimize.O0; see docs/codegen-quality.md,
+// "Optimizer levels", for why the default is not higher.
 func WithOptimizationLevel(level optimize.Level) Option {
 	return func(config *config) { config.level = level }
 }
@@ -64,12 +67,19 @@ func WithModules(files fs.FS) Option {
 }
 
 // WithNativeModules adds native modules to the default registry. The builtins,
-// operator, and typing modules remain registered; duplicate module names panic
-// as an invalid startup catalogue.
+// operator, and typing modules remain registered. A catalogue this makes invalid
+// — a nil module, or a name one of the defaults already claims — is reported by
+// Compile rather than panicking, because it comes from a caller's configuration
+// and not from this package's own startup.
 func WithNativeModules(modules ...module.Module) Option {
 	return func(config *config) {
 		registered := append(config.reg.Modules(), modules...)
-		config.reg = module.NewRegistry(registered, module.WithFallback(config.reg.FallbackName()))
+		reg, err := module.NewRegistry(registered, module.WithFallback(config.reg.FallbackName()))
+		if err != nil {
+			config.err = err
+			return
+		}
+		config.reg = reg
 	}
 }
 
@@ -103,6 +113,9 @@ func New(options ...Option) *Compiler {
 // Compile compiles source in a fresh session. A failed invocation cannot affect
 // later calls on the same Compiler.
 func (c *Compiler) Compile(source io.Reader) (*program.Program, error) {
+	if c.config.err != nil {
+		return nil, c.config.err
+	}
 	if source == nil {
 		return nil, ErrNoSource
 	}
@@ -161,18 +174,16 @@ func (c *compilation) lower(checked *checkedProgram) (*program.Program, error) {
 	return lowerer.lower()
 }
 
+// optimize runs the configured minivm pipeline. The passes own every table they
+// touch: they compact the constant and type pools and repair the handler table
+// against the code they relocate, so the returned program is the whole product.
+// Writing pre-optimization copies back over it reinstates tables that no longer
+// describe the emitted code.
 func (c *compilation) optimize(lowered *program.Program) (*program.Program, error) {
-	typesPool := append([]vmtypes.Type(nil), lowered.Types...)
-	handlers := append([]instr.Handler(nil), lowered.Handlers...)
-	globals := append([]vmtypes.Type(nil), lowered.Globals...)
-
 	optimized, err := optimize.New(c.config.level).Optimize(lowered)
 	if err != nil {
 		return nil, fmt.Errorf("optimize program: %w", err)
 	}
-	optimized.Types = typesPool
-	optimized.Handlers = handlers
-	optimized.Globals = globals
 	return optimized, nil
 }
 

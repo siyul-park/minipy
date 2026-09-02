@@ -1,0 +1,35 @@
+# instructions   18
+# functions      0
+# host functions 2
+# constants      2
+# types          0
+# globals        1
+# locals         0
+# handlers       0
+
+.code
+0000:	i64.const 0x0000000000000000
+0009:	global.set 0x0000
+0012:	global.get 0x0000
+0015:	i64.const 0x0000000000000005
+0024:	i64.add
+0025:	global.set 0x0000
+0028:	global.get 0x0000
+0031:	i64.const 0x0000000000000002
+0040:	i64.mul
+0041:	global.set 0x0000
+0044:	global.get 0x0000
+0047:	const.get 0x0000
+0050:	call
+0051:	const.get 0x0001
+0054:	call
+0055:	ref.null
+0056:	drop
+0057:	nop
+
+.globals
+0000:	i64
+
+.constants
+0000:	<host> func(i64) string
+0001:	<host> func(string)

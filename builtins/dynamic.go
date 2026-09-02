@@ -108,7 +108,7 @@ func compileHost(compiler module.Compiler) *interp.HostFunction {
 	return interp.NewHostFunction(
 		&vmtypes.FunctionType{
 			Params:  []vmtypes.Type{vmtypes.TypeString, vmtypes.TypeString, vmtypes.TypeString},
-			Returns: []vmtypes.Type{vmtypes.TypeRef},
+			Returns: []vmtypes.Type{vmtypes.TypeAny},
 		},
 		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
 			source, err := hostabi.LoadStr(i, params[0])
@@ -139,8 +139,8 @@ func compileHost(compiler module.Compiler) *interp.HostFunction {
 func dynamicHost(compiler module.Compiler, mode string) *interp.HostFunction {
 	return interp.NewHostFunction(
 		&vmtypes.FunctionType{
-			Params:  []vmtypes.Type{vmtypes.TypeRef, vmtypes.TypeRef, vmtypes.TypeRef},
-			Returns: []vmtypes.Type{vmtypes.TypeRef},
+			Params:  []vmtypes.Type{vmtypes.TypeAny, vmtypes.TypeAny, vmtypes.TypeAny},
+			Returns: []vmtypes.Type{vmtypes.TypeAny},
 		},
 		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
 			code, err := loadCode(i, compiler, params[0], mode)
@@ -190,7 +190,7 @@ func loadCode(i *interp.Interpreter, compiler module.Compiler, value vmtypes.Box
 func namespaces(i *interp.Interpreter, globals, locals vmtypes.Boxed) (vmtypes.Boxed, vmtypes.Boxed, bool, error) {
 	owned := globals == vmtypes.BoxedNull
 	if owned {
-		addr, err := i.Alloc(vmtypes.NewMap(vmtypes.NewMapType(vmtypes.TypeString, vmtypes.TypeRef)))
+		addr, err := i.Alloc(vmtypes.NewMap(vmtypes.NewMapType(vmtypes.TypeString, vmtypes.TypeAny)))
 		if err != nil {
 			return vmtypes.BoxedNull, vmtypes.BoxedNull, false, err
 		}
@@ -213,7 +213,7 @@ func checkNamespace(i *interp.Interpreter, value vmtypes.Boxed) error {
 	if err != nil {
 		return err
 	}
-	if _, ok := loaded.(*vmtypes.Map); !ok {
+	if _, ok := loaded.Type().(*vmtypes.MapType); !ok {
 		return fmt.Errorf("namespace must be dict[str, Any]")
 	}
 	return nil

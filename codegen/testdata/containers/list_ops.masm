@@ -1,0 +1,81 @@
+# instructions   61
+# functions      0
+# host functions 2
+# constants      2
+# types          1
+# globals        1
+# locals         0
+# handlers       0
+
+.code
+0000:	i32.const 0x00000003
+0005:	array.new_default 0x0000
+0008:	dup
+0009:	i32.const 0x00000000
+0014:	i64.const 0x0000000000000001
+0023:	array.set
+0024:	dup
+0025:	i32.const 0x00000001
+0030:	i64.const 0x0000000000000002
+0039:	array.set
+0040:	dup
+0041:	i32.const 0x00000002
+0046:	i64.const 0x0000000000000003
+0055:	array.set
+0056:	global.set 0x0000
+0059:	global.get 0x0000
+0062:	i64.const 0x0000000000000004
+0071:	i32.const 0x00000001
+0076:	array.append
+0077:	drop
+0078:	ref.null
+0079:	drop
+0080:	global.get 0x0000
+0083:	i64.const 0x0000000000000000
+0092:	drop
+0093:	i32.const 0x00000000
+0098:	array.get
+0099:	const.get 0x0000
+0102:	call
+0103:	const.get 0x0001
+0106:	call
+0107:	ref.null
+0108:	drop
+0109:	global.get 0x0000
+0112:	i64.const 0x0000000000000000
+0121:	i64.const 0x0000000000000001
+0130:	i64.sub
+0131:	drop
+0132:	dup
+0133:	array.len
+0134:	i32.to_i64_s
+0135:	i64.const 0xFFFFFFFFFFFFFFFF
+0144:	i64.add
+0145:	i64.to_i32
+0146:	array.get
+0147:	const.get 0x0000
+0150:	call
+0151:	const.get 0x0001
+0154:	call
+0155:	ref.null
+0156:	drop
+0157:	global.get 0x0000
+0160:	array.len
+0161:	i32.to_i64_s
+0162:	const.get 0x0000
+0165:	call
+0166:	const.get 0x0001
+0169:	call
+0170:	ref.null
+0171:	drop
+0172:	nop
+
+.globals
+0000:	any
+
+.constants
+0000:	<host> func(i64) string
+0001:	<host> func(string)
+
+.types
+0000:	[]i64

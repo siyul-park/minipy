@@ -8,6 +8,7 @@ import (
 	"github.com/siyul-park/minipy/ast"
 	"github.com/siyul-park/minipy/hostabi"
 	"github.com/siyul-park/minipy/module"
+	"github.com/siyul-park/minipy/token"
 	"github.com/siyul-park/minipy/types"
 
 	"github.com/siyul-park/minivm/instr"
@@ -17,8 +18,8 @@ import (
 )
 
 // loopLabels are the branch targets for the loop currently being lowered: cont
-// for `continue` (re-test for while, the increment step for range-for) and brk
-// for `break` (past any else block).
+// for `continue` (the re-test for while, the increment step for a counter loop)
+// and brk for `break` (past any else block).
 type loopLabels struct {
 	cont instr.Label
 	brk  instr.Label
@@ -144,6 +145,7 @@ type lowerer struct {
 	emitted  map[*moduleInfo]bool
 	specs    map[*specialization]int
 	building map[*specialization]bool
+	hosts    map[string]*interp.HostFunction
 
 	// current-function state
 	locals  map[string]*local
@@ -198,6 +200,7 @@ func newLowerer(b *program.Builder, checked *checkedProgram, native *nativeRunti
 		emitted:     map[*moduleInfo]bool{},
 		specs:       map[*specialization]int{},
 		building:    map[*specialization]bool{},
+		hosts:       map[string]*interp.HostFunction{},
 		temps:       map[string]int{},
 		native:      native,
 		boxed:       map[*local]bool{},
@@ -229,6 +232,20 @@ func (c *lowerer) lower() (*program.Program, error) {
 
 // fail records err as the lowering failure if none has been recorded yet.
 // Only the first failure is kept.
+// unsupported reports a construct the checker admitted but the lowerer cannot
+// emit. It is a diagnostic, not an internal error: it carries the construct's
+// source position and a stable code, so a user sees a line number rather than a
+// bare Go type name. Reaching one means the checker and the lowerer disagree
+// about what is lowerable — the invariant AGENTS.md states as "unsupported
+// constructs fail before lowering".
+func (c *lowerer) unsupported(pos token.Pos, format string, args ...any) {
+	var diagnostics token.ErrorList
+	diagnostics.Add(pos, token.UnsupportedFeature, format, args...)
+	c.fail(diagnostics.Err())
+}
+
+// fail records the first operational failure, for an error whose identity comes
+// from a dependency rather than from user source.
 func (c *lowerer) fail(err error) {
 	if c.err == nil {
 		c.err = err
@@ -498,7 +515,7 @@ func slotType(t vmtypes.Type) vmtypes.Type {
 	case vmtypes.KindF64:
 		return vmtypes.TypeF64
 	default:
-		return vmtypes.TypeRef
+		return vmtypes.TypeAny
 	}
 }
 
@@ -510,7 +527,7 @@ func slotType(t vmtypes.Type) vmtypes.Type {
 func (c *lowerer) globalTable() []vmtypes.Type {
 	table := make([]vmtypes.Type, len(c.names))
 	for i := range table {
-		table[i] = vmtypes.TypeRef
+		table[i] = vmtypes.TypeAny
 	}
 	for _, g := range c.globals {
 		if g.index < len(table) && g.typ != types.Invalid {
@@ -606,6 +623,12 @@ func (c *lowerer) TypeIndex(t types.Type) uint64 { return c.typeIndex(t) }
 // ConstGet emits a CONST_GET instruction for a constant pool value.
 func (c *lowerer) ConstGet(v vmtypes.Value) { c.constGet(v) }
 
+// Once returns the host function this compilation uses for one native
+// operation, building it at most once.
+func (c *lowerer) Once(key string, build func() *interp.HostFunction) *interp.HostFunction {
+	return c.host(key, build)
+}
+
 // CallHost emits a call to a value-returning host function.
 func (c *lowerer) CallHost(fn *interp.HostFunction) { c.callHost(fn) }
 
@@ -636,7 +659,7 @@ func (c *lowerer) BrIf(l instr.Label) { c.brIf(l) }
 func (c *lowerer) slotFor(e ast.Expr) int {
 	t, ok := c.types[e]
 	if !ok || t == nil {
-		return c.tmp(vmtypes.TypeRef)
+		return c.tmp(vmtypes.TypeAny)
 	}
 	return c.tmp(hostabi.VMParamType(t))
 }

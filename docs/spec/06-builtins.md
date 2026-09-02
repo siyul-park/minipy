@@ -44,7 +44,12 @@ A native module symbol carries:
 - a bytecode emit function
 - an optional runtime value/host function
 
-Applications extend the default registry with `compiler.WithNativeModules`.
+Applications extend the default registry with `compiler.WithNativeModules`. A
+catalogue the extension makes invalid — a nil module, or a name a default module
+already claims — is reported by `Compile`, not panicked: it comes from a
+caller's configuration. `module.NewRegistry` returns that error and
+`module.MustNewRegistry` panics with it, for a catalogue fixed at startup like
+the compiler's own default.
 Module and symbol names must be unique; duplicate registration is a configuration
 error. Symbols that lower entirely to bytecode do not need a runtime value.
 
@@ -643,6 +648,26 @@ side effects and then discarded; the VM executes an UNREACHABLE instruction.
 
 When any argument has type `Any` or is dynamic, the result type is `None` and
 runtime dispatch is used.
+
+## Host Function Interning
+
+A native symbol whose emitter builds a host function must build it through
+`module.Emitter.Once`, keyed with `module.HostKey(Name, operation, ...)`. The
+constant pool interns by pointer identity and a factory returns a fresh closure
+each call, so a producer called per emission adds an identical entry at every
+call site. The key must name every argument the factory reads: `str(int)` and
+`str(float)` are different functions and merging them would be a miscompile.
+
+A symbol that declares a runtime value instead (`module.NewSymbol`'s value
+function, reached with `Emitter.Host`) is already one value per symbol and needs
+nothing further.
+
+## Container and String Methods
+
+`list`, `dict`, `set`, and `str` methods are not native module symbols: they are
+methods on builtin types, and they live in one catalogue in `compiler/method.go`
+whose entry pairs a checker rule with an emitter. See
+`docs/spec/04-static-semantics.md`, "Builtin Method Catalogue".
 
 ## Related Docs
 

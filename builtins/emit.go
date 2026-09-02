@@ -9,6 +9,7 @@ import (
 	"github.com/siyul-park/minipy/operator"
 	"github.com/siyul-park/minipy/token"
 	"github.com/siyul-park/minipy/types"
+	"github.com/siyul-park/minivm/interp"
 
 	"github.com/siyul-park/minivm/instr"
 	vmtypes "github.com/siyul-park/minivm/types"
@@ -18,21 +19,21 @@ func emitPrint(e module.Emitter, args []ast.Expr) {
 	arg := args[0]
 	e.Expr(arg)
 	if isDynamicEmit(e.Type(arg)) {
-		e.CallHostVoid(operator.DynPrint(e.Runtime().Out()))
+		e.CallHostVoid(e.Once(module.HostKey(Name, "print", "dynamic"), func() *interp.HostFunction { return operator.DynPrint(e.Runtime().Out()) }))
 		return
 	}
-	e.CallHostVoid(hostabi.PrintFunction(e.Runtime().Out(), e.Type(arg)))
+	e.CallHostVoid(e.Once(module.HostKey(Name, "print", e.Type(arg)), func() *interp.HostFunction { return hostabi.PrintFunction(e.Runtime().Out(), e.Type(arg)) }))
 }
 
 func emitStr(e module.Emitter, args []ast.Expr) {
 	arg := args[0]
 	e.Expr(arg)
 	if isDynamicEmit(e.Type(arg)) {
-		e.CallHost(operator.DynStr())
+		e.CallHost(e.Once(module.HostKey(Name, "str", "dynamic"), operator.DynStr))
 		return
 	}
 	if e.Type(arg) != types.Str {
-		e.CallHost(hostabi.StringFunction(e.Type(arg)))
+		e.CallHost(e.Once(module.HostKey(Name, "str", e.Type(arg)), func() *interp.HostFunction { return hostabi.StringFunction(e.Type(arg)) }))
 	}
 }
 
@@ -65,7 +66,7 @@ func emitBool(e module.Emitter, args []ast.Expr) {
 	e.Expr(arg)
 	typ := e.Type(arg)
 	if isDynamicEmit(typ) {
-		e.CallHost(operator.DynBool())
+		e.CallHost(e.Once(module.HostKey(Name, "bool", "dynamic"), operator.DynBool))
 		return
 	}
 	switch typ {
@@ -132,7 +133,7 @@ func emitLen(e module.Emitter, args []ast.Expr) {
 	arg := args[0]
 	e.Expr(arg)
 	if isDynamicEmit(e.Type(arg)) {
-		e.CallHost(operator.DynLen())
+		e.CallHost(e.Once(module.HostKey(Name, "len", "dynamic"), operator.DynLen))
 		return
 	}
 	switch t := e.Type(arg).(type) {
@@ -149,7 +150,7 @@ func emitLen(e module.Emitter, args []ast.Expr) {
 			// STRING_LEN reports the underlying UTF-8 byte count, not the
 			// codepoint count str iteration/indexing/slicing already use;
 			// strLenHost counts codepoints so len() agrees with them.
-			e.CallHost(strLenHost())
+			e.CallHost(e.Once(module.HostKey(Name, "len", "str"), strLenHost))
 			return
 		}
 	}
@@ -159,32 +160,47 @@ func emitLen(e module.Emitter, args []ast.Expr) {
 func emitEnumerate(e module.Emitter, args []ast.Expr) {
 	e.Expr(args[0])
 	result, _ := enumerateResult([]types.Type{e.Type(args[0])})
-	e.CallHost(enumerateHost(result))
+	e.CallHost(e.Once(module.HostKey(Name, "enumerate", result), func() *interp.HostFunction { return enumerateHost(result) }))
 }
 
 func emitZip(e module.Emitter, args []ast.Expr) {
 	e.Expr(args[0])
 	e.Expr(args[1])
 	result, _ := zipResult([]types.Type{e.Type(args[0]), e.Type(args[1])})
-	e.CallHost(zipHost(result))
+	e.CallHost(e.Once(module.HostKey(Name, "zip", result), func() *interp.HostFunction { return zipHost(result) }))
 }
 
 func emitRange(e module.Emitter, args []ast.Expr) {
+	start, stop, step := RangeBounds(args)
+	emitBound(e, start, 0)
+	e.Expr(stop)
+	emitBound(e, step, 1)
+	e.CallHost(e.Host(Name, "range"))
+}
+
+// RangeBounds splits a range call's arguments into its start, stop and step,
+// with a nil start or step standing for the default the 1- and 2-argument forms
+// omit. It is exported because a caller lowering `for x in range(...)` needs the
+// same split to emit a counter loop instead of an iterator, and the arity rule
+// belongs here rather than duplicated there.
+func RangeBounds(args []ast.Expr) (start, stop, step ast.Expr) {
 	switch len(args) {
 	case 1:
-		e.Emit(instr.I64_CONST, 0)
-		e.Expr(args[0])
-		e.Emit(instr.I64_CONST, 1)
+		return nil, args[0], nil
 	case 2:
-		e.Expr(args[0])
-		e.Expr(args[1])
-		e.Emit(instr.I64_CONST, 1)
+		return args[0], args[1], nil
 	default:
-		e.Expr(args[0])
-		e.Expr(args[1])
-		e.Expr(args[2])
+		return args[0], args[1], args[2]
 	}
-	e.CallHost(e.Host(Name, "range"))
+}
+
+// emitBound pushes a range bound, or the literal default when it was omitted.
+func emitBound(e module.Emitter, bound ast.Expr, def uint64) {
+	if bound == nil {
+		e.Emit(instr.I64_CONST, def)
+		return
+	}
+	e.Expr(bound)
 }
 
 func emitIter(e module.Emitter, args []ast.Expr) {
@@ -199,12 +215,12 @@ func emitIter(e module.Emitter, args []ast.Expr) {
 	case *types.Dict, *types.Set:
 		e.Emit(instr.MAP_ITER)
 	case *types.List:
-		e.CallHost(listIter(typ))
+		e.CallHost(e.Once(module.HostKey(Name, "iter", typ), func() *interp.HostFunction { return listIter(typ) }))
 	default:
 		if types.Equal(typ, types.Str) {
-			e.CallHost(strIter())
+			e.CallHost(e.Once(module.HostKey(Name, "iter", "str"), strIter))
 		} else if types.Equal(typ, types.Bytes) {
-			e.CallHost(bytesIter())
+			e.CallHost(e.Once(module.HostKey(Name, "iter", "bytes"), bytesIter))
 		}
 	}
 }
@@ -227,56 +243,56 @@ func emitReversed(e module.Emitter, args []ast.Expr) {
 func emitMin(e module.Emitter, args []ast.Expr) {
 	if len(args) == 1 {
 		e.Expr(args[0])
-		e.CallHost(minListHost(e.Type(args[0])))
+		e.CallHost(e.Once(module.HostKey(Name, "min", "list", e.Type(args[0])), func() *interp.HostFunction { return minListHost(e.Type(args[0])) }))
 		return
 	}
 	for _, arg := range args {
 		e.Expr(arg)
 	}
-	e.CallHost(minArgsHost(e.Type(args[0]), len(args)))
+	e.CallHost(e.Once(module.HostKey(Name, "min", e.Type(args[0]), len(args)), func() *interp.HostFunction { return minArgsHost(e.Type(args[0]), len(args)) }))
 }
 
 func emitMax(e module.Emitter, args []ast.Expr) {
 	if len(args) == 1 {
 		e.Expr(args[0])
-		e.CallHost(maxListHost(e.Type(args[0])))
+		e.CallHost(e.Once(module.HostKey(Name, "max", "list", e.Type(args[0])), func() *interp.HostFunction { return maxListHost(e.Type(args[0])) }))
 		return
 	}
 	for _, arg := range args {
 		e.Expr(arg)
 	}
-	e.CallHost(maxArgsHost(e.Type(args[0]), len(args)))
+	e.CallHost(e.Once(module.HostKey(Name, "max", e.Type(args[0]), len(args)), func() *interp.HostFunction { return maxArgsHost(e.Type(args[0]), len(args)) }))
 }
 
 func emitSum(e module.Emitter, args []ast.Expr) {
 	e.Expr(args[0])
-	e.CallHost(sumHost(e.Type(args[0])))
+	e.CallHost(e.Once(module.HostKey(Name, "sum", e.Type(args[0])), func() *interp.HostFunction { return sumHost(e.Type(args[0])) }))
 }
 
 func emitAny(e module.Emitter, args []ast.Expr) {
 	e.Expr(args[0])
-	e.CallHost(anyHost())
+	e.CallHost(e.Once(module.HostKey(Name, "any"), anyHost))
 }
 
 func emitAll(e module.Emitter, args []ast.Expr) {
 	e.Expr(args[0])
-	e.CallHost(allHost())
+	e.CallHost(e.Once(module.HostKey(Name, "all"), allHost))
 }
 
 func emitRound(e module.Emitter, args []ast.Expr) {
 	e.Expr(args[0])
 	if len(args) == 2 {
 		e.Expr(args[1])
-		e.CallHost(roundDigitsHost())
+		e.CallHost(e.Once(module.HostKey(Name, "round", "digits"), roundDigitsHost))
 	} else {
-		e.CallHost(roundHost())
+		e.CallHost(e.Once(module.HostKey(Name, "round"), roundHost))
 	}
 }
 
 func emitDivmod(e module.Emitter, args []ast.Expr) {
 	e.Expr(args[0])
 	e.Expr(args[1])
-	e.CallHost(divmodHost(e.Type(args[0])))
+	e.CallHost(e.Once(module.HostKey(Name, "divmod", e.Type(args[0])), func() *interp.HostFunction { return divmodHost(e.Type(args[0])) }))
 }
 
 func emitPow(e module.Emitter, args []ast.Expr) {
@@ -290,7 +306,7 @@ func emitPow(e module.Emitter, args []ast.Expr) {
 	}
 	e.Expr(args[0])
 	e.Expr(args[1])
-	e.CallHost(powHost(left, right))
+	e.CallHost(e.Once(module.HostKey(Name, "pow", left, right), func() *interp.HostFunction { return powHost(left, right) }))
 }
 
 func emitHex(e module.Emitter, args []ast.Expr) {
@@ -300,17 +316,17 @@ func emitHex(e module.Emitter, args []ast.Expr) {
 
 func emitOct(e module.Emitter, args []ast.Expr) {
 	e.Expr(args[0])
-	e.CallHost(octHost())
+	e.CallHost(e.Once(module.HostKey(Name, "oct"), octHost))
 }
 
 func emitBin(e module.Emitter, args []ast.Expr) {
 	e.Expr(args[0])
-	e.CallHost(binHost())
+	e.CallHost(e.Once(module.HostKey(Name, "bin"), binHost))
 }
 
 func emitRepr(e module.Emitter, args []ast.Expr) {
 	e.Expr(args[0])
-	e.CallHost(reprHost(e.Type(args[0])))
+	e.CallHost(e.Once(module.HostKey(Name, "repr", e.Type(args[0])), func() *interp.HostFunction { return reprHost(e.Type(args[0])) }))
 }
 
 func emitOrd(e module.Emitter, args []ast.Expr) {
@@ -324,7 +340,7 @@ func emitChr(e module.Emitter, args []ast.Expr) {
 }
 
 func emitNext(e module.Emitter, args []ast.Expr) {
-	valSlot := e.Tmp(vmtypes.TypeRef)
+	valSlot := e.Tmp(vmtypes.TypeAny)
 	done := e.Label()
 	end := e.Label()
 	e.Expr(args[0])

@@ -19,27 +19,29 @@ import (
 )
 
 func (c *lowerer) dictGet(receiver, result types.Type) *interp.HostFunction {
-	dict := receiver.(*types.Dict)
-	return interp.NewHostFunction(
-		&vmtypes.FunctionType{Params: []vmtypes.Type{receiver.VM(), dict.Key.VM(), result.VM()}, Returns: []vmtypes.Type{result.VM()}},
-		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
-			val, ok, err := mapGet(i, params[0], params[1])
-			if err != nil {
-				return nil, err
-			}
-			if ok {
-				// val is borrowed from the dict; the dict argument is
-				// released once this call returns (its box is not among the
-				// returned values), so val needs its own retain to outlive
-				// that release (see hostabi's package doc comment).
-				if err := hostabi.RetainBoxes(i, []vmtypes.Boxed{val}); err != nil {
+	return c.host(hostKey("dictGet", receiver, result), func() *interp.HostFunction {
+		dict := receiver.(*types.Dict)
+		return interp.NewHostFunction(
+			&vmtypes.FunctionType{Params: []vmtypes.Type{receiver.VM(), dict.Key.VM(), result.VM()}, Returns: []vmtypes.Type{result.VM()}},
+			func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+				val, ok, err := mapGet(i, params[0], params[1])
+				if err != nil {
 					return nil, err
 				}
-				return []vmtypes.Boxed{val}, nil
-			}
-			return []vmtypes.Boxed{params[2]}, nil
-		},
-	)
+				if ok {
+					// val is borrowed from the dict; the dict argument is
+					// released once this call returns (its box is not among the
+					// returned values), so val needs its own retain to outlive
+					// that release (see hostabi's package doc comment).
+					if err := hostabi.RetainBoxes(i, []vmtypes.Boxed{val}); err != nil {
+						return nil, err
+					}
+					return []vmtypes.Boxed{val}, nil
+				}
+				return []vmtypes.Boxed{params[2]}, nil
+			},
+		)
+	})
 }
 
 // dictItem implements a dict-keyed read (`d[k]`, `d[k] += ...`, and the
@@ -48,25 +50,27 @@ func (c *lowerer) dictGet(receiver, result types.Type) *interp.HostFunction {
 // key's repr, matching CPython (docs/spec/05-codegen.md, dict subscript
 // reads).
 func (c *lowerer) dictItem(receiver, result types.Type) *interp.HostFunction {
-	dict := receiver.(*types.Dict)
-	return interp.NewHostFunction(
-		&vmtypes.FunctionType{Params: []vmtypes.Type{receiver.VM(), dict.Key.VM()}, Returns: []vmtypes.Type{result.VM()}},
-		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
-			val, ok, err := mapGet(i, params[0], params[1])
-			if err != nil {
-				return nil, err
-			}
-			if !ok {
-				return nil, dictKeyError(i, params[1])
-			}
-			// val is borrowed from the dict; see dictGet above for why the
-			// caller-owned result needs its own retain.
-			if err := hostabi.RetainBoxes(i, []vmtypes.Boxed{val}); err != nil {
-				return nil, err
-			}
-			return []vmtypes.Boxed{val}, nil
-		},
-	)
+	return c.host(hostKey("dictItem", receiver, result), func() *interp.HostFunction {
+		dict := receiver.(*types.Dict)
+		return interp.NewHostFunction(
+			&vmtypes.FunctionType{Params: []vmtypes.Type{receiver.VM(), dict.Key.VM()}, Returns: []vmtypes.Type{result.VM()}},
+			func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+				val, ok, err := mapGet(i, params[0], params[1])
+				if err != nil {
+					return nil, err
+				}
+				if !ok {
+					return nil, dictKeyError(i, params[1])
+				}
+				// val is borrowed from the dict; see dictGet above for why the
+				// caller-owned result needs its own retain.
+				if err := hostabi.RetainBoxes(i, []vmtypes.Boxed{val}); err != nil {
+					return nil, err
+				}
+				return []vmtypes.Boxed{val}, nil
+			},
+		)
+	})
 }
 
 // dictKeyError builds the Go error for a missing dict key: errDictKeyError
@@ -82,325 +86,320 @@ func dictKeyError(i *interp.Interpreter, key vmtypes.Boxed) error {
 }
 
 func (c *lowerer) dictValues(receiver, result types.Type) *interp.HostFunction {
-	return interp.NewHostFunction(
-		&vmtypes.FunctionType{Params: []vmtypes.Type{receiver.VM()}, Returns: []vmtypes.Type{result.VM()}},
-		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
-			_, vals, err := mapEntries(i, params[0])
-			if err != nil {
-				return nil, err
-			}
-			return hostabi.AllocArray(i, result.VM().(*vmtypes.ArrayType), vals)
-		},
-	)
+	return c.host(hostKey("dictValues", receiver, result), func() *interp.HostFunction {
+		return interp.NewHostFunction(
+			&vmtypes.FunctionType{Params: []vmtypes.Type{receiver.VM()}, Returns: []vmtypes.Type{result.VM()}},
+			func(i *interp.Interpreter, params []vmtypes.Boxed) (_ []vmtypes.Boxed, err error) {
+				keys, vals, err := mapEntries(i, params[0])
+				if err != nil {
+					return nil, err
+				}
+				defer func() { err = errors.Join(err, hostabi.ReleaseBoxes(i, keys)) }()
+				return hostabi.AllocArray(i, result.VM().(*vmtypes.ArrayType), vals)
+			},
+		)
+	})
 }
 
 func (c *lowerer) dictItems(receiver, result types.Type) *interp.HostFunction {
-	tupleType := result.(*types.List).Elem.VM().(*vmtypes.StructType)
-	return interp.NewHostFunction(
-		&vmtypes.FunctionType{Params: []vmtypes.Type{receiver.VM()}, Returns: []vmtypes.Type{result.VM()}},
-		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
-			keys, vals, err := mapEntries(i, params[0])
-			if err != nil {
-				return nil, err
-			}
-			items := make([]vmtypes.Boxed, 0, len(keys))
-			for idx := range keys {
-				// keys[idx]/vals[idx] are borrowed from the dict; the struct
-				// becomes their second owner, so they need their own retain
-				// (see hostabi's package doc comment).
-				fields := []vmtypes.Boxed{keys[idx], vals[idx]}
-				if err := hostabi.RetainBoxes(i, fields); err != nil {
-					return nil, err
-				}
-				addr, err := i.Alloc(vmtypes.NewStruct(tupleType, fields...))
+	return c.host(hostKey("dictItems", receiver, result), func() *interp.HostFunction {
+		tupleType := result.(*types.List).Elem.VM().(*vmtypes.StructType)
+		return interp.NewHostFunction(
+			&vmtypes.FunctionType{Params: []vmtypes.Type{receiver.VM()}, Returns: []vmtypes.Type{result.VM()}},
+			func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+				keys, vals, err := mapEntries(i, params[0])
 				if err != nil {
-					_ = hostabi.ReleaseBoxes(i, fields)
 					return nil, err
 				}
-				items = append(items, vmtypes.BoxRef(addr))
-			}
-			// items holds structs this call already owns outright (they
-			// were just allocated); AllocArray retains them again on the
-			// result array's behalf, so release our own stake once it
-			// succeeds.
-			res, err := hostabi.AllocArray(i, result.VM().(*vmtypes.ArrayType), items)
-			if err != nil {
-				return nil, err
-			}
-			if err := hostabi.ReleaseBoxes(i, items); err != nil {
-				return nil, err
-			}
-			return res, nil
-		},
-	)
+				defer func() { err = errors.Join(err, hostabi.ReleaseBoxes(i, keys)) }()
+				items := make([]vmtypes.Boxed, 0, len(keys))
+				for idx := range keys {
+					// vals[idx] is borrowed from the dict; keys[idx] is owned by
+					// this call and released by the defer above. Either way the
+					// struct becomes a second owner, so both need their own
+					// retain (see hostabi's package doc comment).
+					fields := []vmtypes.Boxed{keys[idx], vals[idx]}
+					if err := hostabi.RetainBoxes(i, fields); err != nil {
+						return nil, err
+					}
+					addr, err := i.Alloc(vmtypes.NewStruct(tupleType, fields...))
+					if err != nil {
+						_ = hostabi.ReleaseBoxes(i, fields)
+						return nil, err
+					}
+					items = append(items, vmtypes.BoxRef(addr))
+				}
+				// items holds structs this call already owns outright (they
+				// were just allocated); AllocArray retains them again on the
+				// result array's behalf, so release our own stake once it
+				// succeeds.
+				res, err := hostabi.AllocArray(i, result.VM().(*vmtypes.ArrayType), items)
+				if err != nil {
+					return nil, err
+				}
+				if err := hostabi.ReleaseBoxes(i, items); err != nil {
+					return nil, err
+				}
+				return res, nil
+			},
+		)
+	})
 }
 
 func (c *lowerer) dictPop(receiver, result types.Type) *interp.HostFunction {
-	dict := receiver.(*types.Dict)
-	return interp.NewHostFunction(
-		&vmtypes.FunctionType{Params: []vmtypes.Type{receiver.VM(), dict.Key.VM()}, Returns: []vmtypes.Type{result.VM()}},
-		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
-			val, err := i.Load(params[0].Ref())
-			if err != nil {
-				return nil, err
-			}
-			value, ok := mapDelete(val, params[1])
-			if !ok {
-				return nil, errDictKeyError
-			}
-			return []vmtypes.Boxed{value}, nil
-		},
-	)
+	return c.host(hostKey("dictPop", receiver, result), func() *interp.HostFunction {
+		dict := receiver.(*types.Dict)
+		return interp.NewHostFunction(
+			&vmtypes.FunctionType{Params: []vmtypes.Type{receiver.VM(), dict.Key.VM()}, Returns: []vmtypes.Type{result.VM()}},
+			func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+				val, err := i.Load(params[0].Ref())
+				if err != nil {
+					return nil, err
+				}
+				value, ok, err := mapDelete(i, val, params[1])
+				if err != nil {
+					return nil, err
+				}
+				if !ok {
+					return nil, errDictKeyError
+				}
+				return []vmtypes.Boxed{value}, nil
+			},
+		)
+	})
 }
 
 func (c *lowerer) dictPopDefault(receiver, result types.Type) *interp.HostFunction {
-	dict := receiver.(*types.Dict)
-	return interp.NewHostFunction(
-		&vmtypes.FunctionType{Params: []vmtypes.Type{receiver.VM(), dict.Key.VM(), result.VM()}, Returns: []vmtypes.Type{result.VM()}},
-		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
-			val, err := i.Load(params[0].Ref())
-			if err != nil {
-				return nil, err
-			}
-			value, ok := mapDelete(val, params[1])
-			if !ok {
-				return []vmtypes.Boxed{params[2]}, nil
-			}
-			return []vmtypes.Boxed{value}, nil
-		},
-	)
+	return c.host(hostKey("dictPopDefault", receiver, result), func() *interp.HostFunction {
+		dict := receiver.(*types.Dict)
+		return interp.NewHostFunction(
+			&vmtypes.FunctionType{Params: []vmtypes.Type{receiver.VM(), dict.Key.VM(), result.VM()}, Returns: []vmtypes.Type{result.VM()}},
+			func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+				val, err := i.Load(params[0].Ref())
+				if err != nil {
+					return nil, err
+				}
+				value, ok, err := mapDelete(i, val, params[1])
+				if err != nil {
+					return nil, err
+				}
+				if !ok {
+					return []vmtypes.Boxed{params[2]}, nil
+				}
+				return []vmtypes.Boxed{value}, nil
+			},
+		)
+	})
 }
 
 func (c *lowerer) dictUpdate(receiver types.Type) *interp.HostFunction {
-	return interp.NewHostFunction(
-		&vmtypes.FunctionType{Params: []vmtypes.Type{receiver.VM(), receiver.VM()}},
-		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
-			dst, err := i.Load(params[0].Ref())
-			if err != nil {
-				return nil, err
-			}
-			keys, vals, err := mapEntries(i, params[1])
-			if err != nil {
-				return nil, err
-			}
-			for idx, key := range keys {
-				// key/vals[idx] are borrowed from the source dict; dst
-				// becomes their second owner, so they need their own retain
-				// (see hostabi's package doc comment).
-				if err := hostabi.RetainBoxes(i, []vmtypes.Boxed{key, vals[idx]}); err != nil {
+	return c.host(hostKey("dictUpdate", receiver), func() *interp.HostFunction {
+		return interp.NewHostFunction(
+			&vmtypes.FunctionType{Params: []vmtypes.Type{receiver.VM(), receiver.VM()}},
+			func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+				dst, err := i.Load(params[0].Ref())
+				if err != nil {
 					return nil, err
 				}
-				if err := mapSet(dst, key, vals[idx]); err != nil {
+				keys, vals, err := mapEntries(i, params[1])
+				if err != nil {
 					return nil, err
 				}
-			}
-			return nil, nil
-		},
-	)
+				defer func() { err = errors.Join(err, hostabi.ReleaseBoxes(i, keys)) }()
+				for idx, key := range keys {
+					// vals[idx] is borrowed from the source dict; key is owned by
+					// this call and released by the defer above. Either way dst
+					// becomes a second owner, so both need their own retain (see
+					// hostabi's package doc comment).
+					if err := hostabi.RetainBoxes(i, []vmtypes.Boxed{key, vals[idx]}); err != nil {
+						return nil, err
+					}
+					if err := mapSet(i, dst, key, vals[idx]); err != nil {
+						return nil, err
+					}
+				}
+				return nil, nil
+			},
+		)
+	})
 }
 
 func (c *lowerer) dictSetDefault(receiver, result types.Type) *interp.HostFunction {
-	dict := receiver.(*types.Dict)
-	return interp.NewHostFunction(
-		&vmtypes.FunctionType{Params: []vmtypes.Type{receiver.VM(), dict.Key.VM(), dict.Value.VM()}, Returns: []vmtypes.Type{result.VM()}},
-		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
-			val, ok, err := mapGet(i, params[0], params[1])
-			if err != nil {
-				return nil, err
-			}
-			if ok {
-				// val is borrowed from the dict; the dict argument is
-				// released once this call returns (its box is not among the
-				// returned values), so val needs its own retain to outlive
-				// that release (see hostabi's package doc comment).
-				if err := hostabi.RetainBoxes(i, []vmtypes.Boxed{val}); err != nil {
+	return c.host(hostKey("dictSetDefault", receiver, result), func() *interp.HostFunction {
+		dict := receiver.(*types.Dict)
+		return interp.NewHostFunction(
+			&vmtypes.FunctionType{Params: []vmtypes.Type{receiver.VM(), dict.Key.VM(), dict.Value.VM()}, Returns: []vmtypes.Type{result.VM()}},
+			func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+				val, ok, err := mapGet(i, params[0], params[1])
+				if err != nil {
 					return nil, err
 				}
-				return []vmtypes.Boxed{val}, nil
-			}
-			dst, err := i.Load(params[0].Ref())
-			if err != nil {
-				return nil, err
-			}
-			if err := hostabi.RetainBoxes(i, []vmtypes.Boxed{params[1]}); err != nil {
-				return nil, err
-			}
-			if err := hostabi.RetainBoxes(i, []vmtypes.Boxed{params[2]}); err != nil {
-				return nil, err
-			}
-			if err := mapSet(dst, params[1], params[2]); err != nil {
-				return nil, err
-			}
-			return []vmtypes.Boxed{params[2]}, nil
-		},
-	)
+				if ok {
+					// val is borrowed from the dict; the dict argument is
+					// released once this call returns (its box is not among the
+					// returned values), so val needs its own retain to outlive
+					// that release (see hostabi's package doc comment).
+					if err := hostabi.RetainBoxes(i, []vmtypes.Boxed{val}); err != nil {
+						return nil, err
+					}
+					return []vmtypes.Boxed{val}, nil
+				}
+				dst, err := i.Load(params[0].Ref())
+				if err != nil {
+					return nil, err
+				}
+				if err := hostabi.RetainBoxes(i, []vmtypes.Boxed{params[1]}); err != nil {
+					return nil, err
+				}
+				if err := hostabi.RetainBoxes(i, []vmtypes.Boxed{params[2]}); err != nil {
+					return nil, err
+				}
+				if err := mapSet(i, dst, params[1], params[2]); err != nil {
+					return nil, err
+				}
+				return []vmtypes.Boxed{params[2]}, nil
+			},
+		)
+	})
 }
 
 func (c *lowerer) dictClear(receiver types.Type) *interp.HostFunction {
-	return interp.NewHostFunction(
-		&vmtypes.FunctionType{Params: []vmtypes.Type{receiver.VM()}},
-		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
-			val, err := i.Load(params[0].Ref())
-			if err != nil {
-				return nil, err
-			}
-			switch m := val.(type) {
-			case *vmtypes.TypedMap[bool]:
-				m.Clear(func(v vmtypes.Boxed) {})
-			case *vmtypes.TypedMap[int32]:
-				m.Clear(func(v vmtypes.Boxed) {})
-			case *vmtypes.TypedMap[int64]:
-				m.Clear(func(v vmtypes.Boxed) {})
-			case *vmtypes.TypedMap[float32]:
-				m.Clear(func(v vmtypes.Boxed) {})
-			case *vmtypes.TypedMap[float64]:
-				m.Clear(func(v vmtypes.Boxed) {})
-			case *vmtypes.Map:
-				m.Clear(func(e vmtypes.MapEntry) {})
-			default:
-				return nil, interp.ErrTypeMismatch
-			}
-			return nil, nil
-		},
-	)
+	return c.host(hostKey("dictClear", receiver), func() *interp.HostFunction {
+		return interp.NewHostFunction(
+			&vmtypes.FunctionType{Params: []vmtypes.Type{receiver.VM()}},
+			func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+				val, err := i.Load(params[0].Ref())
+				if err != nil {
+					return nil, err
+				}
+				if err := hostabi.MapClear(val); err != nil {
+					return nil, err
+				}
+				return nil, nil
+			},
+		)
+	})
 }
 
 func (c *lowerer) dictCopy(receiver types.Type) *interp.HostFunction {
-	return interp.NewHostFunction(
-		&vmtypes.FunctionType{Params: []vmtypes.Type{receiver.VM()}, Returns: []vmtypes.Type{receiver.VM()}},
-		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
-			src, err := i.Load(params[0].Ref())
-			if err != nil {
-				return nil, err
-			}
-			mt, ok := src.Type().(*vmtypes.MapType)
-			if !ok {
-				return nil, interp.ErrTypeMismatch
-			}
-			keys, vals, err := mapEntries(i, params[0])
-			if err != nil {
-				return nil, err
-			}
-			out := vmtypes.NewMapForType(mt, len(keys))
-			for idx, key := range keys {
-				// key/vals[idx] are borrowed from the source dict; out
-				// becomes their second owner, so they need their own retain
-				// (see hostabi's package doc comment).
-				if err := hostabi.RetainBoxes(i, []vmtypes.Boxed{key, vals[idx]}); err != nil {
+	return c.host(hostKey("dictCopy", receiver), func() *interp.HostFunction {
+		return interp.NewHostFunction(
+			&vmtypes.FunctionType{Params: []vmtypes.Type{receiver.VM()}, Returns: []vmtypes.Type{receiver.VM()}},
+			func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+				src, err := i.Load(params[0].Ref())
+				if err != nil {
 					return nil, err
 				}
-				if err := mapSet(out, key, vals[idx]); err != nil {
+				mt, ok := src.Type().(*vmtypes.MapType)
+				if !ok {
+					return nil, interp.ErrTypeMismatch
+				}
+				keys, vals, err := mapEntries(i, params[0])
+				if err != nil {
 					return nil, err
 				}
-			}
-			addr, err := i.Alloc(out)
-			if err != nil {
-				return nil, err
-			}
-			return []vmtypes.Boxed{vmtypes.BoxRef(addr)}, nil
-		},
-	)
+				defer func() { err = errors.Join(err, hostabi.ReleaseBoxes(i, keys)) }()
+				out := vmtypes.NewMapForType(mt, len(keys))
+				for idx, key := range keys {
+					// vals[idx] is borrowed from the source dict; key is owned by
+					// this call and released by the defer above. Either way out
+					// becomes a second owner, so both need their own retain (see
+					// hostabi's package doc comment).
+					if err := hostabi.RetainBoxes(i, []vmtypes.Boxed{key, vals[idx]}); err != nil {
+						return nil, err
+					}
+					if err := mapSet(i, out, key, vals[idx]); err != nil {
+						return nil, err
+					}
+				}
+				addr, err := i.Alloc(out)
+				if err != nil {
+					return nil, err
+				}
+				return []vmtypes.Boxed{vmtypes.BoxRef(addr)}, nil
+			},
+		)
+	})
 }
 
 // dictRest returns a new dict holding receiver minus the keys in the second
 // argument. It backs mapping-pattern `**rest` captures.
 func (c *lowerer) dictRest(receiver types.Type) *interp.HostFunction {
-	keys := types.NewList(receiver.(*types.Dict).Key)
-	return interp.NewHostFunction(
-		&vmtypes.FunctionType{Params: []vmtypes.Type{receiver.VM(), keys.VM()}, Returns: []vmtypes.Type{receiver.VM()}},
-		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
-			src, err := i.Load(params[0].Ref())
-			if err != nil {
-				return nil, err
-			}
-			mt, ok := src.Type().(*vmtypes.MapType)
-			if !ok {
-				return nil, interp.ErrTypeMismatch
-			}
-			ks, vs, err := mapEntries(i, params[0])
-			if err != nil {
-				return nil, err
-			}
-			_, exclude, err := hostabi.ArrayElems(i, params[1])
-			if err != nil {
-				return nil, err
-			}
-			out := vmtypes.NewMapForType(mt, len(ks))
-			for idx, k := range ks {
-				skip := false
-				for _, ex := range exclude {
-					equal, err := hostabi.BoxedEqual(i, k, ex)
-					if err != nil {
-						return nil, err
+	return c.host(hostKey("dictRest", receiver), func() *interp.HostFunction {
+		keys := types.NewList(receiver.(*types.Dict).Key)
+		return interp.NewHostFunction(
+			&vmtypes.FunctionType{Params: []vmtypes.Type{receiver.VM(), keys.VM()}, Returns: []vmtypes.Type{receiver.VM()}},
+			func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+				src, err := i.Load(params[0].Ref())
+				if err != nil {
+					return nil, err
+				}
+				mt, ok := src.Type().(*vmtypes.MapType)
+				if !ok {
+					return nil, interp.ErrTypeMismatch
+				}
+				ks, vs, err := mapEntries(i, params[0])
+				if err != nil {
+					return nil, err
+				}
+				defer func() { err = errors.Join(err, hostabi.ReleaseBoxes(i, ks)) }()
+				_, exclude, err := hostabi.ArrayElems(i, params[1])
+				if err != nil {
+					return nil, err
+				}
+				out := vmtypes.NewMapForType(mt, len(ks))
+				for idx, k := range ks {
+					skip := false
+					for _, ex := range exclude {
+						equal, err := hostabi.BoxedEqual(i, k, ex)
+						if err != nil {
+							return nil, err
+						}
+						if equal {
+							skip = true
+							break
+						}
 					}
-					if equal {
-						skip = true
-						break
+					if !skip {
+						// vs[idx] is borrowed from the source dict; k is owned
+						// by this call and released by the defer above. Either
+						// way out becomes a second owner, so both need their own
+						// retain (see hostabi's package doc comment).
+						if err := hostabi.RetainBoxes(i, []vmtypes.Boxed{k, vs[idx]}); err != nil {
+							return nil, err
+						}
+						if err := mapSet(i, out, k, vs[idx]); err != nil {
+							return nil, err
+						}
 					}
 				}
-				if !skip {
-					// k/vs[idx] are borrowed from the source dict; out
-					// becomes their second owner, so they need their own
-					// retain (see hostabi's package doc comment).
-					if err := hostabi.RetainBoxes(i, []vmtypes.Boxed{k, vs[idx]}); err != nil {
-						return nil, err
-					}
-					if err := mapSet(out, k, vs[idx]); err != nil {
-						return nil, err
-					}
+				addr, err := i.Alloc(out)
+				if err != nil {
+					return nil, err
 				}
-			}
-			addr, err := i.Alloc(out)
-			if err != nil {
-				return nil, err
-			}
-			return []vmtypes.Boxed{vmtypes.BoxRef(addr)}, nil
-		},
-	)
+				return []vmtypes.Boxed{vmtypes.BoxRef(addr)}, nil
+			},
+		)
+	})
 }
 
-// mapSet inserts (key, value) into a map value, dispatching on its concrete
-// representation (mirrors mapGet).
-func mapSet(m vmtypes.Value, key, val vmtypes.Boxed) error {
-	switch mm := m.(type) {
-	case *vmtypes.TypedMap[bool]:
-		mm.Set(key.Bool(), val)
-	case *vmtypes.TypedMap[int32]:
-		mm.Set(key.I32(), val)
-	case *vmtypes.TypedMap[int64]:
-		mm.Set(key.I64(), val)
-	case *vmtypes.TypedMap[float32]:
-		mm.Set(key.F32(), val)
-	case *vmtypes.TypedMap[float64]:
-		mm.Set(key.F64(), val)
-	case *vmtypes.Map:
-		mm.Set(mapKey(key), vmtypes.MapEntry{Key: key, Value: val})
-	default:
-		return interp.ErrTypeMismatch
+// mapSet inserts (key, value) into a map value. The map takes no reference of
+// its own, matching the interpreter's MAP_SET: the caller transfers ownership.
+func mapSet(i *interp.Interpreter, m vmtypes.Value, key, val vmtypes.Boxed) error {
+	old, replaced, err := hostabi.MapSet(i, m, key, val)
+	if err != nil {
+		return err
+	}
+	if replaced {
+		return hostabi.ReleaseBoxes(i, []vmtypes.Boxed{old})
 	}
 	return nil
 }
 
-// mapDelete removes a key from a map value and returns the associated value.
-// It returns (value, true) when the key existed, or (zero, false) otherwise.
-func mapDelete(m vmtypes.Value, key vmtypes.Boxed) (vmtypes.Boxed, bool) {
-	switch mm := m.(type) {
-	case *vmtypes.TypedMap[bool]:
-		return mm.Delete(key.Bool())
-	case *vmtypes.TypedMap[int32]:
-		return mm.Delete(key.I32())
-	case *vmtypes.TypedMap[int64]:
-		return mm.Delete(key.I64())
-	case *vmtypes.TypedMap[float32]:
-		return mm.Delete(key.F32())
-	case *vmtypes.TypedMap[float64]:
-		return mm.Delete(key.F64())
-	case *vmtypes.Map:
-		entry, ok := mm.Delete(mapKey(key))
-		return entry.Value, ok
-	default:
-		return 0, false
-	}
+// mapDelete removes a key from a map value and returns the value it held. The
+// returned value is no longer owned by the map, so the caller owns it.
+func mapDelete(i *interp.Interpreter, m vmtypes.Value, key vmtypes.Boxed) (vmtypes.Boxed, bool, error) {
+	return hostabi.MapDelete(i, m, key)
 }
 
 // arraySlice builds `receiver[a:b:c]` for any array-backed VM type (list or
@@ -408,485 +407,526 @@ func mapDelete(m vmtypes.Value, key vmtypes.Boxed) (vmtypes.Boxed, bool) {
 // so it stays receiver-agnostic and returns a freshly allocated array of the
 // same VM type rather than mutating the receiver.
 func (c *lowerer) arraySlice(receiver types.Type) *interp.HostFunction {
-	return interp.NewHostFunction(
-		&vmtypes.FunctionType{Params: []vmtypes.Type{receiver.VM(), vmtypes.TypeI64, vmtypes.TypeI64, vmtypes.TypeI64}, Returns: []vmtypes.Type{receiver.VM()}},
-		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
-			typ, elems, err := hostabi.ArrayElems(i, params[0])
-			if err != nil {
-				return nil, err
-			}
-			start, stop, step, err := loadSliceBounds(i, params)
-			if err != nil {
-				return nil, err
-			}
-			indexes, err := sliceIndexes(len(elems), start, stop, step)
-			if err != nil {
-				return nil, err
-			}
-			out := make([]vmtypes.Boxed, 0, len(indexes))
-			for _, idx := range indexes {
-				out = append(out, elems[idx])
-			}
-			return hostabi.AllocArray(i, typ, out)
-		},
-	)
+	return c.host(hostKey("arraySlice", receiver), func() *interp.HostFunction {
+		return interp.NewHostFunction(
+			&vmtypes.FunctionType{Params: []vmtypes.Type{receiver.VM(), vmtypes.TypeI64, vmtypes.TypeI64, vmtypes.TypeI64}, Returns: []vmtypes.Type{receiver.VM()}},
+			func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+				typ, elems, err := hostabi.ArrayElems(i, params[0])
+				if err != nil {
+					return nil, err
+				}
+				start, stop, step, err := loadSliceBounds(i, params)
+				if err != nil {
+					return nil, err
+				}
+				indexes, err := sliceIndexes(len(elems), start, stop, step)
+				if err != nil {
+					return nil, err
+				}
+				out := make([]vmtypes.Boxed, 0, len(indexes))
+				for _, idx := range indexes {
+					out = append(out, elems[idx])
+				}
+				return hostabi.AllocArray(i, typ, out)
+			},
+		)
+	})
 }
 
 func (c *lowerer) listSliceAssign(receiver types.Type) *interp.HostFunction {
-	return interp.NewHostFunction(
-		&vmtypes.FunctionType{Params: []vmtypes.Type{receiver.VM(), vmtypes.TypeI64, vmtypes.TypeI64, vmtypes.TypeI64, receiver.VM()}},
-		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
-			typ, elems, err := hostabi.ArrayElems(i, params[0])
-			if err != nil {
-				return nil, err
-			}
-			_, values, err := hostabi.ArrayElems(i, params[4])
-			if err != nil {
-				return nil, err
-			}
-			rawStart, rawStop, rawStep, err := loadSliceBounds(i, params)
-			if err != nil {
-				return nil, err
-			}
-			start, stop, err := normalizeSliceRange(len(elems), rawStart, rawStop, rawStep)
-			if err != nil {
-				return nil, err
-			}
-			if len(values) != stop-start {
-				return nil, errListSliceLength
-			}
-			if err := hostabi.RetainBoxes(i, values); err != nil {
-				return nil, err
-			}
-			if err := hostabi.ReleaseBoxes(i, elems[start:stop]); err != nil {
-				return nil, err
-			}
-			out := append([]vmtypes.Boxed(nil), elems...)
-			copy(out[start:stop], values)
-			if err := i.Store(params[0].Ref(), vmtypes.NewArray(typ, out...)); err != nil {
-				return nil, err
-			}
-			return nil, nil
-		},
-	)
+	return c.host(hostKey("listSliceAssign", receiver), func() *interp.HostFunction {
+		return interp.NewHostFunction(
+			&vmtypes.FunctionType{Params: []vmtypes.Type{receiver.VM(), vmtypes.TypeI64, vmtypes.TypeI64, vmtypes.TypeI64, receiver.VM()}},
+			func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+				typ, elems, err := hostabi.ArrayElems(i, params[0])
+				if err != nil {
+					return nil, err
+				}
+				_, values, err := hostabi.ArrayElems(i, params[4])
+				if err != nil {
+					return nil, err
+				}
+				rawStart, rawStop, rawStep, err := loadSliceBounds(i, params)
+				if err != nil {
+					return nil, err
+				}
+				start, stop, err := normalizeSliceRange(len(elems), rawStart, rawStop, rawStep)
+				if err != nil {
+					return nil, err
+				}
+				if len(values) != stop-start {
+					return nil, errListSliceLength
+				}
+				if err := hostabi.RetainBoxes(i, values); err != nil {
+					return nil, err
+				}
+				if err := hostabi.ReleaseBoxes(i, elems[start:stop]); err != nil {
+					return nil, err
+				}
+				out := append([]vmtypes.Boxed(nil), elems...)
+				copy(out[start:stop], values)
+				if err := i.Store(params[0].Ref(), vmtypes.NewArray(typ, out...)); err != nil {
+					return nil, err
+				}
+				return nil, nil
+			},
+		)
+	})
 }
 
 func (c *lowerer) listSliceDelete(receiver types.Type) *interp.HostFunction {
-	return interp.NewHostFunction(
-		&vmtypes.FunctionType{Params: []vmtypes.Type{receiver.VM(), vmtypes.TypeI64, vmtypes.TypeI64, vmtypes.TypeI64}},
-		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
-			typ, elems, err := hostabi.ArrayElems(i, params[0])
-			if err != nil {
-				return nil, err
-			}
-			rawStart, rawStop, rawStep, err := loadSliceBounds(i, params)
-			if err != nil {
-				return nil, err
-			}
-			start, stop, err := normalizeSliceRange(len(elems), rawStart, rawStop, rawStep)
-			if err != nil {
-				return nil, err
-			}
-			if err := hostabi.ReleaseBoxes(i, elems[start:stop]); err != nil {
-				return nil, err
-			}
-			out := append([]vmtypes.Boxed(nil), elems[:start]...)
-			out = append(out, elems[stop:]...)
-			if err := i.Store(params[0].Ref(), vmtypes.NewArray(typ, out...)); err != nil {
-				return nil, err
-			}
-			return nil, nil
-		},
-	)
-}
-
-
-func (c *lowerer) listIndex(receiver types.Type) *interp.HostFunction {
-	elem := receiver.(*types.List).Elem
-	return interp.NewHostFunction(
-		&vmtypes.FunctionType{Params: []vmtypes.Type{receiver.VM(), elem.VM()}, Returns: []vmtypes.Type{vmtypes.TypeI64}},
-		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
-			_, elems, err := hostabi.ArrayElems(i, params[0])
-			if err != nil {
-				return nil, err
-			}
-			for idx, elem := range elems {
-				equal, err := hostabi.BoxedEqual(i, elem, params[1])
+	return c.host(hostKey("listSliceDelete", receiver), func() *interp.HostFunction {
+		return interp.NewHostFunction(
+			&vmtypes.FunctionType{Params: []vmtypes.Type{receiver.VM(), vmtypes.TypeI64, vmtypes.TypeI64, vmtypes.TypeI64}},
+			func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+				typ, elems, err := hostabi.ArrayElems(i, params[0])
 				if err != nil {
 					return nil, err
 				}
-				if equal {
-					return []vmtypes.Boxed{vmtypes.BoxI64(int64(idx))}, nil
+				rawStart, rawStop, rawStep, err := loadSliceBounds(i, params)
+				if err != nil {
+					return nil, err
 				}
-			}
-			return nil, errListIndexValue
-		},
-	)
+				start, stop, err := normalizeSliceRange(len(elems), rawStart, rawStop, rawStep)
+				if err != nil {
+					return nil, err
+				}
+				if err := hostabi.ReleaseBoxes(i, elems[start:stop]); err != nil {
+					return nil, err
+				}
+				out := append([]vmtypes.Boxed(nil), elems[:start]...)
+				out = append(out, elems[stop:]...)
+				if err := i.Store(params[0].Ref(), vmtypes.NewArray(typ, out...)); err != nil {
+					return nil, err
+				}
+				return nil, nil
+			},
+		)
+	})
+}
+
+func (c *lowerer) listIndex(receiver types.Type) *interp.HostFunction {
+	return c.host(hostKey("listIndex", receiver), func() *interp.HostFunction {
+		elem := receiver.(*types.List).Elem
+		return interp.NewHostFunction(
+			&vmtypes.FunctionType{Params: []vmtypes.Type{receiver.VM(), elem.VM()}, Returns: []vmtypes.Type{vmtypes.TypeI64}},
+			func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+				_, elems, err := hostabi.ArrayElems(i, params[0])
+				if err != nil {
+					return nil, err
+				}
+				for idx, elem := range elems {
+					equal, err := hostabi.BoxedEqual(i, elem, params[1])
+					if err != nil {
+						return nil, err
+					}
+					if equal {
+						return []vmtypes.Boxed{vmtypes.BoxI64(int64(idx))}, nil
+					}
+				}
+				return nil, errListIndexValue
+			},
+		)
+	})
 }
 
 func (c *lowerer) listExtend(receiver types.Type) *interp.HostFunction {
-	return interp.NewHostFunction(
-		&vmtypes.FunctionType{Params: []vmtypes.Type{receiver.VM(), receiver.VM()}, Returns: []vmtypes.Type{receiver.VM()}},
-		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
-			typ, left, err := hostabi.ArrayElems(i, params[0])
-			if err != nil {
-				return nil, err
-			}
-			_, right, err := hostabi.ArrayElems(i, params[1])
-			if err != nil {
-				return nil, err
-			}
-			out := append(left, right...)
-			return hostabi.AllocArray(i, typ, out)
-		},
-	)
+	return c.host(hostKey("listExtend", receiver), func() *interp.HostFunction {
+		return interp.NewHostFunction(
+			&vmtypes.FunctionType{Params: []vmtypes.Type{receiver.VM(), receiver.VM()}, Returns: []vmtypes.Type{receiver.VM()}},
+			func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+				typ, left, err := hostabi.ArrayElems(i, params[0])
+				if err != nil {
+					return nil, err
+				}
+				_, right, err := hostabi.ArrayElems(i, params[1])
+				if err != nil {
+					return nil, err
+				}
+				out := append(left, right...)
+				return hostabi.AllocArray(i, typ, out)
+			},
+		)
+	})
 }
 
 func (c *lowerer) listSort(receiver types.Type) *interp.HostFunction {
-	elem := receiver.(*types.List).Elem
-	return interp.NewHostFunction(
-		&vmtypes.FunctionType{Params: []vmtypes.Type{receiver.VM()}},
-		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
-			typ, elems, err := hostabi.ArrayElems(i, params[0])
-			if err != nil {
-				return nil, err
-			}
-			var sortErr error
-			sort.SliceStable(elems, func(a, b int) bool {
-				if sortErr != nil {
+	return c.host(hostKey("listSort", receiver), func() *interp.HostFunction {
+		elem := receiver.(*types.List).Elem
+		return interp.NewHostFunction(
+			&vmtypes.FunctionType{Params: []vmtypes.Type{receiver.VM()}},
+			func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+				typ, elems, err := hostabi.ArrayElems(i, params[0])
+				if err != nil {
+					return nil, err
+				}
+				var sortErr error
+				sort.SliceStable(elems, func(a, b int) bool {
+					if sortErr != nil {
+						return false
+					}
+					switch {
+					case types.Equal(elem, types.Int):
+						return elems[a].I64() < elems[b].I64()
+					case types.Equal(elem, types.Float):
+						return elems[a].F64() < elems[b].F64()
+					case types.Equal(elem, types.Bool):
+						return !elems[a].Bool() && elems[b].Bool()
+					case types.Equal(elem, types.Str):
+						sa, e := hostabi.LoadStr(i, elems[a])
+						if e != nil {
+							sortErr = e
+							return false
+						}
+						sb, e := hostabi.LoadStr(i, elems[b])
+						if e != nil {
+							sortErr = e
+							return false
+						}
+						return sa < sb
+					}
 					return false
+				})
+				if sortErr != nil {
+					return nil, sortErr
 				}
-				switch {
-				case types.Equal(elem, types.Int):
-					return elems[a].I64() < elems[b].I64()
-				case types.Equal(elem, types.Float):
-					return elems[a].F64() < elems[b].F64()
-				case types.Equal(elem, types.Bool):
-					return !elems[a].Bool() && elems[b].Bool()
-				case types.Equal(elem, types.Str):
-					sa, e := hostabi.LoadStr(i, elems[a])
-					if e != nil {
-						sortErr = e
-						return false
-					}
-					sb, e := hostabi.LoadStr(i, elems[b])
-					if e != nil {
-						sortErr = e
-						return false
-					}
-					return sa < sb
+				if err := i.Store(params[0].Ref(), vmtypes.NewArray(typ, elems...)); err != nil {
+					return nil, err
 				}
-				return false
-			})
-			if sortErr != nil {
-				return nil, sortErr
-			}
-			if err := i.Store(params[0].Ref(), vmtypes.NewArray(typ, elems...)); err != nil {
-				return nil, err
-			}
-			return nil, nil
-		},
-	)
+				return nil, nil
+			},
+		)
+	})
 }
 
 func (c *lowerer) listCopy(receiver types.Type) *interp.HostFunction {
-	return interp.NewHostFunction(
-		&vmtypes.FunctionType{Params: []vmtypes.Type{receiver.VM()}, Returns: []vmtypes.Type{receiver.VM()}},
-		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
-			typ, elems, err := hostabi.ArrayElems(i, params[0])
-			if err != nil {
-				return nil, err
-			}
-			return hostabi.AllocArray(i, typ, elems)
-		},
-	)
+	return c.host(hostKey("listCopy", receiver), func() *interp.HostFunction {
+		return interp.NewHostFunction(
+			&vmtypes.FunctionType{Params: []vmtypes.Type{receiver.VM()}, Returns: []vmtypes.Type{receiver.VM()}},
+			func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+				typ, elems, err := hostabi.ArrayElems(i, params[0])
+				if err != nil {
+					return nil, err
+				}
+				return hostabi.AllocArray(i, typ, elems)
+			},
+		)
+	})
 }
 
 func (c *lowerer) listCount(receiver types.Type) *interp.HostFunction {
-	elem := receiver.(*types.List).Elem
-	return interp.NewHostFunction(
-		&vmtypes.FunctionType{Params: []vmtypes.Type{receiver.VM(), elem.VM()}, Returns: []vmtypes.Type{vmtypes.TypeI64}},
-		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
-			_, elems, err := hostabi.ArrayElems(i, params[0])
-			if err != nil {
-				return nil, err
-			}
-			count := int64(0)
-			for _, e := range elems {
-				equal, err := hostabi.BoxedEqual(i, e, params[1])
+	return c.host(hostKey("listCount", receiver), func() *interp.HostFunction {
+		elem := receiver.(*types.List).Elem
+		return interp.NewHostFunction(
+			&vmtypes.FunctionType{Params: []vmtypes.Type{receiver.VM(), elem.VM()}, Returns: []vmtypes.Type{vmtypes.TypeI64}},
+			func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+				_, elems, err := hostabi.ArrayElems(i, params[0])
 				if err != nil {
 					return nil, err
 				}
-				if equal {
-					count++
+				count := int64(0)
+				for _, e := range elems {
+					equal, err := hostabi.BoxedEqual(i, e, params[1])
+					if err != nil {
+						return nil, err
+					}
+					if equal {
+						count++
+					}
 				}
-			}
-			return []vmtypes.Boxed{vmtypes.BoxI64(count)}, nil
-		},
-	)
+				return []vmtypes.Boxed{vmtypes.BoxI64(count)}, nil
+			},
+		)
+	})
 }
 
 func (c *lowerer) listClear(receiver types.Type) *interp.HostFunction {
-	return interp.NewHostFunction(
-		&vmtypes.FunctionType{Params: []vmtypes.Type{receiver.VM()}},
-		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
-			typ, _, err := hostabi.ArrayElems(i, params[0])
-			if err != nil {
-				return nil, err
-			}
-			if err := i.Store(params[0].Ref(), vmtypes.NewArray(typ)); err != nil {
-				return nil, err
-			}
-			return nil, nil
-		},
-	)
+	return c.host(hostKey("listClear", receiver), func() *interp.HostFunction {
+		return interp.NewHostFunction(
+			&vmtypes.FunctionType{Params: []vmtypes.Type{receiver.VM()}},
+			func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+				typ, _, err := hostabi.ArrayElems(i, params[0])
+				if err != nil {
+					return nil, err
+				}
+				if err := i.Store(params[0].Ref(), vmtypes.NewArray(typ)); err != nil {
+					return nil, err
+				}
+				return nil, nil
+			},
+		)
+	})
 }
 
 func (c *lowerer) listRemove(receiver types.Type) *interp.HostFunction {
-	elem := receiver.(*types.List).Elem
-	return interp.NewHostFunction(
-		&vmtypes.FunctionType{Params: []vmtypes.Type{receiver.VM(), elem.VM()}},
-		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
-			typ, elems, err := hostabi.ArrayElems(i, params[0])
-			if err != nil {
-				return nil, err
-			}
-			for idx, e := range elems {
-				equal, err := hostabi.BoxedEqual(i, e, params[1])
+	return c.host(hostKey("listRemove", receiver), func() *interp.HostFunction {
+		elem := receiver.(*types.List).Elem
+		return interp.NewHostFunction(
+			&vmtypes.FunctionType{Params: []vmtypes.Type{receiver.VM(), elem.VM()}},
+			func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+				typ, elems, err := hostabi.ArrayElems(i, params[0])
 				if err != nil {
 					return nil, err
 				}
-				if equal {
-					out := make([]vmtypes.Boxed, 0, len(elems)-1)
-					out = append(out, elems[:idx]...)
-					out = append(out, elems[idx+1:]...)
-					if err := i.Store(params[0].Ref(), vmtypes.NewArray(typ, out...)); err != nil {
+				for idx, e := range elems {
+					equal, err := hostabi.BoxedEqual(i, e, params[1])
+					if err != nil {
 						return nil, err
 					}
-					return nil, nil
+					if equal {
+						out := make([]vmtypes.Boxed, 0, len(elems)-1)
+						out = append(out, elems[:idx]...)
+						out = append(out, elems[idx+1:]...)
+						if err := i.Store(params[0].Ref(), vmtypes.NewArray(typ, out...)); err != nil {
+							return nil, err
+						}
+						return nil, nil
+					}
 				}
-			}
-			return nil, errListRemoveValue
-		},
-	)
+				return nil, errListRemoveValue
+			},
+		)
+	})
 }
 
 func (c *lowerer) dictMerge(receiver types.Type) *interp.HostFunction {
-	return interp.NewHostFunction(
-		&vmtypes.FunctionType{Params: []vmtypes.Type{receiver.VM(), receiver.VM()}, Returns: []vmtypes.Type{receiver.VM()}},
-		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
-			src, err := i.Load(params[0].Ref())
-			if err != nil {
-				return nil, err
-			}
-			mt, ok := src.Type().(*vmtypes.MapType)
-			if !ok {
-				return nil, interp.ErrTypeMismatch
-			}
-			leftKeys, leftVals, err := mapEntries(i, params[0])
-			if err != nil {
-				return nil, err
-			}
-			rightKeys, rightVals, err := mapEntries(i, params[1])
-			if err != nil {
-				return nil, err
-			}
-			// Entries from both operand dicts are borrowed; out becomes
-			// their second owner, so they need their own retain (see
-			// hostabi's package doc comment).
-			out := vmtypes.NewMapForType(mt, len(leftKeys)+len(rightKeys))
-			for idx, key := range leftKeys {
-				if err := hostabi.RetainBoxes(i, []vmtypes.Boxed{key, leftVals[idx]}); err != nil {
-					return nil, err
-				}
-				if err := mapSet(out, key, leftVals[idx]); err != nil {
-					return nil, err
-				}
-			}
-			for idx, key := range rightKeys {
-				if err := hostabi.RetainBoxes(i, []vmtypes.Boxed{key, rightVals[idx]}); err != nil {
-					return nil, err
-				}
-				if err := mapSet(out, key, rightVals[idx]); err != nil {
-					return nil, err
-				}
-			}
-			addr, err := i.Alloc(out)
-			if err != nil {
-				return nil, err
-			}
-			return []vmtypes.Boxed{vmtypes.BoxRef(addr)}, nil
-		},
-	)
-}
-
-func (c *lowerer) listIter(arg types.Type) *interp.HostFunction {
-	return interp.NewHostFunction(
-		&vmtypes.FunctionType{Params: []vmtypes.Type{arg.VM()}, Returns: []vmtypes.Type{vmtypes.TypeRef}},
-		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
-			_, elems, err := hostabi.ArrayElems(i, params[0])
-			if err != nil {
-				return nil, err
-			}
-			addr, err := i.Alloc(hostabi.NewIterator("list.iterator", elems))
-			if err != nil {
-				return nil, err
-			}
-			return []vmtypes.Boxed{vmtypes.BoxRef(addr)}, nil
-		},
-	)
-}
-
-func (c *lowerer) strIter() *interp.HostFunction {
-	return interp.NewHostFunction(
-		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeString}, Returns: []vmtypes.Type{vmtypes.TypeRef}},
-		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
-			s, err := hostabi.LoadStr(i, params[0])
-			if err != nil {
-				return nil, err
-			}
-			values := make([]vmtypes.Boxed, 0, len([]rune(s)))
-			for _, r := range s {
-				addr, err := i.Alloc(vmtypes.String(string(r)))
+	return c.host(hostKey("dictMerge", receiver), func() *interp.HostFunction {
+		return interp.NewHostFunction(
+			&vmtypes.FunctionType{Params: []vmtypes.Type{receiver.VM(), receiver.VM()}, Returns: []vmtypes.Type{receiver.VM()}},
+			func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+				src, err := i.Load(params[0].Ref())
 				if err != nil {
 					return nil, err
 				}
-				values = append(values, vmtypes.BoxRef(addr))
-			}
-			addr, err := i.Alloc(hostabi.NewIterator("str.iterator", values))
-			if err != nil {
-				return nil, err
-			}
-			return []vmtypes.Boxed{vmtypes.BoxRef(addr)}, nil
-		},
-	)
+				mt, ok := src.Type().(*vmtypes.MapType)
+				if !ok {
+					return nil, interp.ErrTypeMismatch
+				}
+				leftKeys, leftVals, err := mapEntries(i, params[0])
+				if err != nil {
+					return nil, err
+				}
+				defer func() { err = errors.Join(err, hostabi.ReleaseBoxes(i, leftKeys)) }()
+				rightKeys, rightVals, err := mapEntries(i, params[1])
+				if err != nil {
+					return nil, err
+				}
+				defer func() { err = errors.Join(err, hostabi.ReleaseBoxes(i, rightKeys)) }()
+				// Entries from both operand dicts are borrowed; out becomes
+				// their second owner, so they need their own retain (see
+				// hostabi's package doc comment).
+				out := vmtypes.NewMapForType(mt, len(leftKeys)+len(rightKeys))
+				for idx, key := range leftKeys {
+					if err := hostabi.RetainBoxes(i, []vmtypes.Boxed{key, leftVals[idx]}); err != nil {
+						return nil, err
+					}
+					if err := mapSet(i, out, key, leftVals[idx]); err != nil {
+						return nil, err
+					}
+				}
+				for idx, key := range rightKeys {
+					if err := hostabi.RetainBoxes(i, []vmtypes.Boxed{key, rightVals[idx]}); err != nil {
+						return nil, err
+					}
+					if err := mapSet(i, out, key, rightVals[idx]); err != nil {
+						return nil, err
+					}
+				}
+				addr, err := i.Alloc(out)
+				if err != nil {
+					return nil, err
+				}
+				return []vmtypes.Boxed{vmtypes.BoxRef(addr)}, nil
+			},
+		)
+	})
+}
+
+func (c *lowerer) listIter(arg types.Type) *interp.HostFunction {
+	return c.host(hostKey("listIter", arg), func() *interp.HostFunction {
+		return interp.NewHostFunction(
+			&vmtypes.FunctionType{Params: []vmtypes.Type{arg.VM()}, Returns: []vmtypes.Type{vmtypes.TypeAny}},
+			func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+				_, elems, err := hostabi.ArrayElems(i, params[0])
+				if err != nil {
+					return nil, err
+				}
+				addr, err := i.Alloc(hostabi.NewIterator("list.iterator", elems))
+				if err != nil {
+					return nil, err
+				}
+				return []vmtypes.Boxed{vmtypes.BoxRef(addr)}, nil
+			},
+		)
+	})
+}
+
+func (c *lowerer) strIter() *interp.HostFunction {
+	return c.host(hostKey("strIter"), func() *interp.HostFunction {
+		return interp.NewHostFunction(
+			&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeString}, Returns: []vmtypes.Type{vmtypes.TypeAny}},
+			func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+				s, err := hostabi.LoadStr(i, params[0])
+				if err != nil {
+					return nil, err
+				}
+				values := make([]vmtypes.Boxed, 0, len([]rune(s)))
+				for _, r := range s {
+					addr, err := i.Alloc(vmtypes.String(string(r)))
+					if err != nil {
+						return nil, err
+					}
+					values = append(values, vmtypes.BoxRef(addr))
+				}
+				addr, err := i.Alloc(hostabi.NewIterator("str.iterator", values))
+				if err != nil {
+					return nil, err
+				}
+				return []vmtypes.Boxed{vmtypes.BoxRef(addr)}, nil
+			},
+		)
+	})
 }
 
 func (c *lowerer) format(t types.Type) *interp.HostFunction {
-	return interp.NewHostFunction(
-		&vmtypes.FunctionType{Params: []vmtypes.Type{t.VM(), vmtypes.TypeString}, Returns: []vmtypes.Type{vmtypes.TypeString}},
-		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
-			spec, err := hostabi.LoadStr(i, params[1])
-			if err != nil {
-				return nil, err
-			}
-			text, err := pyFormat(i, params[0], spec)
-			if err != nil {
-				return nil, err
-			}
-			return hostabi.AllocString(i, text)
-		},
-	)
+	return c.host(hostKey("format", t), func() *interp.HostFunction {
+		return interp.NewHostFunction(
+			&vmtypes.FunctionType{Params: []vmtypes.Type{t.VM(), vmtypes.TypeString}, Returns: []vmtypes.Type{vmtypes.TypeString}},
+			func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+				spec, err := hostabi.LoadStr(i, params[1])
+				if err != nil {
+					return nil, err
+				}
+				text, err := pyFormat(i, params[0], spec)
+				if err != nil {
+					return nil, err
+				}
+				return hostabi.AllocString(i, text)
+			},
+		)
+	})
 }
 
 // reprHost renders a value with repr()/ascii() rules: strings gain quotes and
 // escapes, other scalars render like str(). It is static per source type, not a
 // runtime __repr__ dispatch.
 func (c *lowerer) reprHost(t types.Type, ascii bool) *interp.HostFunction {
-	return interp.NewHostFunction(
-		&vmtypes.FunctionType{Params: []vmtypes.Type{t.VM()}, Returns: []vmtypes.Type{vmtypes.TypeString}},
-		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
-			text, err := pyRepr(i, params[0], ascii)
-			if err != nil {
-				return nil, err
-			}
-			return hostabi.AllocString(i, text)
-		},
-	)
+	return c.host(hostKey("reprHost", t, ascii), func() *interp.HostFunction {
+		return interp.NewHostFunction(
+			&vmtypes.FunctionType{Params: []vmtypes.Type{t.VM()}, Returns: []vmtypes.Type{vmtypes.TypeString}},
+			func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+				text, err := pyRepr(i, params[0], ascii)
+				if err != nil {
+					return nil, err
+				}
+				return hostabi.AllocString(i, text)
+			},
+		)
+	})
 }
 
 func (c *lowerer) strIndex() *interp.HostFunction {
-	return interp.NewHostFunction(
-		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeString, vmtypes.TypeI64}, Returns: []vmtypes.Type{vmtypes.TypeString}},
-		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
-			text, err := hostabi.LoadStr(i, params[0])
-			if err != nil {
-				return nil, err
-			}
-			index, err := hostabi.LoadI64(i, params[1])
-			if err != nil {
-				return nil, err
-			}
-			s := []rune(text)
-			idx := int(index)
-			if idx < 0 {
-				idx += len(s)
-			}
-			if idx < 0 || idx >= len(s) {
-				return nil, interp.ErrIndexOutOfRange
-			}
-			return hostabi.AllocString(i, string(s[idx]))
-		},
-	)
+	return c.host(hostKey("strIndex"), func() *interp.HostFunction {
+		return interp.NewHostFunction(
+			&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeString, vmtypes.TypeI64}, Returns: []vmtypes.Type{vmtypes.TypeString}},
+			func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+				text, err := hostabi.LoadStr(i, params[0])
+				if err != nil {
+					return nil, err
+				}
+				index, err := hostabi.LoadI64(i, params[1])
+				if err != nil {
+					return nil, err
+				}
+				s := []rune(text)
+				idx := int(index)
+				if idx < 0 {
+					idx += len(s)
+				}
+				if idx < 0 || idx >= len(s) {
+					return nil, interp.ErrIndexOutOfRange
+				}
+				return hostabi.AllocString(i, string(s[idx]))
+			},
+		)
+	})
 }
 
 func (c *lowerer) strUpper() *interp.HostFunction {
-	return interp.NewHostFunction(
-		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeString}, Returns: []vmtypes.Type{vmtypes.TypeString}},
-		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
-			text, err := hostabi.LoadStr(i, params[0])
-			if err != nil {
-				return nil, err
-			}
-			return hostabi.AllocString(i, strings.ToUpper(text))
-		},
-	)
+	return c.host(hostKey("strUpper"), func() *interp.HostFunction {
+		return interp.NewHostFunction(
+			&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeString}, Returns: []vmtypes.Type{vmtypes.TypeString}},
+			func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+				text, err := hostabi.LoadStr(i, params[0])
+				if err != nil {
+					return nil, err
+				}
+				return hostabi.AllocString(i, strings.ToUpper(text))
+			},
+		)
+	})
 }
 
 func (c *lowerer) strLower() *interp.HostFunction {
-	return interp.NewHostFunction(
-		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeString}, Returns: []vmtypes.Type{vmtypes.TypeString}},
-		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
-			text, err := hostabi.LoadStr(i, params[0])
-			if err != nil {
-				return nil, err
-			}
-			return hostabi.AllocString(i, strings.ToLower(text))
-		},
-	)
+	return c.host(hostKey("strLower"), func() *interp.HostFunction {
+		return interp.NewHostFunction(
+			&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeString}, Returns: []vmtypes.Type{vmtypes.TypeString}},
+			func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+				text, err := hostabi.LoadStr(i, params[0])
+				if err != nil {
+					return nil, err
+				}
+				return hostabi.AllocString(i, strings.ToLower(text))
+			},
+		)
+	})
 }
 
 func (c *lowerer) strFind() *interp.HostFunction {
-	return interp.NewHostFunction(
-		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeString, vmtypes.TypeString}, Returns: []vmtypes.Type{vmtypes.TypeI64}},
-		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
-			text, err := hostabi.LoadStr(i, params[0])
-			if err != nil {
-				return nil, err
-			}
-			needle, err := hostabi.LoadStr(i, params[1])
-			if err != nil {
-				return nil, err
-			}
-			return []vmtypes.Boxed{vmtypes.BoxI64(int64(strings.Index(text, needle)))}, nil
-		},
-	)
+	return c.host(hostKey("strFind"), func() *interp.HostFunction {
+		return interp.NewHostFunction(
+			&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeString, vmtypes.TypeString}, Returns: []vmtypes.Type{vmtypes.TypeI64}},
+			func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+				text, err := hostabi.LoadStr(i, params[0])
+				if err != nil {
+					return nil, err
+				}
+				needle, err := hostabi.LoadStr(i, params[1])
+				if err != nil {
+					return nil, err
+				}
+				return []vmtypes.Boxed{vmtypes.BoxI64(int64(strings.Index(text, needle)))}, nil
+			},
+		)
+	})
 }
 
 func (c *lowerer) strSlice() *interp.HostFunction {
-	return interp.NewHostFunction(
-		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeString, vmtypes.TypeI64, vmtypes.TypeI64, vmtypes.TypeI64}, Returns: []vmtypes.Type{vmtypes.TypeString}},
-		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
-			text, err := hostabi.LoadStr(i, params[0])
-			if err != nil {
-				return nil, err
-			}
-			start, stop, step, err := loadSliceBounds(i, params)
-			if err != nil {
-				return nil, err
-			}
-			runes := []rune(text)
-			indexes, err := sliceIndexes(len(runes), start, stop, step)
-			if err != nil {
-				return nil, err
-			}
-			var b strings.Builder
-			for _, idx := range indexes {
-				b.WriteRune(runes[idx])
-			}
-			return hostabi.AllocString(i, b.String())
-		},
-	)
+	return c.host(hostKey("strSlice"), func() *interp.HostFunction {
+		return interp.NewHostFunction(
+			&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeString, vmtypes.TypeI64, vmtypes.TypeI64, vmtypes.TypeI64}, Returns: []vmtypes.Type{vmtypes.TypeString}},
+			func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+				text, err := hostabi.LoadStr(i, params[0])
+				if err != nil {
+					return nil, err
+				}
+				start, stop, step, err := loadSliceBounds(i, params)
+				if err != nil {
+					return nil, err
+				}
+				runes := []rune(text)
+				indexes, err := sliceIndexes(len(runes), start, stop, step)
+				if err != nil {
+					return nil, err
+				}
+				var b strings.Builder
+				for _, idx := range indexes {
+					b.WriteRune(runes[idx])
+				}
+				return hostabi.AllocString(i, b.String())
+			},
+		)
+	})
 }
 
 // strSplitWhitespace backs the no-argument str.split(). CPython treats that as
@@ -896,328 +936,362 @@ func (c *lowerer) strSlice() *interp.HostFunction {
 // explicit C0 separators U+001C..U+001F are included because CPython treats them
 // as whitespace while unicode.IsSpace does not.
 func (c *lowerer) strSplitWhitespace() *interp.HostFunction {
-	return interp.NewHostFunction(
-		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeString}, Returns: []vmtypes.Type{vmtypes.NewArrayType(vmtypes.TypeString)}},
-		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
-			text, err := hostabi.LoadStr(i, params[0])
-			if err != nil {
-				return nil, err
-			}
-			fields := strings.FieldsFunc(text, isPythonWhitespace)
-			out := make([]vmtypes.Boxed, 0, len(fields))
-			for _, field := range fields {
-				box, err := hostabi.AllocString(i, field)
+	return c.host(hostKey("strSplitWhitespace"), func() *interp.HostFunction {
+		return interp.NewHostFunction(
+			&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeString}, Returns: []vmtypes.Type{vmtypes.NewArrayType(vmtypes.TypeString)}},
+			func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+				text, err := hostabi.LoadStr(i, params[0])
 				if err != nil {
 					return nil, err
 				}
-				out = append(out, box[0])
-			}
-			return hostabi.AllocArray(i, vmtypes.NewArrayType(vmtypes.TypeString), out)
-		},
-	)
+				fields := strings.FieldsFunc(text, isPythonWhitespace)
+				out := make([]vmtypes.Boxed, 0, len(fields))
+				for _, field := range fields {
+					box, err := hostabi.AllocString(i, field)
+					if err != nil {
+						return nil, err
+					}
+					out = append(out, box[0])
+				}
+				return hostabi.AllocArray(i, vmtypes.NewArrayType(vmtypes.TypeString), out)
+			},
+		)
+	})
 }
 
 func (c *lowerer) strSplit() *interp.HostFunction {
-	return interp.NewHostFunction(
-		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeString, vmtypes.TypeString}, Returns: []vmtypes.Type{vmtypes.NewArrayType(vmtypes.TypeString)}},
-		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
-			text, err := hostabi.LoadStr(i, params[0])
-			if err != nil {
-				return nil, err
-			}
-			separator, err := hostabi.LoadStr(i, params[1])
-			if err != nil {
-				return nil, err
-			}
-			parts := strings.Split(text, separator)
-			out := make([]vmtypes.Boxed, 0, len(parts))
-			for _, part := range parts {
-				box, err := hostabi.AllocString(i, part)
+	return c.host(hostKey("strSplit"), func() *interp.HostFunction {
+		return interp.NewHostFunction(
+			&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeString, vmtypes.TypeString}, Returns: []vmtypes.Type{vmtypes.NewArrayType(vmtypes.TypeString)}},
+			func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+				text, err := hostabi.LoadStr(i, params[0])
 				if err != nil {
 					return nil, err
 				}
-				out = append(out, box[0])
-			}
-			return hostabi.AllocArray(i, vmtypes.NewArrayType(vmtypes.TypeString), out)
-		},
-	)
+				separator, err := hostabi.LoadStr(i, params[1])
+				if err != nil {
+					return nil, err
+				}
+				parts := strings.Split(text, separator)
+				out := make([]vmtypes.Boxed, 0, len(parts))
+				for _, part := range parts {
+					box, err := hostabi.AllocString(i, part)
+					if err != nil {
+						return nil, err
+					}
+					out = append(out, box[0])
+				}
+				return hostabi.AllocArray(i, vmtypes.NewArrayType(vmtypes.TypeString), out)
+			},
+		)
+	})
 }
 
 func (c *lowerer) strJoin() *interp.HostFunction {
-	return interp.NewHostFunction(
-		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeString, vmtypes.NewArrayType(vmtypes.TypeString)}, Returns: []vmtypes.Type{vmtypes.TypeString}},
-		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
-			separator, err := hostabi.LoadStr(i, params[0])
-			if err != nil {
-				return nil, err
-			}
-			_, elems, err := hostabi.ArrayElems(i, params[1])
-			if err != nil {
-				return nil, err
-			}
-			parts := make([]string, len(elems))
-			for idx, elem := range elems {
-				parts[idx], err = hostabi.LoadStr(i, elem)
+	return c.host(hostKey("strJoin"), func() *interp.HostFunction {
+		return interp.NewHostFunction(
+			&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeString, vmtypes.NewArrayType(vmtypes.TypeString)}, Returns: []vmtypes.Type{vmtypes.TypeString}},
+			func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+				separator, err := hostabi.LoadStr(i, params[0])
 				if err != nil {
 					return nil, err
 				}
-			}
-			return hostabi.AllocString(i, strings.Join(parts, separator))
-		},
-	)
+				_, elems, err := hostabi.ArrayElems(i, params[1])
+				if err != nil {
+					return nil, err
+				}
+				parts := make([]string, len(elems))
+				for idx, elem := range elems {
+					parts[idx], err = hostabi.LoadStr(i, elem)
+					if err != nil {
+						return nil, err
+					}
+				}
+				return hostabi.AllocString(i, strings.Join(parts, separator))
+			},
+		)
+	})
 }
 
 func (c *lowerer) strStripNoArg() *interp.HostFunction {
-	return interp.NewHostFunction(
-		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeString}, Returns: []vmtypes.Type{vmtypes.TypeString}},
-		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
-			text, err := hostabi.LoadStr(i, params[0])
-			if err != nil {
-				return nil, err
-			}
-			return hostabi.AllocString(i, strings.TrimFunc(text, isPythonWhitespace))
-		},
-	)
+	return c.host(hostKey("strStripNoArg"), func() *interp.HostFunction {
+		return interp.NewHostFunction(
+			&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeString}, Returns: []vmtypes.Type{vmtypes.TypeString}},
+			func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+				text, err := hostabi.LoadStr(i, params[0])
+				if err != nil {
+					return nil, err
+				}
+				return hostabi.AllocString(i, strings.TrimFunc(text, isPythonWhitespace))
+			},
+		)
+	})
 }
 
 func (c *lowerer) strStripChars() *interp.HostFunction {
-	return interp.NewHostFunction(
-		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeString, vmtypes.TypeString}, Returns: []vmtypes.Type{vmtypes.TypeString}},
-		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
-			text, err := hostabi.LoadStr(i, params[0])
-			if err != nil {
-				return nil, err
-			}
-			chars, err := hostabi.LoadStr(i, params[1])
-			if err != nil {
-				return nil, err
-			}
-			return hostabi.AllocString(i, strings.Trim(text, chars))
-		},
-	)
+	return c.host(hostKey("strStripChars"), func() *interp.HostFunction {
+		return interp.NewHostFunction(
+			&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeString, vmtypes.TypeString}, Returns: []vmtypes.Type{vmtypes.TypeString}},
+			func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+				text, err := hostabi.LoadStr(i, params[0])
+				if err != nil {
+					return nil, err
+				}
+				chars, err := hostabi.LoadStr(i, params[1])
+				if err != nil {
+					return nil, err
+				}
+				return hostabi.AllocString(i, strings.Trim(text, chars))
+			},
+		)
+	})
 }
 
 func (c *lowerer) strLStripNoArg() *interp.HostFunction {
-	return interp.NewHostFunction(
-		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeString}, Returns: []vmtypes.Type{vmtypes.TypeString}},
-		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
-			text, err := hostabi.LoadStr(i, params[0])
-			if err != nil {
-				return nil, err
-			}
-			return hostabi.AllocString(i, strings.TrimLeftFunc(text, isPythonWhitespace))
-		},
-	)
+	return c.host(hostKey("strLStripNoArg"), func() *interp.HostFunction {
+		return interp.NewHostFunction(
+			&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeString}, Returns: []vmtypes.Type{vmtypes.TypeString}},
+			func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+				text, err := hostabi.LoadStr(i, params[0])
+				if err != nil {
+					return nil, err
+				}
+				return hostabi.AllocString(i, strings.TrimLeftFunc(text, isPythonWhitespace))
+			},
+		)
+	})
 }
 
 func (c *lowerer) strLStripChars() *interp.HostFunction {
-	return interp.NewHostFunction(
-		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeString, vmtypes.TypeString}, Returns: []vmtypes.Type{vmtypes.TypeString}},
-		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
-			text, err := hostabi.LoadStr(i, params[0])
-			if err != nil {
-				return nil, err
-			}
-			chars, err := hostabi.LoadStr(i, params[1])
-			if err != nil {
-				return nil, err
-			}
-			return hostabi.AllocString(i, strings.TrimLeft(text, chars))
-		},
-	)
+	return c.host(hostKey("strLStripChars"), func() *interp.HostFunction {
+		return interp.NewHostFunction(
+			&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeString, vmtypes.TypeString}, Returns: []vmtypes.Type{vmtypes.TypeString}},
+			func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+				text, err := hostabi.LoadStr(i, params[0])
+				if err != nil {
+					return nil, err
+				}
+				chars, err := hostabi.LoadStr(i, params[1])
+				if err != nil {
+					return nil, err
+				}
+				return hostabi.AllocString(i, strings.TrimLeft(text, chars))
+			},
+		)
+	})
 }
 
 func (c *lowerer) strRStripNoArg() *interp.HostFunction {
-	return interp.NewHostFunction(
-		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeString}, Returns: []vmtypes.Type{vmtypes.TypeString}},
-		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
-			text, err := hostabi.LoadStr(i, params[0])
-			if err != nil {
-				return nil, err
-			}
-			return hostabi.AllocString(i, strings.TrimRightFunc(text, isPythonWhitespace))
-		},
-	)
+	return c.host(hostKey("strRStripNoArg"), func() *interp.HostFunction {
+		return interp.NewHostFunction(
+			&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeString}, Returns: []vmtypes.Type{vmtypes.TypeString}},
+			func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+				text, err := hostabi.LoadStr(i, params[0])
+				if err != nil {
+					return nil, err
+				}
+				return hostabi.AllocString(i, strings.TrimRightFunc(text, isPythonWhitespace))
+			},
+		)
+	})
 }
 
 func (c *lowerer) strRStripChars() *interp.HostFunction {
-	return interp.NewHostFunction(
-		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeString, vmtypes.TypeString}, Returns: []vmtypes.Type{vmtypes.TypeString}},
-		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
-			text, err := hostabi.LoadStr(i, params[0])
-			if err != nil {
-				return nil, err
-			}
-			chars, err := hostabi.LoadStr(i, params[1])
-			if err != nil {
-				return nil, err
-			}
-			return hostabi.AllocString(i, strings.TrimRight(text, chars))
-		},
-	)
+	return c.host(hostKey("strRStripChars"), func() *interp.HostFunction {
+		return interp.NewHostFunction(
+			&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeString, vmtypes.TypeString}, Returns: []vmtypes.Type{vmtypes.TypeString}},
+			func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+				text, err := hostabi.LoadStr(i, params[0])
+				if err != nil {
+					return nil, err
+				}
+				chars, err := hostabi.LoadStr(i, params[1])
+				if err != nil {
+					return nil, err
+				}
+				return hostabi.AllocString(i, strings.TrimRight(text, chars))
+			},
+		)
+	})
 }
 
 func (c *lowerer) strStartsWith() *interp.HostFunction {
-	return interp.NewHostFunction(
-		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeString, vmtypes.TypeString}, Returns: []vmtypes.Type{vmtypes.TypeI1}},
-		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
-			text, err := hostabi.LoadStr(i, params[0])
-			if err != nil {
-				return nil, err
-			}
-			prefix, err := hostabi.LoadStr(i, params[1])
-			if err != nil {
-				return nil, err
-			}
-			return []vmtypes.Boxed{vmtypes.BoxI1(strings.HasPrefix(text, prefix))}, nil
-		},
-	)
+	return c.host(hostKey("strStartsWith"), func() *interp.HostFunction {
+		return interp.NewHostFunction(
+			&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeString, vmtypes.TypeString}, Returns: []vmtypes.Type{vmtypes.TypeI1}},
+			func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+				text, err := hostabi.LoadStr(i, params[0])
+				if err != nil {
+					return nil, err
+				}
+				prefix, err := hostabi.LoadStr(i, params[1])
+				if err != nil {
+					return nil, err
+				}
+				return []vmtypes.Boxed{vmtypes.BoxI1(strings.HasPrefix(text, prefix))}, nil
+			},
+		)
+	})
 }
 
 func (c *lowerer) strEndsWith() *interp.HostFunction {
-	return interp.NewHostFunction(
-		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeString, vmtypes.TypeString}, Returns: []vmtypes.Type{vmtypes.TypeI1}},
-		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
-			text, err := hostabi.LoadStr(i, params[0])
-			if err != nil {
-				return nil, err
-			}
-			suffix, err := hostabi.LoadStr(i, params[1])
-			if err != nil {
-				return nil, err
-			}
-			return []vmtypes.Boxed{vmtypes.BoxI1(strings.HasSuffix(text, suffix))}, nil
-		},
-	)
+	return c.host(hostKey("strEndsWith"), func() *interp.HostFunction {
+		return interp.NewHostFunction(
+			&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeString, vmtypes.TypeString}, Returns: []vmtypes.Type{vmtypes.TypeI1}},
+			func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+				text, err := hostabi.LoadStr(i, params[0])
+				if err != nil {
+					return nil, err
+				}
+				suffix, err := hostabi.LoadStr(i, params[1])
+				if err != nil {
+					return nil, err
+				}
+				return []vmtypes.Boxed{vmtypes.BoxI1(strings.HasSuffix(text, suffix))}, nil
+			},
+		)
+	})
 }
 
 func (c *lowerer) strReplace() *interp.HostFunction {
-	return interp.NewHostFunction(
-		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeString, vmtypes.TypeString, vmtypes.TypeString, vmtypes.TypeI64}, Returns: []vmtypes.Type{vmtypes.TypeString}},
-		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
-			text, err := hostabi.LoadStr(i, params[0])
-			if err != nil {
-				return nil, err
-			}
-			old, err := hostabi.LoadStr(i, params[1])
-			if err != nil {
-				return nil, err
-			}
-			newStr, err := hostabi.LoadStr(i, params[2])
-			if err != nil {
-				return nil, err
-			}
-			count := params[3].I64()
-			var result string
-			if count < 0 {
-				result = strings.ReplaceAll(text, old, newStr)
-			} else {
-				result = strings.Replace(text, old, newStr, int(count))
-			}
-			return hostabi.AllocString(i, result)
-		},
-	)
+	return c.host(hostKey("strReplace"), func() *interp.HostFunction {
+		return interp.NewHostFunction(
+			&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeString, vmtypes.TypeString, vmtypes.TypeString, vmtypes.TypeI64}, Returns: []vmtypes.Type{vmtypes.TypeString}},
+			func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+				text, err := hostabi.LoadStr(i, params[0])
+				if err != nil {
+					return nil, err
+				}
+				old, err := hostabi.LoadStr(i, params[1])
+				if err != nil {
+					return nil, err
+				}
+				newStr, err := hostabi.LoadStr(i, params[2])
+				if err != nil {
+					return nil, err
+				}
+				count := params[3].I64()
+				var result string
+				if count < 0 {
+					result = strings.ReplaceAll(text, old, newStr)
+				} else {
+					result = strings.Replace(text, old, newStr, int(count))
+				}
+				return hostabi.AllocString(i, result)
+			},
+		)
+	})
 }
 
 func (c *lowerer) strCount() *interp.HostFunction {
-	return interp.NewHostFunction(
-		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeString, vmtypes.TypeString}, Returns: []vmtypes.Type{vmtypes.TypeI64}},
-		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
-			text, err := hostabi.LoadStr(i, params[0])
-			if err != nil {
-				return nil, err
-			}
-			sub, err := hostabi.LoadStr(i, params[1])
-			if err != nil {
-				return nil, err
-			}
-			return []vmtypes.Boxed{vmtypes.BoxI64(int64(strings.Count(text, sub)))}, nil
-		},
-	)
+	return c.host(hostKey("strCount"), func() *interp.HostFunction {
+		return interp.NewHostFunction(
+			&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeString, vmtypes.TypeString}, Returns: []vmtypes.Type{vmtypes.TypeI64}},
+			func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+				text, err := hostabi.LoadStr(i, params[0])
+				if err != nil {
+					return nil, err
+				}
+				sub, err := hostabi.LoadStr(i, params[1])
+				if err != nil {
+					return nil, err
+				}
+				return []vmtypes.Boxed{vmtypes.BoxI64(int64(strings.Count(text, sub)))}, nil
+			},
+		)
+	})
 }
 
 func (c *lowerer) strIsDigit() *interp.HostFunction {
-	return interp.NewHostFunction(
-		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeString}, Returns: []vmtypes.Type{vmtypes.TypeI1}},
-		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
-			text, err := hostabi.LoadStr(i, params[0])
-			if err != nil {
-				return nil, err
-			}
-			if len(text) == 0 {
-				return []vmtypes.Boxed{vmtypes.BoxI1(false)}, nil
-			}
-			for _, r := range text {
-				if !unicode.IsDigit(r) {
+	return c.host(hostKey("strIsDigit"), func() *interp.HostFunction {
+		return interp.NewHostFunction(
+			&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeString}, Returns: []vmtypes.Type{vmtypes.TypeI1}},
+			func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+				text, err := hostabi.LoadStr(i, params[0])
+				if err != nil {
+					return nil, err
+				}
+				if len(text) == 0 {
 					return []vmtypes.Boxed{vmtypes.BoxI1(false)}, nil
 				}
-			}
-			return []vmtypes.Boxed{vmtypes.BoxI1(true)}, nil
-		},
-	)
+				for _, r := range text {
+					if !unicode.IsDigit(r) {
+						return []vmtypes.Boxed{vmtypes.BoxI1(false)}, nil
+					}
+				}
+				return []vmtypes.Boxed{vmtypes.BoxI1(true)}, nil
+			},
+		)
+	})
 }
 
 func (c *lowerer) strIsAlpha() *interp.HostFunction {
-	return interp.NewHostFunction(
-		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeString}, Returns: []vmtypes.Type{vmtypes.TypeI1}},
-		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
-			text, err := hostabi.LoadStr(i, params[0])
-			if err != nil {
-				return nil, err
-			}
-			if len(text) == 0 {
-				return []vmtypes.Boxed{vmtypes.BoxI1(false)}, nil
-			}
-			for _, r := range text {
-				if !unicode.IsLetter(r) {
+	return c.host(hostKey("strIsAlpha"), func() *interp.HostFunction {
+		return interp.NewHostFunction(
+			&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeString}, Returns: []vmtypes.Type{vmtypes.TypeI1}},
+			func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+				text, err := hostabi.LoadStr(i, params[0])
+				if err != nil {
+					return nil, err
+				}
+				if len(text) == 0 {
 					return []vmtypes.Boxed{vmtypes.BoxI1(false)}, nil
 				}
-			}
-			return []vmtypes.Boxed{vmtypes.BoxI1(true)}, nil
-		},
-	)
+				for _, r := range text {
+					if !unicode.IsLetter(r) {
+						return []vmtypes.Boxed{vmtypes.BoxI1(false)}, nil
+					}
+				}
+				return []vmtypes.Boxed{vmtypes.BoxI1(true)}, nil
+			},
+		)
+	})
 }
 
 func (c *lowerer) strIsAlnum() *interp.HostFunction {
-	return interp.NewHostFunction(
-		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeString}, Returns: []vmtypes.Type{vmtypes.TypeI1}},
-		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
-			text, err := hostabi.LoadStr(i, params[0])
-			if err != nil {
-				return nil, err
-			}
-			if len(text) == 0 {
-				return []vmtypes.Boxed{vmtypes.BoxI1(false)}, nil
-			}
-			for _, r := range text {
-				if !unicode.IsLetter(r) && !unicode.IsDigit(r) {
+	return c.host(hostKey("strIsAlnum"), func() *interp.HostFunction {
+		return interp.NewHostFunction(
+			&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeString}, Returns: []vmtypes.Type{vmtypes.TypeI1}},
+			func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+				text, err := hostabi.LoadStr(i, params[0])
+				if err != nil {
+					return nil, err
+				}
+				if len(text) == 0 {
 					return []vmtypes.Boxed{vmtypes.BoxI1(false)}, nil
 				}
-			}
-			return []vmtypes.Boxed{vmtypes.BoxI1(true)}, nil
-		},
-	)
+				for _, r := range text {
+					if !unicode.IsLetter(r) && !unicode.IsDigit(r) {
+						return []vmtypes.Boxed{vmtypes.BoxI1(false)}, nil
+					}
+				}
+				return []vmtypes.Boxed{vmtypes.BoxI1(true)}, nil
+			},
+		)
+	})
 }
 
 func (c *lowerer) strIsSpace() *interp.HostFunction {
-	return interp.NewHostFunction(
-		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeString}, Returns: []vmtypes.Type{vmtypes.TypeI1}},
-		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
-			text, err := hostabi.LoadStr(i, params[0])
-			if err != nil {
-				return nil, err
-			}
-			if len(text) == 0 {
-				return []vmtypes.Boxed{vmtypes.BoxI1(false)}, nil
-			}
-			for _, r := range text {
-				if !isPythonWhitespace(r) {
+	return c.host(hostKey("strIsSpace"), func() *interp.HostFunction {
+		return interp.NewHostFunction(
+			&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeString}, Returns: []vmtypes.Type{vmtypes.TypeI1}},
+			func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+				text, err := hostabi.LoadStr(i, params[0])
+				if err != nil {
+					return nil, err
+				}
+				if len(text) == 0 {
 					return []vmtypes.Boxed{vmtypes.BoxI1(false)}, nil
 				}
-			}
-			return []vmtypes.Boxed{vmtypes.BoxI1(true)}, nil
-		},
-	)
+				for _, r := range text {
+					if !isPythonWhitespace(r) {
+						return []vmtypes.Boxed{vmtypes.BoxI1(false)}, nil
+					}
+				}
+				return []vmtypes.Boxed{vmtypes.BoxI1(true)}, nil
+			},
+		)
+	})
 }
 
 func isPythonWhitespace(r rune) bool {
@@ -1225,225 +1299,241 @@ func isPythonWhitespace(r rune) bool {
 }
 
 func (c *lowerer) strCapitalize() *interp.HostFunction {
-	return interp.NewHostFunction(
-		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeString}, Returns: []vmtypes.Type{vmtypes.TypeString}},
-		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
-			text, err := hostabi.LoadStr(i, params[0])
-			if err != nil {
-				return nil, err
-			}
-			if len(text) == 0 {
-				return hostabi.AllocString(i, "")
-			}
-			runes := []rune(text)
-			runes[0] = unicode.ToUpper(runes[0])
-			for j := 1; j < len(runes); j++ {
-				runes[j] = unicode.ToLower(runes[j])
-			}
-			return hostabi.AllocString(i, string(runes))
-		},
-	)
+	return c.host(hostKey("strCapitalize"), func() *interp.HostFunction {
+		return interp.NewHostFunction(
+			&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeString}, Returns: []vmtypes.Type{vmtypes.TypeString}},
+			func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+				text, err := hostabi.LoadStr(i, params[0])
+				if err != nil {
+					return nil, err
+				}
+				if len(text) == 0 {
+					return hostabi.AllocString(i, "")
+				}
+				runes := []rune(text)
+				runes[0] = unicode.ToUpper(runes[0])
+				for j := 1; j < len(runes); j++ {
+					runes[j] = unicode.ToLower(runes[j])
+				}
+				return hostabi.AllocString(i, string(runes))
+			},
+		)
+	})
 }
 
 func (c *lowerer) strTitle() *interp.HostFunction {
-	return interp.NewHostFunction(
-		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeString}, Returns: []vmtypes.Type{vmtypes.TypeString}},
-		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
-			text, err := hostabi.LoadStr(i, params[0])
-			if err != nil {
-				return nil, err
-			}
-			runes := []rune(text)
-			wordStart := true
-			for j, r := range runes {
-				if unicode.IsLetter(r) || unicode.IsDigit(r) {
-					if wordStart {
-						runes[j] = unicode.ToUpper(r)
-						wordStart = false
-					} else {
-						runes[j] = unicode.ToLower(r)
-					}
-				} else {
-					wordStart = true
+	return c.host(hostKey("strTitle"), func() *interp.HostFunction {
+		return interp.NewHostFunction(
+			&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeString}, Returns: []vmtypes.Type{vmtypes.TypeString}},
+			func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+				text, err := hostabi.LoadStr(i, params[0])
+				if err != nil {
+					return nil, err
 				}
-			}
-			return hostabi.AllocString(i, string(runes))
-		},
-	)
+				runes := []rune(text)
+				wordStart := true
+				for j, r := range runes {
+					if unicode.IsLetter(r) || unicode.IsDigit(r) {
+						if wordStart {
+							runes[j] = unicode.ToUpper(r)
+							wordStart = false
+						} else {
+							runes[j] = unicode.ToLower(r)
+						}
+					} else {
+						wordStart = true
+					}
+				}
+				return hostabi.AllocString(i, string(runes))
+			},
+		)
+	})
 }
 
 func (c *lowerer) strSwapCase() *interp.HostFunction {
-	return interp.NewHostFunction(
-		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeString}, Returns: []vmtypes.Type{vmtypes.TypeString}},
-		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
-			text, err := hostabi.LoadStr(i, params[0])
-			if err != nil {
-				return nil, err
-			}
-			runes := []rune(text)
-			for j, r := range runes {
-				if unicode.IsUpper(r) {
-					runes[j] = unicode.ToLower(r)
-				} else if unicode.IsLower(r) {
-					runes[j] = unicode.ToUpper(r)
+	return c.host(hostKey("strSwapCase"), func() *interp.HostFunction {
+		return interp.NewHostFunction(
+			&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeString}, Returns: []vmtypes.Type{vmtypes.TypeString}},
+			func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+				text, err := hostabi.LoadStr(i, params[0])
+				if err != nil {
+					return nil, err
 				}
-			}
-			return hostabi.AllocString(i, string(runes))
-		},
-	)
+				runes := []rune(text)
+				for j, r := range runes {
+					if unicode.IsUpper(r) {
+						runes[j] = unicode.ToLower(r)
+					} else if unicode.IsLower(r) {
+						runes[j] = unicode.ToUpper(r)
+					}
+				}
+				return hostabi.AllocString(i, string(runes))
+			},
+		)
+	})
 }
 
 func (c *lowerer) strCenter() *interp.HostFunction {
-	return interp.NewHostFunction(
-		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeString, vmtypes.TypeI64, vmtypes.TypeString}, Returns: []vmtypes.Type{vmtypes.TypeString}},
-		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
-			text, err := hostabi.LoadStr(i, params[0])
-			if err != nil {
-				return nil, err
-			}
-			width := params[1].I64()
-			fill, err := hostabi.LoadStr(i, params[2])
-			if err != nil {
-				return nil, err
-			}
-			fillRunes := []rune(fill)
-			if len(fillRunes) == 0 {
-				return hostabi.AllocString(i, text)
-			}
-			fillChar := fillRunes[0]
-			runes := []rune(text)
-			pad := int(width) - len(runes)
-			if pad <= 0 {
-				return hostabi.AllocString(i, text)
-			}
-			left := pad / 2
-			right := pad - left
-			var b strings.Builder
-			for j := 0; j < left; j++ {
-				b.WriteRune(fillChar)
-			}
-			b.WriteString(text)
-			for j := 0; j < right; j++ {
-				b.WriteRune(fillChar)
-			}
-			return hostabi.AllocString(i, b.String())
-		},
-	)
+	return c.host(hostKey("strCenter"), func() *interp.HostFunction {
+		return interp.NewHostFunction(
+			&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeString, vmtypes.TypeI64, vmtypes.TypeString}, Returns: []vmtypes.Type{vmtypes.TypeString}},
+			func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+				text, err := hostabi.LoadStr(i, params[0])
+				if err != nil {
+					return nil, err
+				}
+				width := params[1].I64()
+				fill, err := hostabi.LoadStr(i, params[2])
+				if err != nil {
+					return nil, err
+				}
+				fillRunes := []rune(fill)
+				if len(fillRunes) == 0 {
+					return hostabi.AllocString(i, text)
+				}
+				fillChar := fillRunes[0]
+				runes := []rune(text)
+				pad := int(width) - len(runes)
+				if pad <= 0 {
+					return hostabi.AllocString(i, text)
+				}
+				left := pad / 2
+				right := pad - left
+				var b strings.Builder
+				for j := 0; j < left; j++ {
+					b.WriteRune(fillChar)
+				}
+				b.WriteString(text)
+				for j := 0; j < right; j++ {
+					b.WriteRune(fillChar)
+				}
+				return hostabi.AllocString(i, b.String())
+			},
+		)
+	})
 }
 
 func (c *lowerer) strLJust() *interp.HostFunction {
-	return interp.NewHostFunction(
-		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeString, vmtypes.TypeI64, vmtypes.TypeString}, Returns: []vmtypes.Type{vmtypes.TypeString}},
-		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
-			text, err := hostabi.LoadStr(i, params[0])
-			if err != nil {
-				return nil, err
-			}
-			width := params[1].I64()
-			fill, err := hostabi.LoadStr(i, params[2])
-			if err != nil {
-				return nil, err
-			}
-			fillRunes := []rune(fill)
-			if len(fillRunes) == 0 {
-				return hostabi.AllocString(i, text)
-			}
-			fillChar := fillRunes[0]
-			runes := []rune(text)
-			pad := int(width) - len(runes)
-			if pad <= 0 {
-				return hostabi.AllocString(i, text)
-			}
-			var b strings.Builder
-			b.WriteString(text)
-			for j := 0; j < pad; j++ {
-				b.WriteRune(fillChar)
-			}
-			return hostabi.AllocString(i, b.String())
-		},
-	)
+	return c.host(hostKey("strLJust"), func() *interp.HostFunction {
+		return interp.NewHostFunction(
+			&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeString, vmtypes.TypeI64, vmtypes.TypeString}, Returns: []vmtypes.Type{vmtypes.TypeString}},
+			func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+				text, err := hostabi.LoadStr(i, params[0])
+				if err != nil {
+					return nil, err
+				}
+				width := params[1].I64()
+				fill, err := hostabi.LoadStr(i, params[2])
+				if err != nil {
+					return nil, err
+				}
+				fillRunes := []rune(fill)
+				if len(fillRunes) == 0 {
+					return hostabi.AllocString(i, text)
+				}
+				fillChar := fillRunes[0]
+				runes := []rune(text)
+				pad := int(width) - len(runes)
+				if pad <= 0 {
+					return hostabi.AllocString(i, text)
+				}
+				var b strings.Builder
+				b.WriteString(text)
+				for j := 0; j < pad; j++ {
+					b.WriteRune(fillChar)
+				}
+				return hostabi.AllocString(i, b.String())
+			},
+		)
+	})
 }
 
 func (c *lowerer) strRJust() *interp.HostFunction {
-	return interp.NewHostFunction(
-		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeString, vmtypes.TypeI64, vmtypes.TypeString}, Returns: []vmtypes.Type{vmtypes.TypeString}},
-		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
-			text, err := hostabi.LoadStr(i, params[0])
-			if err != nil {
-				return nil, err
-			}
-			width := params[1].I64()
-			fill, err := hostabi.LoadStr(i, params[2])
-			if err != nil {
-				return nil, err
-			}
-			fillRunes := []rune(fill)
-			if len(fillRunes) == 0 {
-				return hostabi.AllocString(i, text)
-			}
-			fillChar := fillRunes[0]
-			runes := []rune(text)
-			pad := int(width) - len(runes)
-			if pad <= 0 {
-				return hostabi.AllocString(i, text)
-			}
-			var b strings.Builder
-			for j := 0; j < pad; j++ {
-				b.WriteRune(fillChar)
-			}
-			b.WriteString(text)
-			return hostabi.AllocString(i, b.String())
-		},
-	)
+	return c.host(hostKey("strRJust"), func() *interp.HostFunction {
+		return interp.NewHostFunction(
+			&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeString, vmtypes.TypeI64, vmtypes.TypeString}, Returns: []vmtypes.Type{vmtypes.TypeString}},
+			func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+				text, err := hostabi.LoadStr(i, params[0])
+				if err != nil {
+					return nil, err
+				}
+				width := params[1].I64()
+				fill, err := hostabi.LoadStr(i, params[2])
+				if err != nil {
+					return nil, err
+				}
+				fillRunes := []rune(fill)
+				if len(fillRunes) == 0 {
+					return hostabi.AllocString(i, text)
+				}
+				fillChar := fillRunes[0]
+				runes := []rune(text)
+				pad := int(width) - len(runes)
+				if pad <= 0 {
+					return hostabi.AllocString(i, text)
+				}
+				var b strings.Builder
+				for j := 0; j < pad; j++ {
+					b.WriteRune(fillChar)
+				}
+				b.WriteString(text)
+				return hostabi.AllocString(i, b.String())
+			},
+		)
+	})
 }
 
 func (c *lowerer) strZFill() *interp.HostFunction {
-	return interp.NewHostFunction(
-		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeString, vmtypes.TypeI64}, Returns: []vmtypes.Type{vmtypes.TypeString}},
-		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
-			text, err := hostabi.LoadStr(i, params[0])
-			if err != nil {
-				return nil, err
-			}
-			width := params[1].I64()
-			runes := []rune(text)
-			pad := int(width) - len(runes)
-			if pad <= 0 {
-				return hostabi.AllocString(i, text)
-			}
-			var b strings.Builder
-			start := 0
-			if len(runes) > 0 && (runes[0] == '+' || runes[0] == '-') {
-				b.WriteRune(runes[0])
-				start = 1
-			}
-			for j := 0; j < pad; j++ {
-				b.WriteByte('0')
-			}
-			for _, r := range runes[start:] {
-				b.WriteRune(r)
-			}
-			return hostabi.AllocString(i, b.String())
-		},
-	)
+	return c.host(hostKey("strZFill"), func() *interp.HostFunction {
+		return interp.NewHostFunction(
+			&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeString, vmtypes.TypeI64}, Returns: []vmtypes.Type{vmtypes.TypeString}},
+			func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+				text, err := hostabi.LoadStr(i, params[0])
+				if err != nil {
+					return nil, err
+				}
+				width := params[1].I64()
+				runes := []rune(text)
+				pad := int(width) - len(runes)
+				if pad <= 0 {
+					return hostabi.AllocString(i, text)
+				}
+				var b strings.Builder
+				start := 0
+				if len(runes) > 0 && (runes[0] == '+' || runes[0] == '-') {
+					b.WriteRune(runes[0])
+					start = 1
+				}
+				for j := 0; j < pad; j++ {
+					b.WriteByte('0')
+				}
+				for _, r := range runes[start:] {
+					b.WriteRune(r)
+				}
+				return hostabi.AllocString(i, b.String())
+			},
+		)
+	})
 }
 
 func (c *lowerer) strEncode() *interp.HostFunction {
-	return interp.NewHostFunction(
-		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeString}, Returns: []vmtypes.Type{vmtypes.NewArrayType(vmtypes.TypeI8)}},
-		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
-			text, err := hostabi.LoadStr(i, params[0])
-			if err != nil {
-				return nil, err
-			}
-			bs := []byte(text)
-			elems := make([]vmtypes.Boxed, len(bs))
-			for j, b := range bs {
-				elems[j] = vmtypes.BoxI32(int32(int8(b)))
-			}
-			return hostabi.AllocArray(i, vmtypes.NewArrayType(vmtypes.TypeI8), elems)
-		},
-	)
+	return c.host(hostKey("strEncode"), func() *interp.HostFunction {
+		return interp.NewHostFunction(
+			&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeString}, Returns: []vmtypes.Type{vmtypes.NewArrayType(vmtypes.TypeI8)}},
+			func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+				text, err := hostabi.LoadStr(i, params[0])
+				if err != nil {
+					return nil, err
+				}
+				bs := []byte(text)
+				elems := make([]vmtypes.Boxed, len(bs))
+				for j, b := range bs {
+					elems[j] = vmtypes.BoxI32(int32(int8(b)))
+				}
+				return hostabi.AllocArray(i, vmtypes.NewArrayType(vmtypes.TypeI8), elems)
+			},
+		)
+	})
 }
 
 // strFormatMethod returns a host function that applies Python str.format()
@@ -1455,25 +1545,27 @@ func (c *lowerer) strEncode() *interp.HostFunction {
 // spec and pyFormat needs the value to apply it — the same spec support
 // f-strings already have.
 func (c *lowerer) strFormatMethod(argTypes []types.Type) *interp.HostFunction {
-	params := make([]vmtypes.Type, 1+len(argTypes))
-	params[0] = vmtypes.TypeString
-	for j, t := range argTypes {
-		params[j+1] = hostabi.VMParamType(t)
-	}
-	return interp.NewHostFunction(
-		&vmtypes.FunctionType{Params: params, Returns: []vmtypes.Type{vmtypes.TypeString}},
-		func(i *interp.Interpreter, ps []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
-			format, err := hostabi.LoadStr(i, ps[0])
-			if err != nil {
-				return nil, err
-			}
-			result, err := applyStrFormat(i, format, ps[1:])
-			if err != nil {
-				return nil, err
-			}
-			return hostabi.AllocString(i, result)
-		},
-	)
+	return c.host(hostKey("strFormatMethod", argTypes), func() *interp.HostFunction {
+		params := make([]vmtypes.Type, 1+len(argTypes))
+		params[0] = vmtypes.TypeString
+		for j, t := range argTypes {
+			params[j+1] = hostabi.VMParamType(t)
+		}
+		return interp.NewHostFunction(
+			&vmtypes.FunctionType{Params: params, Returns: []vmtypes.Type{vmtypes.TypeString}},
+			func(i *interp.Interpreter, ps []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+				format, err := hostabi.LoadStr(i, ps[0])
+				if err != nil {
+					return nil, err
+				}
+				result, err := applyStrFormat(i, format, ps[1:])
+				if err != nil {
+					return nil, err
+				}
+				return hostabi.AllocString(i, result)
+			},
+		)
+	})
 }
 
 // applyStrFormat processes a Python format string, replacing {} with the next
@@ -1541,55 +1633,57 @@ func applyStrFormat(i *interp.Interpreter, format string, args []vmtypes.Boxed) 
 }
 
 func (c *lowerer) exc() *interp.HostFunction {
-	excType := c.classes["BaseException"].typ.VM().(*vmtypes.StructType)
-	classID := func(name string) int64 { return int64(c.classes[name].classID) }
-	return interp.NewHostFunction(
-		&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeRef}, Returns: []vmtypes.Type{c.classes["BaseException"].typ.VM()}},
-		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
-			class := classID("RuntimeError")
-			message := ""
-			if params[0].Kind() == vmtypes.KindRef && params[0].Ref() != 0 {
-				if val, err := i.Load(params[0].Ref()); err == nil {
-					if exc, ok := val.(*vmtypes.Error); ok {
-						message = exc.Error()
-						switch {
-						case errors.Is(exc.Unwrap(), interp.ErrDivideByZero):
-							class = classID("ZeroDivisionError")
-						case errors.Is(exc.Unwrap(), interp.ErrIndexOutOfRange):
-							class = classID("IndexError")
-						case errors.Is(exc.Unwrap(), interp.ErrTypeMismatch):
-							class = classID("TypeError")
-						case errors.Is(exc.Unwrap(), errListIndexValue),
-							errors.Is(exc.Unwrap(), errListRemoveValue),
-							errors.Is(exc.Unwrap(), errListSliceLength),
-							errors.Is(exc.Unwrap(), errExtendedSlice),
-							errors.Is(exc.Unwrap(), errSliceStep),
-							errors.Is(exc.Unwrap(), builtins.ErrIntValue),
-							errors.Is(exc.Unwrap(), builtins.ErrFloatValue),
-							errors.Is(exc.Unwrap(), builtins.ErrRangeStep),
-							errors.Is(exc.Unwrap(), builtins.ErrOrdValue),
-							errors.Is(exc.Unwrap(), builtins.ErrChrValue),
-							errors.Is(exc.Unwrap(), pyoperator.ErrNegativeExponent):
-							class = classID("ValueError")
-						case errors.Is(exc.Unwrap(), errDictKeyError):
-							class = classID("KeyError")
-						case errors.Is(exc.Unwrap(), pyoperator.ErrRepeatOverflow):
-							class = classID("OverflowError")
+	return c.host(hostKey("exc"), func() *interp.HostFunction {
+		excType := c.classes["BaseException"].typ.VM().(*vmtypes.StructType)
+		classID := func(name string) int64 { return int64(c.classes[name].classID) }
+		return interp.NewHostFunction(
+			&vmtypes.FunctionType{Params: []vmtypes.Type{vmtypes.TypeAny}, Returns: []vmtypes.Type{c.classes["BaseException"].typ.VM()}},
+			func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+				class := classID("RuntimeError")
+				message := ""
+				if params[0].Kind() == vmtypes.KindRef && params[0].Ref() != 0 {
+					if val, err := i.Load(params[0].Ref()); err == nil {
+						if exc, ok := val.(*vmtypes.Error); ok {
+							message = exc.Error()
+							switch {
+							case errors.Is(exc.Unwrap(), interp.ErrDivideByZero):
+								class = classID("ZeroDivisionError")
+							case errors.Is(exc.Unwrap(), interp.ErrIndexOutOfRange):
+								class = classID("IndexError")
+							case errors.Is(exc.Unwrap(), interp.ErrTypeMismatch):
+								class = classID("TypeError")
+							case errors.Is(exc.Unwrap(), errListIndexValue),
+								errors.Is(exc.Unwrap(), errListRemoveValue),
+								errors.Is(exc.Unwrap(), errListSliceLength),
+								errors.Is(exc.Unwrap(), errExtendedSlice),
+								errors.Is(exc.Unwrap(), errSliceStep),
+								errors.Is(exc.Unwrap(), builtins.ErrIntValue),
+								errors.Is(exc.Unwrap(), builtins.ErrFloatValue),
+								errors.Is(exc.Unwrap(), builtins.ErrRangeStep),
+								errors.Is(exc.Unwrap(), builtins.ErrOrdValue),
+								errors.Is(exc.Unwrap(), builtins.ErrChrValue),
+								errors.Is(exc.Unwrap(), pyoperator.ErrNegativeExponent):
+								class = classID("ValueError")
+							case errors.Is(exc.Unwrap(), errDictKeyError):
+								class = classID("KeyError")
+							case errors.Is(exc.Unwrap(), pyoperator.ErrRepeatOverflow):
+								class = classID("OverflowError")
+							}
 						}
 					}
 				}
-			}
-			msg, err := hostabi.AllocString(i, message)
-			if err != nil {
-				return nil, err
-			}
-			addr, err := i.Alloc(vmtypes.NewStruct(excType, vmtypes.BoxI64(class), msg[0]))
-			if err != nil {
-				return nil, err
-			}
-			return []vmtypes.Boxed{vmtypes.BoxRef(addr)}, nil
-		},
-	)
+				msg, err := hostabi.AllocString(i, message)
+				if err != nil {
+					return nil, err
+				}
+				addr, err := i.Alloc(vmtypes.NewStruct(excType, vmtypes.BoxI64(class), msg[0]))
+				if err != nil {
+					return nil, err
+				}
+				return []vmtypes.Boxed{vmtypes.BoxRef(addr)}, nil
+			},
+		)
+	})
 }
 
 func parseFormatSpec(spec string) formatSpec {
@@ -2015,374 +2109,368 @@ func sliceIndexes(length int, rawStart, rawStop, rawStep int64) ([]int, error) {
 	return out, nil
 }
 
+// mapGet looks key up in a dict/set receiver. The returned value is borrowed:
+// it still belongs to the receiver.
 func mapGet(i *interp.Interpreter, ref vmtypes.Boxed, key vmtypes.Boxed) (vmtypes.Boxed, bool, error) {
-	if ref.Kind() != vmtypes.KindRef || ref.Ref() == 0 {
-		return 0, false, interp.ErrTypeMismatch
-	}
-	val, err := i.Load(ref.Ref())
+	value, err := hostabi.LoadMap(i, ref)
 	if err != nil {
 		return 0, false, err
 	}
-	switch m := val.(type) {
-	case *vmtypes.TypedMap[bool]:
-		value, ok := m.Get(key.Bool())
-		return value, ok, nil
-	case *vmtypes.TypedMap[int32]:
-		value, ok := m.Get(key.I32())
-		return value, ok, nil
-	case *vmtypes.TypedMap[int64]:
-		n, err := hostabi.LoadI64(i, key)
-		if err != nil {
-			return 0, false, err
-		}
-		value, ok := m.Get(n)
-		return value, ok, nil
-	case *vmtypes.TypedMap[float32]:
-		value, ok := m.Get(key.F32())
-		return value, ok, nil
-	case *vmtypes.TypedMap[float64]:
-		value, ok := m.Get(key.F64())
-		return value, ok, nil
-	case *vmtypes.Map:
-		entry, ok := m.Get(mapKey(key))
-		return entry.Value, ok, nil
-	default:
-		return 0, false, interp.ErrTypeMismatch
-	}
+	return hostabi.MapGet(i, value, key)
 }
 
+// mapEntries reads a dict/set receiver's keys and values in matching order. The
+// keys are owned by the caller and MUST be released with hostabi.ReleaseBoxes
+// once it is done with them; the values are borrowed. See hostabi.MapEntries.
 func mapEntries(i *interp.Interpreter, ref vmtypes.Boxed) ([]vmtypes.Boxed, []vmtypes.Boxed, error) {
-	if ref.Kind() != vmtypes.KindRef || ref.Ref() == 0 {
-		return nil, nil, interp.ErrTypeMismatch
-	}
-	val, err := i.Load(ref.Ref())
+	value, err := hostabi.LoadMap(i, ref)
 	if err != nil {
 		return nil, nil, err
 	}
-	var keys, vals []vmtypes.Boxed
-	switch m := val.(type) {
-	case *vmtypes.TypedMap[bool]:
-		m.Range(func(k bool, v vmtypes.Boxed) {
-			keys = append(keys, vmtypes.BoxI1(k))
-			vals = append(vals, v)
-		})
-	case *vmtypes.TypedMap[int32]:
-		m.Range(func(k int32, v vmtypes.Boxed) {
-			keys = append(keys, vmtypes.BoxI32(k))
-			vals = append(vals, v)
-		})
-	case *vmtypes.TypedMap[int64]:
-		m.Range(func(k int64, v vmtypes.Boxed) {
-			keys = append(keys, vmtypes.BoxI64(k))
-			vals = append(vals, v)
-		})
-	case *vmtypes.TypedMap[float32]:
-		m.Range(func(k float32, v vmtypes.Boxed) {
-			keys = append(keys, vmtypes.BoxF32(k))
-			vals = append(vals, v)
-		})
-	case *vmtypes.TypedMap[float64]:
-		m.Range(func(k float64, v vmtypes.Boxed) {
-			keys = append(keys, vmtypes.BoxF64(k))
-			vals = append(vals, v)
-		})
-	case *vmtypes.Map:
-		m.Range(func(_ vmtypes.MapKey, entry vmtypes.MapEntry) {
-			keys = append(keys, entry.Key)
-			vals = append(vals, entry.Value)
-		})
-	default:
-		return nil, nil, interp.ErrTypeMismatch
-	}
-	return keys, vals, nil
-}
-
-func mapKey(v vmtypes.Boxed) vmtypes.MapKey {
-	switch v.Kind() {
-	// bool lowers to i1 uniformly (literals and comparison results alike).
-	case vmtypes.KindI1:
-		return vmtypes.MapKey{Kind: vmtypes.KindI1, Bits: uint64(uint32(v.I32()))}
-	case vmtypes.KindI64:
-		return vmtypes.MapKey{Kind: vmtypes.KindI64, Bits: uint64(v.I64())}
-	case vmtypes.KindF32:
-		return vmtypes.MapKey{Kind: vmtypes.KindF32, Bits: uint64(math.Float32bits(v.F32()))}
-	case vmtypes.KindF64:
-		return vmtypes.MapKey{Kind: vmtypes.KindF64, Bits: math.Float64bits(v.F64())}
-	default:
-		return vmtypes.MapKey{Kind: vmtypes.KindRef, Bits: uint64(v.Ref())}
-	}
+	return hostabi.MapEntries(i, value)
 }
 
 // --- Set methods ---
 
 func (c *lowerer) setRemove(receiver types.Type) *interp.HostFunction {
-	set := receiver.(*types.Set)
-	return interp.NewHostFunction(
-		&vmtypes.FunctionType{Params: []vmtypes.Type{receiver.VM(), set.Elem.VM()}},
-		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
-			val, err := i.Load(params[0].Ref())
-			if err != nil {
-				return nil, err
-			}
-			_, ok := mapDelete(val, params[1])
-			if !ok {
-				return nil, errDictKeyError
-			}
-			return nil, nil
-		},
-	)
+	return c.host(hostKey("setRemove", receiver), func() *interp.HostFunction {
+		set := receiver.(*types.Set)
+		return interp.NewHostFunction(
+			&vmtypes.FunctionType{Params: []vmtypes.Type{receiver.VM(), set.Elem.VM()}},
+			func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+				val, err := i.Load(params[0].Ref())
+				if err != nil {
+					return nil, err
+				}
+				_, ok, err := mapDelete(i, val, params[1])
+				if err != nil {
+					return nil, err
+				}
+				if !ok {
+					return nil, errDictKeyError
+				}
+				return nil, nil
+			},
+		)
+	})
 }
 
 func (c *lowerer) setDiscard(receiver types.Type) *interp.HostFunction {
-	set := receiver.(*types.Set)
-	return interp.NewHostFunction(
-		&vmtypes.FunctionType{Params: []vmtypes.Type{receiver.VM(), set.Elem.VM()}},
-		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
-			val, err := i.Load(params[0].Ref())
-			if err != nil {
-				return nil, err
-			}
-			mapDelete(val, params[1])
-			return nil, nil
-		},
-	)
+	return c.host(hostKey("setDiscard", receiver), func() *interp.HostFunction {
+		set := receiver.(*types.Set)
+		return interp.NewHostFunction(
+			&vmtypes.FunctionType{Params: []vmtypes.Type{receiver.VM(), set.Elem.VM()}},
+			func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+				val, err := i.Load(params[0].Ref())
+				if err != nil {
+					return nil, err
+				}
+				if _, _, err := mapDelete(i, val, params[1]); err != nil {
+					return nil, err
+				}
+				return nil, nil
+			},
+		)
+	})
 }
 
 func (c *lowerer) setPop(receiver types.Type, result types.Type) *interp.HostFunction {
-	set := receiver.(*types.Set)
-	return interp.NewHostFunction(
-		&vmtypes.FunctionType{Params: []vmtypes.Type{receiver.VM()}, Returns: []vmtypes.Type{set.Elem.VM()}},
-		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
-			keys, _, err := mapEntries(i, params[0])
-			if err != nil {
-				return nil, err
-			}
-			if len(keys) == 0 {
-				return nil, errDictKeyError
-			}
-			key := keys[0]
-			val, err := i.Load(params[0].Ref())
-			if err != nil {
-				return nil, err
-			}
-			mapDelete(val, key)
-			return []vmtypes.Boxed{key}, nil
-		},
-	)
+	return c.host(hostKey("setPop", receiver, result), func() *interp.HostFunction {
+		set := receiver.(*types.Set)
+		return interp.NewHostFunction(
+			&vmtypes.FunctionType{Params: []vmtypes.Type{receiver.VM()}, Returns: []vmtypes.Type{set.Elem.VM()}},
+			func(i *interp.Interpreter, params []vmtypes.Boxed) (_ []vmtypes.Boxed, err error) {
+				keys, _, err := mapEntries(i, params[0])
+				if err != nil {
+					return nil, err
+				}
+				// The popped key is handed to the caller, so this call keeps the
+				// reference mapEntries gave it for that one and releases the rest.
+				defer func() { err = errors.Join(err, hostabi.ReleaseBoxes(i, keys[min(len(keys), 1):])) }()
+				if len(keys) == 0 {
+					return nil, errDictKeyError
+				}
+				key := keys[0]
+				val, err := i.Load(params[0].Ref())
+				if err != nil {
+					return nil, err
+				}
+				if _, _, err := mapDelete(i, val, key); err != nil {
+					return nil, err
+				}
+				return []vmtypes.Boxed{key}, nil
+			},
+		)
+	})
 }
 
 func (c *lowerer) setCopy(receiver types.Type) *interp.HostFunction {
-	return interp.NewHostFunction(
-		&vmtypes.FunctionType{Params: []vmtypes.Type{receiver.VM()}, Returns: []vmtypes.Type{receiver.VM()}},
-		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
-			src, err := i.Load(params[0].Ref())
-			if err != nil {
-				return nil, err
-			}
-			mt, ok := src.Type().(*vmtypes.MapType)
-			if !ok {
-				return nil, interp.ErrTypeMismatch
-			}
-			keys, vals, err := mapEntries(i, params[0])
-			if err != nil {
-				return nil, err
-			}
-			// key/vals[idx] are borrowed from the source set; out becomes
-			// their second owner, so they need their own retain (see
-			// hostabi's package doc comment).
-			out := vmtypes.NewMapForType(mt, len(keys))
-			for idx, key := range keys {
-				if err := hostabi.RetainBoxes(i, []vmtypes.Boxed{key, vals[idx]}); err != nil {
+	return c.host(hostKey("setCopy", receiver), func() *interp.HostFunction {
+		return interp.NewHostFunction(
+			&vmtypes.FunctionType{Params: []vmtypes.Type{receiver.VM()}, Returns: []vmtypes.Type{receiver.VM()}},
+			func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+				src, err := i.Load(params[0].Ref())
+				if err != nil {
 					return nil, err
 				}
-				if err := mapSet(out, key, vals[idx]); err != nil {
+				mt, ok := src.Type().(*vmtypes.MapType)
+				if !ok {
+					return nil, interp.ErrTypeMismatch
+				}
+				keys, vals, err := mapEntries(i, params[0])
+				if err != nil {
 					return nil, err
 				}
-			}
-			addr, err := i.Alloc(out)
-			if err != nil {
-				return nil, err
-			}
-			return []vmtypes.Boxed{vmtypes.BoxRef(addr)}, nil
-		},
-	)
+				defer func() { err = errors.Join(err, hostabi.ReleaseBoxes(i, keys)) }()
+				// vals[idx] is borrowed from the source set; key is owned by this
+				// call and released by the defer above. Either way out becomes a
+				// second owner, so both need their own retain (see hostabi's
+				// package doc comment).
+				out := vmtypes.NewMapForType(mt, len(keys))
+				for idx, key := range keys {
+					if err := hostabi.RetainBoxes(i, []vmtypes.Boxed{key, vals[idx]}); err != nil {
+						return nil, err
+					}
+					if err := mapSet(i, out, key, vals[idx]); err != nil {
+						return nil, err
+					}
+				}
+				addr, err := i.Alloc(out)
+				if err != nil {
+					return nil, err
+				}
+				return []vmtypes.Boxed{vmtypes.BoxRef(addr)}, nil
+			},
+		)
+	})
 }
 
 func (c *lowerer) setUnion(receiver types.Type) *interp.HostFunction {
-	return interp.NewHostFunction(
-		&vmtypes.FunctionType{Params: []vmtypes.Type{receiver.VM(), receiver.VM()}, Returns: []vmtypes.Type{receiver.VM()}},
-		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
-			src, err := i.Load(params[0].Ref())
-			if err != nil {
-				return nil, err
-			}
-			mt, ok := src.Type().(*vmtypes.MapType)
-			if !ok {
-				return nil, interp.ErrTypeMismatch
-			}
-			leftKeys, leftVals, err := mapEntries(i, params[0])
-			if err != nil {
-				return nil, err
-			}
-			rightKeys, rightVals, err := mapEntries(i, params[1])
-			if err != nil {
-				return nil, err
-			}
-			// Entries from both operand sets are borrowed; out becomes their
-			// second owner, so they need their own retain (see hostabi's
-			// package doc comment).
-			out := vmtypes.NewMapForType(mt, len(leftKeys)+len(rightKeys))
-			for idx, key := range leftKeys {
-				if err := hostabi.RetainBoxes(i, []vmtypes.Boxed{key, leftVals[idx]}); err != nil {
+	return c.host(hostKey("setUnion", receiver), func() *interp.HostFunction {
+		return interp.NewHostFunction(
+			&vmtypes.FunctionType{Params: []vmtypes.Type{receiver.VM(), receiver.VM()}, Returns: []vmtypes.Type{receiver.VM()}},
+			func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+				src, err := i.Load(params[0].Ref())
+				if err != nil {
 					return nil, err
 				}
-				if err := mapSet(out, key, leftVals[idx]); err != nil {
+				mt, ok := src.Type().(*vmtypes.MapType)
+				if !ok {
+					return nil, interp.ErrTypeMismatch
+				}
+				leftKeys, leftVals, err := mapEntries(i, params[0])
+				if err != nil {
 					return nil, err
 				}
-			}
-			for idx, key := range rightKeys {
-				if err := hostabi.RetainBoxes(i, []vmtypes.Boxed{key, rightVals[idx]}); err != nil {
+				defer func() { err = errors.Join(err, hostabi.ReleaseBoxes(i, leftKeys)) }()
+				rightKeys, rightVals, err := mapEntries(i, params[1])
+				if err != nil {
 					return nil, err
 				}
-				if err := mapSet(out, key, rightVals[idx]); err != nil {
+				defer func() { err = errors.Join(err, hostabi.ReleaseBoxes(i, rightKeys)) }()
+				// Entries from both operand sets are borrowed; out becomes their
+				// second owner, so they need their own retain (see hostabi's
+				// package doc comment).
+				out := vmtypes.NewMapForType(mt, len(leftKeys)+len(rightKeys))
+				for idx, key := range leftKeys {
+					if err := hostabi.RetainBoxes(i, []vmtypes.Boxed{key, leftVals[idx]}); err != nil {
+						return nil, err
+					}
+					if err := mapSet(i, out, key, leftVals[idx]); err != nil {
+						return nil, err
+					}
+				}
+				for idx, key := range rightKeys {
+					if err := hostabi.RetainBoxes(i, []vmtypes.Boxed{key, rightVals[idx]}); err != nil {
+						return nil, err
+					}
+					if err := mapSet(i, out, key, rightVals[idx]); err != nil {
+						return nil, err
+					}
+				}
+				addr, err := i.Alloc(out)
+				if err != nil {
 					return nil, err
 				}
-			}
-			addr, err := i.Alloc(out)
-			if err != nil {
-				return nil, err
-			}
-			return []vmtypes.Boxed{vmtypes.BoxRef(addr)}, nil
-		},
-	)
+				return []vmtypes.Boxed{vmtypes.BoxRef(addr)}, nil
+			},
+		)
+	})
 }
 
 func (c *lowerer) setIntersection(receiver types.Type) *interp.HostFunction {
-	return interp.NewHostFunction(
-		&vmtypes.FunctionType{Params: []vmtypes.Type{receiver.VM(), receiver.VM()}, Returns: []vmtypes.Type{receiver.VM()}},
-		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
-			src, err := i.Load(params[0].Ref())
-			if err != nil {
-				return nil, err
-			}
-			mt, ok := src.Type().(*vmtypes.MapType)
-			if !ok {
-				return nil, interp.ErrTypeMismatch
-			}
-			leftKeys, leftVals, err := mapEntries(i, params[0])
-			if err != nil {
-				return nil, err
-			}
-			out := vmtypes.NewMapForType(mt, 0)
-			for idx, key := range leftKeys {
-				_, found, err := mapGet(i, params[1], key)
+	return c.host(hostKey("setIntersection", receiver), func() *interp.HostFunction {
+		return interp.NewHostFunction(
+			&vmtypes.FunctionType{Params: []vmtypes.Type{receiver.VM(), receiver.VM()}, Returns: []vmtypes.Type{receiver.VM()}},
+			func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+				src, err := i.Load(params[0].Ref())
 				if err != nil {
 					return nil, err
 				}
-				if found {
-					// key/leftVals[idx] are borrowed from the source set;
-					// out becomes their second owner, so they need their
-					// own retain (see hostabi's package doc comment).
-					if err := hostabi.RetainBoxes(i, []vmtypes.Boxed{key, leftVals[idx]}); err != nil {
+				mt, ok := src.Type().(*vmtypes.MapType)
+				if !ok {
+					return nil, interp.ErrTypeMismatch
+				}
+				leftKeys, leftVals, err := mapEntries(i, params[0])
+				if err != nil {
+					return nil, err
+				}
+				defer func() { err = errors.Join(err, hostabi.ReleaseBoxes(i, leftKeys)) }()
+				out := vmtypes.NewMapForType(mt, 0)
+				for idx, key := range leftKeys {
+					_, found, err := mapGet(i, params[1], key)
+					if err != nil {
 						return nil, err
 					}
-					if err := mapSet(out, key, leftVals[idx]); err != nil {
-						return nil, err
+					if found {
+						// leftVals[idx] is borrowed from the source set; key is
+						// owned by this call and released by the defer above.
+						// Either way out becomes a second owner, so both need
+						// their own retain (see hostabi's package doc comment).
+						if err := hostabi.RetainBoxes(i, []vmtypes.Boxed{key, leftVals[idx]}); err != nil {
+							return nil, err
+						}
+						if err := mapSet(i, out, key, leftVals[idx]); err != nil {
+							return nil, err
+						}
 					}
 				}
-			}
-			addr, err := i.Alloc(out)
-			if err != nil {
-				return nil, err
-			}
-			return []vmtypes.Boxed{vmtypes.BoxRef(addr)}, nil
-		},
-	)
+				addr, err := i.Alloc(out)
+				if err != nil {
+					return nil, err
+				}
+				return []vmtypes.Boxed{vmtypes.BoxRef(addr)}, nil
+			},
+		)
+	})
 }
 
 func (c *lowerer) setDifference(receiver types.Type) *interp.HostFunction {
-	return interp.NewHostFunction(
-		&vmtypes.FunctionType{Params: []vmtypes.Type{receiver.VM(), receiver.VM()}, Returns: []vmtypes.Type{receiver.VM()}},
-		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
-			src, err := i.Load(params[0].Ref())
-			if err != nil {
-				return nil, err
-			}
-			mt, ok := src.Type().(*vmtypes.MapType)
-			if !ok {
-				return nil, interp.ErrTypeMismatch
-			}
-			leftKeys, leftVals, err := mapEntries(i, params[0])
-			if err != nil {
-				return nil, err
-			}
-			out := vmtypes.NewMapForType(mt, 0)
-			for idx, key := range leftKeys {
-				_, found, err := mapGet(i, params[1], key)
+	return c.host(hostKey("setDifference", receiver), func() *interp.HostFunction {
+		return interp.NewHostFunction(
+			&vmtypes.FunctionType{Params: []vmtypes.Type{receiver.VM(), receiver.VM()}, Returns: []vmtypes.Type{receiver.VM()}},
+			func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+				src, err := i.Load(params[0].Ref())
 				if err != nil {
 					return nil, err
 				}
-				if !found {
-					// key/leftVals[idx] are borrowed from the source set;
-					// out becomes their second owner, so they need their
-					// own retain (see hostabi's package doc comment).
-					if err := hostabi.RetainBoxes(i, []vmtypes.Boxed{key, leftVals[idx]}); err != nil {
+				mt, ok := src.Type().(*vmtypes.MapType)
+				if !ok {
+					return nil, interp.ErrTypeMismatch
+				}
+				leftKeys, leftVals, err := mapEntries(i, params[0])
+				if err != nil {
+					return nil, err
+				}
+				defer func() { err = errors.Join(err, hostabi.ReleaseBoxes(i, leftKeys)) }()
+				out := vmtypes.NewMapForType(mt, 0)
+				for idx, key := range leftKeys {
+					_, found, err := mapGet(i, params[1], key)
+					if err != nil {
 						return nil, err
 					}
-					if err := mapSet(out, key, leftVals[idx]); err != nil {
-						return nil, err
+					if !found {
+						// leftVals[idx] is borrowed from the source set; key is
+						// owned by this call and released by the defer above.
+						// Either way out becomes a second owner, so both need
+						// their own retain (see hostabi's package doc comment).
+						if err := hostabi.RetainBoxes(i, []vmtypes.Boxed{key, leftVals[idx]}); err != nil {
+							return nil, err
+						}
+						if err := mapSet(i, out, key, leftVals[idx]); err != nil {
+							return nil, err
+						}
 					}
 				}
-			}
-			addr, err := i.Alloc(out)
-			if err != nil {
-				return nil, err
-			}
-			return []vmtypes.Boxed{vmtypes.BoxRef(addr)}, nil
-		},
-	)
+				addr, err := i.Alloc(out)
+				if err != nil {
+					return nil, err
+				}
+				return []vmtypes.Boxed{vmtypes.BoxRef(addr)}, nil
+			},
+		)
+	})
 }
 
 func (c *lowerer) setIsSubset(receiver types.Type) *interp.HostFunction {
-	return interp.NewHostFunction(
-		&vmtypes.FunctionType{Params: []vmtypes.Type{receiver.VM(), receiver.VM()}, Returns: []vmtypes.Type{vmtypes.TypeI1}},
-		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
-			leftKeys, _, err := mapEntries(i, params[0])
-			if err != nil {
-				return nil, err
-			}
-			for _, key := range leftKeys {
-				_, found, err := mapGet(i, params[1], key)
+	return c.host(hostKey("setIsSubset", receiver), func() *interp.HostFunction {
+		return interp.NewHostFunction(
+			&vmtypes.FunctionType{Params: []vmtypes.Type{receiver.VM(), receiver.VM()}, Returns: []vmtypes.Type{vmtypes.TypeI1}},
+			func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+				leftKeys, _, err := mapEntries(i, params[0])
 				if err != nil {
 					return nil, err
 				}
-				if !found {
-					return []vmtypes.Boxed{vmtypes.BoxI1(false)}, nil
+				defer func() { err = errors.Join(err, hostabi.ReleaseBoxes(i, leftKeys)) }()
+				for _, key := range leftKeys {
+					_, found, err := mapGet(i, params[1], key)
+					if err != nil {
+						return nil, err
+					}
+					if !found {
+						return []vmtypes.Boxed{vmtypes.BoxI1(false)}, nil
+					}
 				}
-			}
-			return []vmtypes.Boxed{vmtypes.BoxI1(true)}, nil
-		},
-	)
+				return []vmtypes.Boxed{vmtypes.BoxI1(true)}, nil
+			},
+		)
+	})
 }
 
 func (c *lowerer) setIsSuperset(receiver types.Type) *interp.HostFunction {
-	return interp.NewHostFunction(
-		&vmtypes.FunctionType{Params: []vmtypes.Type{receiver.VM(), receiver.VM()}, Returns: []vmtypes.Type{vmtypes.TypeI1}},
-		func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
-			rightKeys, _, err := mapEntries(i, params[1])
-			if err != nil {
-				return nil, err
-			}
-			for _, key := range rightKeys {
-				_, found, err := mapGet(i, params[0], key)
+	return c.host(hostKey("setIsSuperset", receiver), func() *interp.HostFunction {
+		return interp.NewHostFunction(
+			&vmtypes.FunctionType{Params: []vmtypes.Type{receiver.VM(), receiver.VM()}, Returns: []vmtypes.Type{vmtypes.TypeI1}},
+			func(i *interp.Interpreter, params []vmtypes.Boxed) ([]vmtypes.Boxed, error) {
+				rightKeys, _, err := mapEntries(i, params[1])
 				if err != nil {
 					return nil, err
 				}
-				if !found {
-					return []vmtypes.Boxed{vmtypes.BoxI1(false)}, nil
+				defer func() { err = errors.Join(err, hostabi.ReleaseBoxes(i, rightKeys)) }()
+				for _, key := range rightKeys {
+					_, found, err := mapGet(i, params[0], key)
+					if err != nil {
+						return nil, err
+					}
+					if !found {
+						return []vmtypes.Boxed{vmtypes.BoxI1(false)}, nil
+					}
 				}
-			}
-			return []vmtypes.Boxed{vmtypes.BoxI1(true)}, nil
-		},
-	)
+				return []vmtypes.Boxed{vmtypes.BoxI1(true)}, nil
+			},
+		)
+	})
+}
+
+// stringHost is the str() conversion for one static type. It is the most
+// repeated host call a module makes — every print of a non-string goes through
+// one — so it is interned per type like the container factories above.
+func (c *lowerer) stringHost(t types.Type) *interp.HostFunction {
+	return c.host(hostKey("str", t), func() *interp.HostFunction {
+		return hostabi.StringFunction(t)
+	})
+}
+
+// host returns the host function this compilation uses for one operation,
+// building it at most once. A factory allocates a fresh closure per call and the
+// constant pool interns by pointer identity, so without this every `str(n)` and
+// every `xs.sort()` in a module adds another identical entry to the pool.
+func (c *lowerer) host(key string, build func() *interp.HostFunction) *interp.HostFunction {
+	if function, ok := c.hosts[key]; ok {
+		return function
+	}
+	function := build()
+	c.hosts[key] = function
+	return function
+}
+
+// hostKey identifies one host function by its operation and the arguments that
+// shape it, so two factories that happen to share a signature stay distinct and
+// two calls that would build the same closure collapse into one.
+func hostKey(name string, args ...any) string {
+	key := name
+	for _, arg := range args {
+		key += "/" + fmt.Sprint(arg)
+	}
+	return key
 }

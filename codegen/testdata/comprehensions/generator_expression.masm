@@ -1,0 +1,76 @@
+# instructions   50
+# functions      1
+# host functions 2
+# constants      3
+# types          0
+# globals        2
+# locals         1
+# handlers       0
+
+.code
+0000:	i64.const 0x0000000000000000
+0009:	global.set 0x0000
+0012:	const.get 0x0000
+0015:	call
+0016:	local.set 0x00
+L0018:
+0018:	local.get 0x00
+0020:	coro.done
+0021:	br_if L0048
+0024:	local.get 0x00
+0026:	coro.value
+0027:	global.set 0x0001
+0030:	global.get 0x0000
+0033:	global.get 0x0001
+0036:	i64.add
+0037:	global.set 0x0000
+0040:	local.get 0x00
+0042:	ref.null
+0043:	resume
+0044:	drop
+0045:	br L0018
+L0048:
+0048:	global.get 0x0000
+0051:	const.get 0x0001
+0054:	call
+0055:	const.get 0x0002
+0058:	call
+0059:	ref.null
+0060:	drop
+0061:	nop
+
+.locals
+0000:	any
+
+.globals
+0000:	i64
+0001:	i64
+
+.constants
+0000:	func() any
+	0000:	i64.const 0x0000000000000000
+	0009:	local.set 0x01
+	0011:	i64.const 0x0000000000000005
+	0020:	local.set 0x02
+	0022:	br L0057
+	L0025:
+	0025:	local.get 0x01
+	0027:	local.set 0x00
+	0029:	local.get 0x00
+	0031:	i64.const 0x0000000000000002
+	0040:	i64.mul
+	0041:	yield
+	0042:	drop
+	0043:	local.get 0x01
+	0045:	i64.const 0x0000000000000001
+	0054:	i64.add
+	0055:	local.set 0x01
+	L0057:
+	0057:	local.get 0x01
+	0059:	local.get 0x02
+	0061:	i64.lt_s
+	0062:	br_if L0025
+	0065:	ref.null
+	0066:	return
+0001:	<host> func(i64) string
+0002:	<host> func(string)

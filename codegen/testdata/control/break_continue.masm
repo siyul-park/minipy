@@ -1,0 +1,71 @@
+# instructions   43
+# functions      0
+# host functions 2
+# constants      2
+# types          0
+# globals        2
+# locals         2
+# handlers       0
+
+.code
+0000:	i64.const 0x0000000000000000
+0009:	global.set 0x0000
+0012:	i64.const 0x0000000000000000
+0021:	local.set 0x00
+0023:	i64.const 0x000000000000000A
+0032:	local.set 0x01
+0034:	br L0112
+L0037:
+0037:	local.get 0x00
+0039:	global.set 0x0001
+0042:	global.get 0x0001
+0045:	i64.const 0x0000000000000003
+0054:	i64.eq
+0055:	i32.eqz
+0056:	br_if L0065
+0059:	br L0098
+0062:	br L0065
+L0065:
+0065:	global.get 0x0001
+0068:	i64.const 0x0000000000000006
+0077:	i64.eq
+0078:	i32.eqz
+0079:	br_if L0088
+0082:	br L0120
+0085:	br L0088
+L0088:
+0088:	global.get 0x0000
+0091:	global.get 0x0001
+0094:	i64.add
+0095:	global.set 0x0000
+L0098:
+0098:	local.get 0x00
+0100:	i64.const 0x0000000000000001
+0109:	i64.add
+0110:	local.set 0x00
+L0112:
+0112:	local.get 0x00
+0114:	local.get 0x01
+0116:	i64.lt_s
+0117:	br_if L0037
+L0120:
+0120:	global.get 0x0000
+0123:	const.get 0x0000
+0126:	call
+0127:	const.get 0x0001
+0130:	call
+0131:	ref.null
+0132:	drop
+0133:	nop
+
+.locals
+0000:	i64
+0001:	i64
+
+.globals
+0000:	i64
+0001:	i64
+
+.constants
+0000:	<host> func(i64) string
+0001:	<host> func(string)

@@ -1,0 +1,56 @@
+# instructions   30
+# functions      0
+# host functions 2
+# constants      3
+# types          1
+# globals        3
+# locals         1
+# handlers       0
+
+.code
+0000:	struct.new_default 0x0000
+0003:	dup
+0004:	i32.const 0x00000000
+0009:	i64.const 0x0000000000000001
+0018:	struct.set
+0019:	dup
+0020:	i32.const 0x00000001
+0025:	const.get 0x0000
+0028:	struct.set
+0029:	global.set 0x0000
+0032:	global.get 0x0000
+0035:	local.set 0x00
+0037:	local.get 0x00
+0039:	i32.const 0x00000000
+0044:	struct.get
+0045:	global.set 0x0001
+0048:	local.get 0x00
+0050:	i32.const 0x00000001
+0055:	struct.get
+0056:	global.set 0x0002
+0059:	global.get 0x0001
+0062:	const.get 0x0001
+0065:	call
+0066:	global.get 0x0002
+0069:	string.concat
+0070:	const.get 0x0002
+0073:	call
+0074:	ref.null
+0075:	drop
+0076:	nop
+
+.locals
+0000:	any
+
+.globals
+0000:	any
+0001:	i64
+0002:	any
+
+.constants
+0000:	string "x"
+0001:	<host> func(i64) string
+0002:	<host> func(string)
+
+.types
+0000:	struct {i64; string}

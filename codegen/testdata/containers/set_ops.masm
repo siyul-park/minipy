@@ -1,0 +1,60 @@
+# instructions   39
+# functions      0
+# host functions 3
+# constants      3
+# types          1
+# globals        1
+# locals         0
+# handlers       0
+
+.code
+0000:	i64.const 0x0000000000000001
+0009:	i32.const 0x00000001
+0014:	i64.const 0x0000000000000002
+0023:	i32.const 0x00000001
+0028:	i64.const 0x0000000000000003
+0037:	i32.const 0x00000001
+0042:	i32.const 0x00000003
+0047:	map.new 0x0000
+0050:	global.set 0x0000
+0053:	global.get 0x0000
+0056:	i64.const 0x0000000000000004
+0065:	i32.const 0x00000001
+0070:	map.set
+0071:	ref.null
+0072:	drop
+0073:	i64.const 0x0000000000000002
+0082:	global.get 0x0000
+0085:	swap
+0086:	map.lookup
+0087:	swap
+0088:	drop
+0089:	i32.const 0x00000000
+0094:	i32.ne
+0095:	const.get 0x0000
+0098:	call
+0099:	const.get 0x0001
+0102:	call
+0103:	ref.null
+0104:	drop
+0105:	global.get 0x0000
+0108:	map.len
+0109:	i32.to_i64_s
+0110:	const.get 0x0002
+0113:	call
+0114:	const.get 0x0001
+0117:	call
+0118:	ref.null
+0119:	drop
+0120:	nop
+
+.globals
+0000:	any
+
+.constants
+0000:	<host> func(i1) string
+0001:	<host> func(string)
+0002:	<host> func(i64) string
+
+.types
+0000:	map[i64]i1

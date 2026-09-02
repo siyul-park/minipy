@@ -38,6 +38,7 @@ go test ./...
 go vet ./...
 go test ./compiler ./parser ./lexer
 go test -run TestCompile ./compiler
+go test ./codegen           # emitted-program goldens; -update rewrites them
 go run ./cmd/minipy --help
 ```
 
@@ -55,6 +56,7 @@ automated verification.
 | builtins / operators / native modules | SS5-SS9, SS11; `docs/spec/06-builtins.md` | `builtins/`, `operator/`, `module/`, `typing/` | `go test ./builtins ./operator ./module ./typing ./compiler` |
 | module graph / imports | SS5-SS10; `docs/spec/00-overview.md`, `docs/spec/04-static-semantics.md` | `compiler/`, `module/` | `go test ./compiler ./module` |
 | CLI / REPL | SS3-SS5, SS9-SS11; `README.md`, `docs/spec/00-overview.md` | `cmd/minipy/` | `go test ./cmd/minipy ./compiler` |
+| emitted bytecode quality | SS6-SS11; `docs/codegen-quality.md`, `docs/spec/05-codegen.md` | `compiler/lower*.go`, `codegen/testdata/` | `go test ./codegen ./compiler` |
 | coding standard | all of `docs/coding-patterns.md` | the standard, this file, tool overlays | docs review + `go test ./...` when code changes |
 | compatibility / status | SS12; `docs/README.md` | `docs/`, `README.md` | docs review + owning package tests |
 
@@ -95,7 +97,8 @@ source -> tokens -> AST -> checked module graph -> lowered program
   checker or lowerer.
 - Mutable compilation state belongs to one invocation, not reusable compiler
   configuration.
-- Transform order remains visible; metadata removed for optimization is restored.
+- Transform order remains visible; the optimizer owns every table it rewrites
+  and its result is never overwritten with a pre-optimization copy.
 - Every returned minivm program is verified after all transforms.
 - User-facing behavior updates the owning spec and status documents.
 
