@@ -92,9 +92,13 @@ var listMethods = methodTable(
 		},
 		emit: func(c *lowerer, recv types.Type, call *ast.CallExpr) {
 			if len(call.Args) == 0 {
+				// The omitted index is the last element; -1 is a known
+				// constant, so it normalizes without a runtime test.
 				c.emit(instr.I64_CONST, ^uint64(0))
+				c.emitArrayDelete(-1, true)
+				return
 			}
-			c.emitArrayDelete()
+			c.emitArrayDelete(constIndex(call.Args[0]))
 		},
 	},
 	builtinMethod{

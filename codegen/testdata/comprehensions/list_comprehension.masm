@@ -1,4 +1,4 @@
-# instructions   55
+# instructions   41
 # functions      0
 # host functions 3
 # constants      3
@@ -41,32 +41,16 @@ L0076:
 0078:	global.set 0x0000
 0081:	global.get 0x0000
 0084:	i64.const 0x0000000000000004
-0093:	local.set 0x01
-0095:	local.set 0x02
-0097:	local.get 0x01
-0099:	i64.const 0x0000000000000000
-0108:	i64.lt_s
-0109:	br_if L0115
-0112:	br L0124
-L0115:
-0115:	local.get 0x01
-0117:	local.get 0x02
-0119:	array.len
-0120:	i32.to_i64_s
-0121:	i64.add
-0122:	local.set 0x01
-L0124:
-0124:	local.get 0x02
-0126:	local.get 0x01
-0128:	i64.to_i32
-0129:	array.get
-0130:	const.get 0x0001
-0133:	call
-0134:	const.get 0x0002
-0137:	call
-0138:	ref.null
-0139:	drop
-0140:	nop
+0093:	drop
+0094:	i32.const 0x00000004
+0099:	array.get
+0100:	const.get 0x0001
+0103:	call
+0104:	const.get 0x0002
+0107:	call
+0108:	ref.null
+0109:	drop
+0110:	nop
 
 .locals
 0000:	any

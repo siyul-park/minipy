@@ -213,7 +213,7 @@ func (c *lowerer) deleteStmt(n *ast.Delete) {
 			case *types.List:
 				c.expr(t.X)
 				c.expr(t.Index)
-				c.emitArrayDelete()
+				c.emitArrayDelete(constIndex(t.Index))
 				c.emit(instr.DROP)
 			}
 		case *ast.Attribute:
@@ -822,7 +822,7 @@ func (c *lowerer) assignTargetFromTemp(target ast.Expr, slot int) {
 		c.emit(instr.GLOBAL_GET, uint64(slot))
 		switch recv := c.types[t.X].(type) {
 		case *types.List:
-			c.emitListIndexNormalizeUnderValue()
+			c.emitListIndexNormalizeUnderValue(constIndex(t.Index))
 			c.emit(instr.ARRAY_SET)
 		case *types.Dict:
 			c.emit(instr.MAP_SET)
@@ -867,7 +867,7 @@ func (c *lowerer) assignTarget(target ast.Expr, value ast.Expr) {
 		c.expr(value)
 		switch recv := c.types[t.X].(type) {
 		case *types.List:
-			c.emitListIndexNormalizeUnderValue()
+			c.emitListIndexNormalizeUnderValue(constIndex(t.Index))
 			c.emit(instr.ARRAY_SET)
 		case *types.Dict:
 			c.emit(instr.MAP_SET)
@@ -917,7 +917,7 @@ func (c *lowerer) augAssignSubscript(n *ast.AugAssign, sub *ast.Subscript) {
 			func() {
 				c.emit(instr.GLOBAL_GET, uint64(recvSlot))
 				c.emit(instr.GLOBAL_GET, uint64(indexSlot))
-				c.emitListIndexNormalize()
+				c.emitListIndexNormalize(constIndex(sub.Index))
 				c.emit(instr.ARRAY_GET)
 			},
 			func() { c.expr(n.Value) })
@@ -926,7 +926,7 @@ func (c *lowerer) augAssignSubscript(n *ast.AugAssign, sub *ast.Subscript) {
 		c.emit(instr.GLOBAL_SET, uint64(resultSlot))
 		c.emit(instr.GLOBAL_GET, uint64(recvSlot))
 		c.emit(instr.GLOBAL_GET, uint64(indexSlot))
-		c.emitListIndexNormalize()
+		c.emitListIndexNormalize(constIndex(sub.Index))
 		c.emit(instr.GLOBAL_GET, uint64(resultSlot))
 		c.emit(instr.ARRAY_SET)
 	case *types.Dict:

@@ -425,7 +425,7 @@ func (c *lowerer) subscript(x *ast.Subscript) {
 	c.expr(x.Index)
 	switch recv := c.types[x.X].(type) {
 	case *types.List:
-		c.emitListIndexNormalize()
+		c.emitListIndexNormalize(constIndex(x.Index))
 		c.emit(instr.ARRAY_GET)
 	case *types.Dict:
 		// Unlike MAP_GET's silent zero-value fallback for a missing key,
@@ -993,7 +993,11 @@ func (c *lowerer) emitZeroValue(t types.Type) {
 // [list, i64 index]. Stack out: [list, i32 index]. An index still negative,
 // or still out of range, is left for the following ARRAY_GET/ARRAY_SET/
 // ARRAY_DELETE bounds check to trap.
-func (c *lowerer) emitListIndexNormalize() {
+func (c *lowerer) emitListIndexNormalize(index int64, known bool) {
+	if known {
+		c.emitConstListIndexNormalize(index)
+		return
+	}
 	idxSlot := c.tmp(vmtypes.TypeI64)
 	listSlot := c.tmp(vmtypes.TypeAny)
 	c.emit(instr.GLOBAL_SET, uint64(idxSlot))
@@ -1020,19 +1024,62 @@ func (c *lowerer) emitListIndexNormalize() {
 	c.emit(instr.I64_TO_I32)
 }
 
+// emitConstListIndexNormalize normalizes an index whose value is known while
+// lowering. The sign decides the whole normalization, so neither the runtime
+// test nor the two scratch slots it needs are emitted: a non-negative index is
+// pushed as the i32 the opcode wants, and a negative one folds into
+// `len + index` straight-line. Whether the result is in range stays the VM's to
+// trap on, exactly as it is for a computed index.
+//
+// The index already on the stack is dropped rather than converted, because its
+// static type varies by call site — an augmented assignment reads it back from
+// a reference-typed slot, where an I64_TO_I32 would not verify.
+func (c *lowerer) emitConstListIndexNormalize(index int64) {
+	c.emit(instr.DROP)
+	if index >= 0 {
+		c.emit(instr.I32_CONST, uint64(uint32(index)))
+		return
+	}
+	c.emit(instr.DUP)
+	c.emit(instr.ARRAY_LEN)
+	c.emit(instr.I32_TO_I64_S)
+	c.emit(instr.I64_CONST, uint64(index))
+	c.emit(instr.I64_ADD)
+	c.emit(instr.I64_TO_I32)
+}
+
+// constIndex reports a subscript index whose value is known while lowering.
+// A value outside int32 is not reported: an array index is an i32, and folding
+// one that does not fit would turn an out-of-range index into an in-range one.
+func constIndex(index ast.Expr) (int64, bool) {
+	value, ok := int64(0), false
+	switch index := index.(type) {
+	case *ast.IntLit:
+		value, ok = index.Value, true
+	case *ast.UnaryExpr:
+		literal, isLiteral := index.X.(*ast.IntLit)
+		if isLiteral && index.Op == token.MINUS {
+			value, ok = -literal.Value, true
+		}
+	}
+	if !ok || value < math.MinInt32 || value > math.MaxInt32 {
+		return 0, false
+	}
+	return value, true
+}
+
 // emitListIndexNormalizeUnderValue normalizes a possibly negative i64 list
-// index that sits beneath a value already pushed on the stack: [list, i64
-// index, value] -> [list, i32 index, value]. Subscript-assignment writes push
-// the stored value after the index, so the index to normalize is not on top.
-func (c *lowerer) emitListIndexNormalizeUnderValue() {
+// index that sits beneath an already-pushed value, which is the shape a
+// subscript assignment leaves on the stack.
+func (c *lowerer) emitListIndexNormalizeUnderValue(index int64, known bool) {
 	valueSlot := c.tmp(vmtypes.TypeAny)
 	c.emit(instr.GLOBAL_SET, uint64(valueSlot))
-	c.emitListIndexNormalize()
+	c.emitListIndexNormalize(index, known)
 	c.emit(instr.GLOBAL_GET, uint64(valueSlot))
 }
 
-func (c *lowerer) emitArrayDelete() {
-	c.emitListIndexNormalize()
+func (c *lowerer) emitArrayDelete(index int64, known bool) {
+	c.emitListIndexNormalize(index, known)
 	c.emit(instr.ARRAY_DELETE)
 }
 

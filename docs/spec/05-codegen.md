@@ -335,6 +335,14 @@ opcode. Negative slicing, `.insert(-1, ...)`, and negative string indexing
 already normalized this way; this closes the same rule for plain list
 subscripting.
 
+A **literal** index normalizes while lowering instead. Its sign settles the whole
+question, so neither the runtime test nor the two scratch slots it needs are
+emitted: a non-negative index becomes the `i32` the opcode wants, and a negative
+one folds into `len + index` straight-line. Whether the index is in range stays
+the VM's to trap on, exactly as for a computed one, and an index outside `i32`
+keeps the general path rather than truncating an out-of-range index into an
+in-range one. `xs[0]`, `xs[-1]`, `xs.pop()`, and `del xs[-1]` all take it.
+
 Contiguous list slice assignment and deletion lower through narrow host helpers.
 The helpers normalize omitted and negative bounds like Python for step `1`,
 clamp bounds into `[0, len(list)]`, replace only when `len(rhs)` equals the

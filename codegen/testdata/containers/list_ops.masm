@@ -1,10 +1,10 @@
-# instructions   84
+# instructions   61
 # functions      0
 # host functions 2
 # constants      2
 # types          1
 # globals        1
-# locals         2
+# locals         0
 # handlers       0
 
 .code
@@ -32,74 +32,43 @@
 0079:	drop
 0080:	global.get 0x0000
 0083:	i64.const 0x0000000000000000
-0092:	local.set 0x00
-0094:	local.set 0x01
-0096:	local.get 0x00
-0098:	i64.const 0x0000000000000000
-0107:	i64.lt_s
-0108:	br_if L0114
-0111:	br L0123
-L0114:
-0114:	local.get 0x00
-0116:	local.get 0x01
-0118:	array.len
-0119:	i32.to_i64_s
-0120:	i64.add
-0121:	local.set 0x00
-L0123:
-0123:	local.get 0x01
-0125:	local.get 0x00
-0127:	i64.to_i32
-0128:	array.get
-0129:	const.get 0x0000
-0132:	call
-0133:	const.get 0x0001
-0136:	call
-0137:	ref.null
-0138:	drop
-0139:	global.get 0x0000
-0142:	i64.const 0x0000000000000000
-0151:	i64.const 0x0000000000000001
-0160:	i64.sub
-0161:	local.set 0x00
-0163:	local.set 0x01
-0165:	local.get 0x00
-0167:	i64.const 0x0000000000000000
-0176:	i64.lt_s
-0177:	br_if L0183
-0180:	br L0192
-L0183:
-0183:	local.get 0x00
-0185:	local.get 0x01
-0187:	array.len
-0188:	i32.to_i64_s
-0189:	i64.add
-0190:	local.set 0x00
-L0192:
-0192:	local.get 0x01
-0194:	local.get 0x00
-0196:	i64.to_i32
-0197:	array.get
-0198:	const.get 0x0000
-0201:	call
-0202:	const.get 0x0001
-0205:	call
-0206:	ref.null
-0207:	drop
-0208:	global.get 0x0000
-0211:	array.len
-0212:	i32.to_i64_s
-0213:	const.get 0x0000
-0216:	call
-0217:	const.get 0x0001
-0220:	call
-0221:	ref.null
-0222:	drop
-0223:	nop
-
-.locals
-0000:	i64
-0001:	any
+0092:	drop
+0093:	i32.const 0x00000000
+0098:	array.get
+0099:	const.get 0x0000
+0102:	call
+0103:	const.get 0x0001
+0106:	call
+0107:	ref.null
+0108:	drop
+0109:	global.get 0x0000
+0112:	i64.const 0x0000000000000000
+0121:	i64.const 0x0000000000000001
+0130:	i64.sub
+0131:	drop
+0132:	dup
+0133:	array.len
+0134:	i32.to_i64_s
+0135:	i64.const 0xFFFFFFFFFFFFFFFF
+0144:	i64.add
+0145:	i64.to_i32
+0146:	array.get
+0147:	const.get 0x0000
+0150:	call
+0151:	const.get 0x0001
+0154:	call
+0155:	ref.null
+0156:	drop
+0157:	global.get 0x0000
+0160:	array.len
+0161:	i32.to_i64_s
+0162:	const.get 0x0000
+0165:	call
+0166:	const.get 0x0001
+0169:	call
+0170:	ref.null
+0171:	drop
+0172:	nop
 
 .globals
 0000:	any

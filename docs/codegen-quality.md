@@ -178,6 +178,19 @@ untouched) with a literal step (so the comparison's direction is known at compil
 time). Everything else keeps the iterator. A special case that has to guess is
 not worth having.
 
+### Fold what the source already decided
+
+A subscript index that is a literal does not need the negative-index test the
+lowerer emits for a computed one: `xs[0]` was costing fourteen instructions, a
+branch, and two scratch slots to answer a question the source answered. Folding
+it takes a list-index microbenchmark from 1051ms to 699ms (33%) and takes the
+`containers/list_ops` golden from 84 instructions and two scratch slots to 61
+and none.
+
+The guard that keeps this honest is that folding must not change what traps: an
+index outside `i32` keeps the general path, because truncating it would turn an
+out-of-range access into an in-range one.
+
 ### Let specialization do the narrowing
 
 A direct call whose arguments are concrete resolves to a monomorphic clone, and

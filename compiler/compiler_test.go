@@ -2862,3 +2862,53 @@ func TestCompileLoopRotation(t *testing.T) {
 		require.Equal(t, "4 4\n", run(t, src))
 	})
 }
+
+// TestCompileConstantListIndex pins that a literal subscript index normalizes
+// while lowering rather than at run time, and that it still traps out of range
+// exactly as a computed index does.
+func TestCompileConstantListIndex(t *testing.T) {
+	t.Run("a non-negative literal reads the same element as a variable", func(t *testing.T) {
+		src := "xs: list[int] = [10, 20, 30]\ni: int = 1\nprint(str(xs[1]) + \" \" + str(xs[i]))\n"
+		require.Equal(t, "20 20\n", run(t, src))
+	})
+
+	t.Run("a negative literal counts from the end", func(t *testing.T) {
+		src := "xs: list[int] = [10, 20, 30]\nprint(str(xs[-1]) + \" \" + str(xs[-3]))\n"
+		require.Equal(t, "30 10\n", run(t, src))
+	})
+
+	t.Run("a literal index writes the element a variable index reads", func(t *testing.T) {
+		src := "xs: list[int] = [1, 2, 3]\nxs[0] = 9\nxs[-1] += 5\nprint(str(xs[0]) + \" \" + str(xs[2]))\n"
+		require.Equal(t, "9 8\n", run(t, src))
+	})
+
+	t.Run("pop and del take a literal index", func(t *testing.T) {
+		src := "xs: list[int] = [1, 2, 3, 4]\n" +
+			"print(str(xs.pop()))\n" +
+			"print(str(xs.pop(0)))\n" +
+			"del xs[-1]\n" +
+			"print(str(len(xs)) + \" \" + str(xs[0]))\n"
+		require.Equal(t, "4\n1\n1 2\n", run(t, src))
+	})
+
+	t.Run("an out-of-range literal still traps", func(t *testing.T) {
+		for _, src := range []string{
+			"xs: list[int] = [1]\nprint(str(xs[5]))\n",
+			"xs: list[int] = [1]\nprint(str(xs[-5]))\n",
+		} {
+			prog, err := Compile(strings.NewReader(src), WithOutput(io.Discard))
+			require.NoError(t, err)
+			vm := interp.New(prog)
+			require.Error(t, vm.Run(context.Background()))
+			vm.Close()
+		}
+	})
+
+	t.Run("a literal index needs no scratch slot", func(t *testing.T) {
+		// The runtime normalization reserves one slot for the index and one for
+		// the receiver; folding it leaves the frame with neither.
+		prog, err := Compile(strings.NewReader("xs: list[int] = [1, 2]\nprint(str(xs[0]))\n"), WithOutput(io.Discard))
+		require.NoError(t, err)
+		require.Empty(t, prog.Locals, "a constant index normalizes without scratch slots")
+	})
+}
