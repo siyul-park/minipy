@@ -1194,6 +1194,15 @@ func (c *checker) callableCallType(n *ast.CallExpr, value types.Type) types.Type
 
 func (c *checker) methodCallType(n *ast.CallExpr, attr *ast.Attribute) types.Type {
 	receiver := c.expr(attr.X)
+	if methods := builtinMethods(receiver); methods != nil {
+		args := c.positionalMethodArgs(n)
+		method, ok := methods[attr.Name]
+		if !ok {
+			c.errs.Add(n.Pos(), token.UnsupportedFeature, "method %s on %s is not supported", attr.Name, receiver)
+			return types.Invalid
+		}
+		return method.check(c, receiver, n, args)
+	}
 	switch t := receiver.(type) {
 	case *types.Module:
 		res := c.resolveModuleAttr(t.Name, attr.Name)
@@ -1241,113 +1250,6 @@ func (c *checker) methodCallType(n *ast.CallExpr, attr *ast.Attribute) types.Typ
 			}
 		}
 		return method.result
-	case *types.List:
-		args := c.positionalMethodArgs(n)
-		switch attr.Name {
-		case "append":
-			if len(args) != 1 {
-				c.errs.Add(n.Pos(), token.ArityMismatch, "list.append takes exactly 1 argument (%d given)", len(args))
-				return types.Invalid
-			}
-			if !types.AssignableTo(args[0], t.Elem) {
-				c.errs.Add(n.Args[0].Pos(), token.TypeMismatch, "list.append expects %s, got %s", t.Elem, args[0])
-				return types.Invalid
-			}
-			return types.None
-		case "pop":
-			if len(args) > 1 {
-				c.errs.Add(n.Pos(), token.ArityMismatch, "list.pop takes at most 1 argument (%d given)", len(args))
-				return types.Invalid
-			}
-			if len(args) == 1 && !types.Equal(args[0], types.Int) {
-				c.errs.Add(n.Args[0].Pos(), token.TypeMismatch, "list.pop index must be int, got %s", args[0])
-				return types.Invalid
-			}
-			return t.Elem
-		case "index":
-			if len(args) != 1 {
-				c.errs.Add(n.Pos(), token.ArityMismatch, "list.index takes exactly 1 argument (%d given)", len(args))
-				return types.Invalid
-			}
-			if !types.AssignableTo(args[0], t.Elem) {
-				c.errs.Add(n.Args[0].Pos(), token.TypeMismatch, "list.index expects %s, got %s", t.Elem, args[0])
-				return types.Invalid
-			}
-			return types.Int
-		case "insert":
-			if len(args) != 2 {
-				c.errs.Add(n.Pos(), token.ArityMismatch, "list.insert takes exactly 2 arguments (%d given)", len(args))
-				return types.Invalid
-			}
-			if !types.Equal(args[0], types.Int) {
-				c.errs.Add(n.Args[0].Pos(), token.TypeMismatch, "list.insert index must be int, got %s", args[0])
-				return types.Invalid
-			}
-			if !types.AssignableTo(args[1], t.Elem) {
-				c.errs.Add(n.Args[1].Pos(), token.TypeMismatch, "list.insert value must be %s, got %s", t.Elem, args[1])
-				return types.Invalid
-			}
-			return types.None
-		case "extend":
-			if len(args) != 1 {
-				c.errs.Add(n.Pos(), token.ArityMismatch, "list.extend takes exactly 1 argument (%d given)", len(args))
-				return types.Invalid
-			}
-			if !types.Equal(args[0], t) {
-				c.errs.Add(n.Args[0].Pos(), token.TypeMismatch, "list.extend expects list[%s], got %s", t.Elem, args[0])
-				return types.Invalid
-			}
-			return types.None
-		case "reverse":
-			if len(args) != 0 {
-				c.errs.Add(n.Pos(), token.ArityMismatch, "list.reverse takes no arguments (%d given)", len(args))
-				return types.Invalid
-			}
-			return types.None
-		case "sort":
-			if len(args) != 0 {
-				c.errs.Add(n.Pos(), token.ArityMismatch, "list.sort takes no arguments (%d given)", len(args))
-				return types.Invalid
-			}
-			elem := t.Elem
-			if !types.Equal(elem, types.Int) && !types.Equal(elem, types.Float) && !types.Equal(elem, types.Str) && !types.Equal(elem, types.Bool) {
-				c.errs.Add(n.Pos(), token.TypeMismatch, "list.sort requires comparable elements (int, float, str, bool), got %s", elem)
-				return types.Invalid
-			}
-			return types.None
-		case "copy":
-			if len(args) != 0 {
-				c.errs.Add(n.Pos(), token.ArityMismatch, "list.copy takes no arguments (%d given)", len(args))
-				return types.Invalid
-			}
-			return t
-		case "count":
-			if len(args) != 1 {
-				c.errs.Add(n.Pos(), token.ArityMismatch, "list.count takes exactly 1 argument (%d given)", len(args))
-				return types.Invalid
-			}
-			if !types.AssignableTo(args[0], t.Elem) {
-				c.errs.Add(n.Args[0].Pos(), token.TypeMismatch, "list.count expects %s, got %s", t.Elem, args[0])
-				return types.Invalid
-			}
-			return types.Int
-		case "clear":
-			if len(args) != 0 {
-				c.errs.Add(n.Pos(), token.ArityMismatch, "list.clear takes no arguments (%d given)", len(args))
-				return types.Invalid
-			}
-			return types.None
-		case "remove":
-			if len(args) != 1 {
-				c.errs.Add(n.Pos(), token.ArityMismatch, "list.remove takes exactly 1 argument (%d given)", len(args))
-				return types.Invalid
-			}
-			if !types.AssignableTo(args[0], t.Elem) {
-				c.errs.Add(n.Args[0].Pos(), token.TypeMismatch, "list.remove expects %s, got %s", t.Elem, args[0])
-				return types.Invalid
-			}
-			return types.None
-		}
 	case *types.Dict:
 		args := c.positionalMethodArgs(n)
 		switch attr.Name {

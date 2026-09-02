@@ -922,6 +922,10 @@ func (c *lowerer) methodCall(x *ast.CallExpr, attr *ast.Attribute) {
 	for _, arg := range x.Args {
 		c.expr(arg)
 	}
+	if method, ok := lookupBuiltinMethod(recvType, attr.Name); ok {
+		method.emit(c, recvType, x)
+		return
+	}
 	switch attr.Name {
 	case "get":
 		if len(x.Args) == 1 {
@@ -939,73 +943,28 @@ func (c *lowerer) methodCall(x *ast.CallExpr, attr *ast.Attribute) {
 		c.emit(instr.REF_NULL)
 	case "setdefault":
 		c.callHost(c.dictSetDefault(recvType, c.types[x]))
-	case "append":
-		c.emit(instr.I32_CONST, 1)
-		c.emit(instr.ARRAY_APPEND)
-		c.emit(instr.DROP)
-		c.emit(instr.REF_NULL)
 	case "pop":
-		if _, ok := recvType.(*types.Dict); ok {
-			if len(x.Args) == 2 {
-				c.callHost(c.dictPopDefault(recvType, c.types[x]))
-			} else {
-				c.callHost(c.dictPop(recvType, c.types[x]))
-			}
-		} else if _, ok := recvType.(*types.Set); ok {
+		if _, ok := recvType.(*types.Set); ok {
 			c.callHost(c.setPop(recvType, c.types[x]))
+		} else if len(x.Args) == 2 {
+			c.callHost(c.dictPopDefault(recvType, c.types[x]))
 		} else {
-			if len(x.Args) == 0 {
-				c.emit(instr.I64_CONST, ^uint64(0))
-			}
-			c.emitArrayDelete()
+			c.callHost(c.dictPop(recvType, c.types[x]))
 		}
-	case "index":
-		c.callHost(c.listIndex(recvType))
-	case "insert":
-		c.emitListInsert()
-		c.emit(instr.REF_NULL)
-	case "extend":
-		c.emitListExtend()
-		c.emit(instr.REF_NULL)
-	case "reverse":
-		c.emitListReverse()
-		c.emit(instr.REF_NULL)
-	case "sort":
-		c.callHost(c.listSort(recvType))
-		c.emit(instr.REF_NULL)
 	case "copy":
-		if _, ok := recvType.(*types.Dict); ok {
-			c.callHost(c.dictCopy(recvType))
-		} else if _, ok := recvType.(*types.Set); ok {
+		if _, ok := recvType.(*types.Set); ok {
 			c.callHost(c.setCopy(recvType))
 		} else {
-			c.callHost(c.listCopy(recvType))
+			c.callHost(c.dictCopy(recvType))
 		}
 	case "count":
-		if _, ok := recvType.(*types.List); ok {
-			c.callHost(c.listCount(recvType))
-		} else {
-			c.callHost(c.strCount())
-		}
+		c.callHost(c.strCount())
 	case "clear":
-		if _, ok := recvType.(*types.Dict); ok {
-			c.callHost(c.dictClear(recvType))
-			c.emit(instr.REF_NULL)
-		} else if _, ok := recvType.(*types.Set); ok {
-			c.callHost(c.dictClear(recvType))
-			c.emit(instr.REF_NULL)
-		} else {
-			c.callHost(c.listClear(recvType))
-			c.emit(instr.REF_NULL)
-		}
+		c.callHost(c.dictClear(recvType))
+		c.emit(instr.REF_NULL)
 	case "remove":
-		if _, ok := recvType.(*types.Set); ok {
-			c.callHost(c.setRemove(recvType))
-			c.emit(instr.REF_NULL)
-		} else {
-			c.callHost(c.listRemove(recvType))
-			c.emit(instr.REF_NULL)
-		}
+		c.callHost(c.setRemove(recvType))
+		c.emit(instr.REF_NULL)
 	case "upper":
 		c.callHost(c.strUpper())
 	case "lower":
